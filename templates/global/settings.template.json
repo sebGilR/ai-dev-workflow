@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(rg *)",
+      "Bash(fd *)",
+      "Bash(npm run lint)",
+      "Bash(npm run test *)",
+      "Bash(bundle exec rspec *)",
+      "Bash(bin/rails test *)",
+      "Bash(pytest *)",
+      "Read(.wip/**)",
+      "Edit(.wip/**)",
+      "Bash(python3 ~/.claude/ai-dev-workflow/scripts/aidw.py *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(npm install *)",
+      "Bash(yarn add *)",
+      "Bash(bundle add *)",
+      "Bash(bin/rails db:migrate*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(~/.aws/credentials)",
+      "Bash(curl *)",
+      "Bash(wget *)"
+    ]
+  }
+}
