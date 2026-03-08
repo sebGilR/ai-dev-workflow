@@ -18,7 +18,7 @@ Your job:
 
 ## Code Navigation
 
-Prefer Serena MCP tools for all codebase exploration:
+Prefer Serena MCP tools for codebase exploration when available:
 - `mcp__serena__get_symbols_overview` — understand a file's structure without reading it fully
 - `mcp__serena__find_symbol` — locate class/function definitions by name
 - `mcp__serena__find_referencing_symbols` — trace what depends on a symbol
