@@ -353,6 +353,50 @@ Artifacts:
 - `.wip/repo-index.json` (repo-level index)
 - `.wip/<branch>/research-scan.json` (branch-local narrowed relevance map)
 
+### WIP file persistence and verification
+
+WIP markdown files are treated as the source of truth for stage transitions. The CLI now verifies required files before advancing workflow stages and uses atomic writes for generated artifacts.
+
+Verification commands:
+
+```bash
+# Verify branch plan exists and has content
+~/.claude/ai-dev-workflow/bin/aidw verify-plan .
+
+# Verify branch research exists and has content
+~/.claude/ai-dev-workflow/bin/aidw verify-research .
+
+# Verify branch review exists and has content
+~/.claude/ai-dev-workflow/bin/aidw verify-review .
+```
+
+Stage gating behavior:
+- `set-stage planned` requires `plan.md`
+- `set-stage researched` requires `research.md`
+- `set-stage reviewed` requires `review.md`
+- emergency bypass is available with `--skip-verification`
+
+Atomic write guarantees:
+- generated markdown/json artifacts are written via temp file + replace
+- partial writes are avoided on interruptions
+- `.tmp` files are replaced in-place and should not remain after successful command completion
+
+### Multi-pass review pipeline
+
+The review pipeline is now split into four passes so Claude performs an independent code review instead of only summarizing model output.
+
+Passes:
+- Pass A: Ollama broad review (`bug-risk`, `missing-tests`, `regression-risk`, `docs-needed`)
+- Pass B: Claude gap analysis via `review-gaps`
+- Pass C: Optional targeted Ollama follow-up via `review-targeted`
+- Pass D: Claude independent final review over the actual diff
+
+Artifacts:
+- `review-bundle.json`
+- `ollama-review-<kind>.json`
+- `review-gaps.json`
+- `ollama-review-targeted.json` (when targeted pass runs)
+
 ### Endpoint safety
 
 By default, only local endpoints (`localhost`, `127.0.0.1`, `::1`) are accepted. Attempts to use a remote endpoint will fail with a clear error:
@@ -399,6 +443,17 @@ Four structured review passes are available:
 
 # Optional bounded parallel review (max 2)
 ~/.claude/ai-dev-workflow/bin/aidw review-all . --parallel 2
+
+# Analyze review coverage gaps to guide Claude follow-up
+~/.claude/ai-dev-workflow/bin/aidw review-gaps .
+
+# Run targeted follow-up review on specific files/focus area
+~/.claude/ai-dev-workflow/bin/aidw review-targeted . --files scripts/aidw.py,tests/test_aidw.py --focus error-handling
+
+# Verify branch WIP files before stage transitions
+~/.claude/ai-dev-workflow/bin/aidw verify-plan .
+~/.claude/ai-dev-workflow/bin/aidw verify-research .
+~/.claude/ai-dev-workflow/bin/aidw verify-review .
 
 # Merge all review sources into review.md
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
