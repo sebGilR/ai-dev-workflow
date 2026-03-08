@@ -80,7 +80,11 @@ done
 # MCP server configuration (Serena, Context7)
 # ---------------------------------------------------------------------------
 
-if command -v node &>/dev/null; then
+_mcp_missing=()
+command -v uvx &>/dev/null || _mcp_missing+=("uvx (required for Serena; install via: curl -LsSf https://astral.sh/uv/install.sh | sh)")
+command -v npx &>/dev/null || _mcp_missing+=("npx (required for Context7; install Node.js from https://nodejs.org)")
+
+if [ "${#_mcp_missing[@]}" -eq 0 ]; then
     echo "→ Configuring MCP servers (Serena, Context7)..."
     "$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_mcp_json.py" || {
         echo ""
@@ -89,8 +93,9 @@ if command -v node &>/dev/null; then
     }
 else
     echo ""
-    echo "⚠  Node.js not found. MCP servers (Serena, Context7) were not configured."
-    echo "   Install Node.js from https://nodejs.org, then re-run the installer."
+    echo "⚠  MCP servers were not configured. Missing dependencies:"
+    for _dep in "${_mcp_missing[@]}"; do echo "   - $_dep"; done
+    echo "   Re-run the installer once resolved."
 fi
 
 # ---------------------------------------------------------------------------

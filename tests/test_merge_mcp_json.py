@@ -127,3 +127,52 @@ class TestMergeMcpJson:
             assert "command" in cfg
             assert "args" in cfg
             assert isinstance(cfg["args"], list)
+
+    def test_non_dict_root_returns_exit_1(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, tmp_path)
+        mcp_path = self._mcp_path(tmp_path)
+        mcp_path.parent.mkdir(parents=True)
+        mcp_path.write_text("[]", encoding="utf-8")
+        original_content = mcp_path.read_text()
+
+        ret = _mmj.main()
+        assert ret == 1
+        assert mcp_path.read_text() == original_content
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+
+    def test_non_dict_mcp_servers_returns_exit_1(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, tmp_path)
+        mcp_path = self._mcp_path(tmp_path)
+        mcp_path.parent.mkdir(parents=True)
+        mcp_path.write_text(json.dumps({"mcpServers": ["bad"]}), encoding="utf-8")
+        original_content = mcp_path.read_text()
+
+        ret = _mmj.main()
+        assert ret == 1
+        assert mcp_path.read_text() == original_content
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+
+    def test_idempotent_rerun_does_not_write_file(self, tmp_path, monkeypatch):
+        """Second run with all servers present should not touch the file (mtime unchanged)."""
+        self._patch(monkeypatch, tmp_path)
+        _mmj.main()
+        mcp_path = self._mcp_path(tmp_path)
+        mtime_after_first = mcp_path.stat().st_mtime
+        _mmj.main()
+        assert mcp_path.stat().st_mtime == mtime_after_first
+
+    def test_serena_uses_uvx(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        _mmj.main()
+        data = json.loads(self._mcp_path(tmp_path).read_text())
+        serena = data["mcpServers"]["serena"]
+        assert serena["command"] == "uvx"
+
+    def test_context7_is_pinned(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        _mmj.main()
+        data = json.loads(self._mcp_path(tmp_path).read_text())
+        context7 = data["mcpServers"]["context7"]
+        assert any("@" in arg for arg in context7["args"]), "context7 args should include a pinned version"
