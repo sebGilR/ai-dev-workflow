@@ -117,11 +117,18 @@ write_ollama_env() {
 #   fast  (docs-needed, summaries, synthesis)         -> phi3:mini
 #   review (bug-risk, missing-tests, regression-risk) -> qwen2.5-coder:7b
 #   generate (generate-code, debug-patch, patch-draft) -> deepseek-coder:6.7b
+#
+# Parallelism defaults (stability-first on 16 GB machines):
+#   - Keep research/review sequential by default.
+#   - Raise AIDW_RESEARCH_PARALLEL or AIDW_REVIEW_PARALLEL to 2 only after stable runs.
 export AIDW_OLLAMA_MODEL_FAST="phi3:mini"
 export AIDW_OLLAMA_MODEL_REVIEW="qwen2.5-coder:7b"
 export AIDW_OLLAMA_MODEL_GENERATE="deepseek-coder:6.7b"
 export AIDW_OLLAMA_MODEL="${AIDW_OLLAMA_MODEL_REVIEW}"
 export AIDW_OLLAMA_ENDPOINT="http://localhost:11434"
+export AIDW_OLLAMA_MAX_PARALLEL="2"
+export AIDW_RESEARCH_PARALLEL="1"
+export AIDW_REVIEW_PARALLEL="1"
 ENVEOF
   echo "Created Ollama env file:  $env_file"
 }

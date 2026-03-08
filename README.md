@@ -284,19 +284,21 @@ ollama serve
 
 On macOS, the Ollama app starts the service automatically.
 
-#### 3. Pull a model
+#### 3. Pull recommended models
 
-The default model is `qwen2.5-coder:14b`. Pull it:
+Default routing uses three models (16 GB-safe baseline):
 
 ```bash
-ollama pull qwen2.5-coder:14b
+ollama pull phi3:mini
+ollama pull qwen2.5-coder:7b
+ollama pull deepseek-coder:6.7b
 ```
 
 Alternative models that work well for code review:
 
 | Model | Size | Notes |
 |-------|------|-------|
-| `qwen2.5-coder:14b` | ~9 GB | Default. Strong code understanding. |
+| `qwen2.5-coder:14b` | ~9 GB | Optional heavier review model on larger-memory machines. |
 | `qwen2.5-coder:7b` | ~4.7 GB | Lighter, faster, still good for review. |
 | `codellama:13b` | ~7.4 GB | Meta's code model. |
 | `deepseek-coder-v2:16b` | ~8.9 GB | Strong at code analysis. |
@@ -318,7 +320,38 @@ This checks: Ollama installed, service running, model pulled. Returns JSON with 
 | `AIDW_OLLAMA_MODEL_REVIEW` | `qwen2.5-coder:7b` | Model used for review-oriented tasks |
 | `AIDW_OLLAMA_MODEL_GENERATE` | `deepseek-coder:6.7b` | Model used for code-generation tasks |
 | `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Base Ollama API endpoint |
+| `AIDW_OLLAMA_MAX_PARALLEL` | `2` | Global hard limit for parallel Ollama work |
+| `AIDW_RESEARCH_PARALLEL` | `1` | Research lane concurrency request (kept sequential by default) |
+| `AIDW_REVIEW_PARALLEL` | `1` | Review pass concurrency request (sequential default, max 2) |
 | `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
+
+### 16 GB tuning guidance
+
+Use these defaults first and only raise to `2` after confirming stable local runs:
+
+```bash
+export AIDW_OLLAMA_MAX_PARALLEL=2
+export AIDW_RESEARCH_PARALLEL=1
+export AIDW_REVIEW_PARALLEL=1
+```
+
+If you increase research/review parallelism to `2`, keep `AIDW_OLLAMA_MAX_PARALLEL=2` to avoid overcommitting memory.
+
+### Staged v2 research flow
+
+v2 adds an index-first narrowing workflow to reduce prompt size and improve file targeting:
+
+```bash
+# Build/rebuild repo structure index
+~/.claude/ai-dev-workflow/bin/aidw build-index .
+
+# Produce branch-local narrowed research map
+~/.claude/ai-dev-workflow/bin/aidw research-scan . --goal "your implementation goal"
+```
+
+Artifacts:
+- `.wip/repo-index.json` (repo-level index)
+- `.wip/<branch>/research-scan.json` (branch-local narrowed relevance map)
 
 ### Endpoint safety
 
@@ -361,14 +394,17 @@ Four structured review passes are available:
 # Run a single review pass
 ~/.claude/ai-dev-workflow/bin/aidw ollama-review . --kind bug-risk
 
-# Run all four review passes in sequence
+# Run all four review passes (sequential by default)
 ~/.claude/ai-dev-workflow/bin/aidw review-all .
+
+# Optional bounded parallel review (max 2)
+~/.claude/ai-dev-workflow/bin/aidw review-all . --parallel 2
 
 # Merge all review sources into review.md
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
-Each review pass outputs structured JSON and saves results to `.wip/<branch>/ollama-review-<kind>.json`.
+Each review pass outputs structured JSON and saves results to `.wip/<branch>/ollama-review-<kind>.json`. In parallel mode, failures in a batch trigger automatic fallback to sequential execution for the remaining passes.
 
 ### How /wip-review uses Ollama
 
@@ -500,10 +536,12 @@ The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underl
 | `status <path>` | Show current branch status |
 | `set-stage <path> <stage>` | Update the workflow stage |
 | `review-bundle <path>` | Build a review bundle from the current diff |
+| `build-index <path>` | Build/update `.wip/repo-index.json` with lightweight file structure pointers |
+| `research-scan <path> --goal TEXT` | Generate `.wip/<branch>/research-scan.json` from index-first relevance scoring |
 | `ollama-config [--endpoint E]` | Print resolved Ollama endpoint and model configuration |
 | `ollama-check [--endpoint E]` | Check Ollama installation and all configured models |
 | `ollama-review <path> --kind KIND [--model M] [--endpoint E] [--no-stop]` | Run a single Ollama pass (model auto-routed by kind) |
-| `review-all <path> [--endpoint E] [--no-stop]` | Run all four review passes with per-kind model routing |
+| `review-all <path> [--endpoint E] [--parallel {1,2}] [--no-stop]` | Run all review passes with bounded optional parallelism and fallback safeguards |
 | `ollama-stop --model M [--endpoint E]` | Unload a specific model to free RAM |
 | `ollama-stop-all [--endpoint E]` | Unload all configured models to free RAM |
 | `synthesize-review <path>` | Merge review sources into `review.md` |

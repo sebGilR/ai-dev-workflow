@@ -833,3 +833,201 @@ class TestVerify:
         )
         running_mock.assert_not_called()
         has_model_mock.assert_not_called()
+
+
+class TestIndexAndResearchScan:
+    def test_build_index_writes_repo_index_file(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / "demo.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+        (repo / "README.md").write_text("# Demo\n\n## Usage\n", encoding="utf-8")
+
+        index = _aidw.build_repo_index(repo)
+        index_path = repo / ".wip" / "repo-index.json"
+
+        assert index_path.exists()
+        assert index["repo"] == repo.name
+        assert any(item["path"] == "scripts/demo.py" for item in index["files"])
+
+    def test_research_scan_writes_branch_artifact(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / "aidw_feature.py").write_text(
+            "def build_index():\n    return True\n",
+            encoding="utf-8",
+        )
+        _aidw.ensure_branch_state(repo)
+
+        result = _aidw.research_scan(repo, "build index command")
+        state = _aidw.ensure_branch_state(repo)
+        scan_path = Path(state["wip_dir"]) / "research-scan.json"
+
+        assert scan_path.exists()
+        assert result["goal"] == "build index command"
+        assert isinstance(result["results"], list)
+
+    def test_research_scan_parallel_uses_executor(self, tmp_path, monkeypatch):
+        repo = _make_git_repo(tmp_path)
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / "aidw_feature.py").write_text(
+            "def build_index():\n    return True\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("AIDW_RESEARCH_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "2")
+
+        with patch.object(_aidw.concurrent.futures, "ThreadPoolExecutor") as executor_cls:
+            result = _aidw.research_scan(repo, "build index command")
+
+        executor_cls.assert_called_once_with(max_workers=2)
+        assert result["parallel"]["effective"] == 2
+
+    def test_research_scan_parallel_respects_global_limit(self, tmp_path, monkeypatch):
+        repo = _make_git_repo(tmp_path)
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / "aidw_feature.py").write_text(
+            "def build_index():\n    return True\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("AIDW_RESEARCH_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "1")
+
+        with patch.object(_aidw.concurrent.futures, "ThreadPoolExecutor") as executor_cls:
+            result = _aidw.research_scan(repo, "build index command")
+
+        executor_cls.assert_not_called()
+        assert result["parallel"]["requested"] == 2
+        assert result["parallel"]["effective"] == 1
+        assert result["parallel"]["ollama_max_parallel"] == 1
+
+    def test_build_index_skips_unreadable_file(self, tmp_path, monkeypatch):
+        repo = _make_git_repo(tmp_path)
+        (repo / "scripts").mkdir(exist_ok=True)
+        bad_file = repo / "scripts" / "bad.py"
+        good_file = repo / "scripts" / "ok.py"
+        bad_file.write_text("def bad():\n    return 0\n", encoding="utf-8")
+        good_file.write_text("def ok():\n    return 1\n", encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def flaky_read_text(self: Path, *args, **kwargs):
+            if self == bad_file:
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+        index = _aidw.build_repo_index(repo)
+
+        paths = {entry["path"] for entry in index["files"]}
+        assert "scripts/ok.py" in paths
+        assert "scripts/bad.py" not in paths
+        assert index["truncated"]["skipped_files"] >= 1
+        assert any(item["path"] == "scripts/bad.py" for item in index["skipped"])
+
+
+class TestParserV2Commands:
+    def test_build_index_registered(self):
+        args = _aidw.build_parser().parse_args(["build-index", "."])
+        assert args.func == _aidw.cmd_build_index
+
+    def test_research_scan_registered(self):
+        args = _aidw.build_parser().parse_args(["research-scan", ".", "--goal", "find review code"])
+        assert args.func == _aidw.cmd_research_scan
+        assert args.goal == "find review code"
+
+    def test_review_all_parallel_flag(self):
+        args = _aidw.build_parser().parse_args(["review-all", ".", "--parallel", "2"])
+        assert args.parallel == 2
+
+
+class TestReviewAllParallelFallback:
+    def test_parallel_failure_falls_back_to_remaining_sequential(self, tmp_path, monkeypatch, capsys):
+        repo = _make_git_repo(tmp_path)
+        args = _aidw.build_parser().parse_args(["review-all", str(repo), "--no-auto-start", "--parallel", "2"])
+
+        monkeypatch.setenv("AIDW_REVIEW_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "2")
+
+        call_order: list[str] = []
+
+        def fake_ollama_review(_repo, kind, _model, _endpoint):
+            call_order.append(kind)
+            if kind == "missing-tests":
+                raise SystemExit("simulated parallel failure")
+            return {"kind": kind, "summary": "ok", "findings": []}
+
+        with patch.object(_aidw, "validate_ollama_endpoint", return_value=None):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch.object(_aidw, "ollama_is_running", return_value=True):
+                    with patch.object(_aidw, "ollama_has_model", return_value=True):
+                        with patch.object(_aidw, "stop_ollama_model", return_value=True):
+                            with patch.object(_aidw, "ollama_review", side_effect=fake_ollama_review):
+                                rc = _aidw.cmd_review_all(args)
+
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert len(out) == 4
+        assert any(item["kind"] == "missing-tests" and "Failed:" in item["summary"] for item in out)
+        assert "regression-risk" in call_order
+        assert "docs-needed" in call_order
+
+    def test_parallel_runtime_error_falls_back_to_remaining_sequential(self, tmp_path, monkeypatch, capsys):
+        repo = _make_git_repo(tmp_path)
+        args = _aidw.build_parser().parse_args(["review-all", str(repo), "--no-auto-start", "--parallel", "2"])
+
+        monkeypatch.setenv("AIDW_REVIEW_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "2")
+
+        call_order: list[str] = []
+
+        def fake_ollama_review(_repo, kind, _model, _endpoint):
+            call_order.append(kind)
+            if kind == "missing-tests":
+                raise RuntimeError("unexpected worker crash")
+            return {"kind": kind, "summary": "ok", "findings": []}
+
+        with patch.object(_aidw, "validate_ollama_endpoint", return_value=None):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch.object(_aidw, "ollama_is_running", return_value=True):
+                    with patch.object(_aidw, "ollama_has_model", return_value=True):
+                        with patch.object(_aidw, "stop_ollama_model", return_value=True):
+                            with patch.object(_aidw, "ollama_review", side_effect=fake_ollama_review):
+                                rc = _aidw.cmd_review_all(args)
+
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert len(out) == 4
+        assert any(item["kind"] == "missing-tests" and "Failed:" in item["summary"] for item in out)
+        assert "regression-risk" in call_order
+        assert "docs-needed" in call_order
+
+
+class TestParallelConfigClamp:
+    def test_ollama_config_clamps_invalid_parallel_env_values(self, monkeypatch, capsys):
+        args = _aidw.build_parser().parse_args(["ollama-config"])
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "not-a-number")
+        monkeypatch.setenv("AIDW_RESEARCH_PARALLEL", "-99")
+        monkeypatch.setenv("AIDW_REVIEW_PARALLEL", "999")
+
+        rc = _aidw.cmd_ollama_config(args)
+        out = json.loads(capsys.readouterr().out)
+
+        assert rc == 0
+        assert out["parallel"]["ollama_max_parallel"]["effective"] == 2
+        assert out["parallel"]["research_parallel"]["effective"] == 1
+        assert out["parallel"]["review_parallel"]["effective"] == 2
+
+    def test_ollama_config_respects_global_parallel_limit(self, monkeypatch, capsys):
+        args = _aidw.build_parser().parse_args(["ollama-config"])
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "1")
+        monkeypatch.setenv("AIDW_RESEARCH_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_REVIEW_PARALLEL", "2")
+
+        rc = _aidw.cmd_ollama_config(args)
+        out = json.loads(capsys.readouterr().out)
+
+        assert rc == 0
+        assert out["parallel"]["research_parallel"]["effective_with_max"] == 1
+        assert out["parallel"]["review_parallel"]["effective_with_max"] == 1
