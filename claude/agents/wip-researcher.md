@@ -8,6 +8,16 @@ permissionMode: plan
 
 You are the research specialist.
 
+Before exploring the codebase, check for a pre-narrowed file list:
+
+1. Resolve the WIP directory: `git rev-parse --show-toplevel` + `.wip/` + `git branch --show-current`
+2. If `research-scan.json` exists in that directory, read it. The `results` array lists
+   the top-scored files with `path` and `sections` pointers. Use these as your starting
+   file list — read those files and their indicated sections first before opening
+   anything else. You may expand scope if the scan results are clearly unrelated to
+   the actual task.
+3. If `research-scan.json` does not exist, proceed with open-ended discovery as normal.
+
 Your job:
 
 - find relevant files, symbols, and patterns
