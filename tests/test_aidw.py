@@ -1068,3 +1068,170 @@ class TestParallelConfigClamp:
         assert rc == 0
         assert out["parallel"]["research_parallel"]["effective_with_max"] == 1
         assert out["parallel"]["review_parallel"]["effective_with_max"] == 1
+
+
+class TestWipFileVerification:
+    def test_verify_plan_success_when_file_exists(self, tmp_path, capsys):
+        """Test verify-plan command succeeds when plan.md exists and has content."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        (wip_dir / "plan.md").write_text("# Plan\n\nThis is a valid plan.\n", encoding="utf-8")
+        
+        args = _aidw.build_parser().parse_args(["verify-plan", str(repo)])
+        rc = _aidw.cmd_verify_plan(args)
+        
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert out["verified"] is True
+        assert "plan.md" in out["file"]
+    
+    def test_verify_plan_failure_when_file_missing(self, tmp_path, capsys):
+        """Test verify-plan command fails when plan.md doesn't exist."""
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)  # Initialize but don't create plan.md
+        
+        args = _aidw.build_parser().parse_args(["verify-plan", str(repo)])
+        rc = _aidw.cmd_verify_plan(args)
+        
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert out["verified"] is False
+        assert "error" in out
+    
+    def test_verify_plan_failure_when_file_empty(self, tmp_path, capsys):
+        """Test verify-plan command fails when plan.md is too small."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        (wip_dir / "plan.md").write_text("", encoding="utf-8")  # Empty file
+        
+        args = _aidw.build_parser().parse_args(["verify-plan", str(repo)])
+        rc = _aidw.cmd_verify_plan(args)
+        
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert out["verified"] is False
+        assert "error" in out
+    
+    def test_set_stage_verification_blocks_planned_without_plan(self, tmp_path):
+        """Test set_stage fails to transition to 'planned' stage when plan.md is missing."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        # status.json created by ensure_branch_state, but no plan.md
+        
+        with pytest.raises(SystemExit) as exc_info:
+            _aidw.set_stage(repo, "planned")
+        assert exc_info.value.code != 0
+    
+    def test_set_stage_verification_succeeds_with_plan(self, tmp_path):
+        """Test set_stage succeeds when plan.md exists."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        (wip_dir / "plan.md").write_text("# Plan\n\nValid plan content.\n", encoding="utf-8")
+        
+        _aidw.set_stage(repo, "planned")
+        
+        # Verify status was updated
+        updated_status = json.loads((wip_dir / "status.json").read_text(encoding="utf-8"))
+        assert updated_status["stage"] == "planned"
+    
+    def test_set_stage_skip_verification_flag(self, tmp_path):
+        """Test set_stage --skip-verification flag bypasses file checks."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        # No plan.md created
+        
+        # This should succeed despite missing plan.md
+        _aidw.set_stage(repo, "planned", skip_verification=True)
+        
+        updated_status = json.loads((wip_dir / "status.json").read_text(encoding="utf-8"))
+        assert updated_status["stage"] == "planned"
+
+
+class TestReviewTargetedAndAtomicWrite:
+    def test_synthesize_review_atomic_write_no_tmp_left(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        _aidw.synthesize_review(repo)
+
+        assert (wip_dir / "review.md").exists()
+        assert not (wip_dir / "review.md.tmp").exists()
+
+    def test_review_targeted_registered(self):
+        args = _aidw.build_parser().parse_args(
+            ["review-targeted", ".", "--files", "scripts/aidw.py", "--focus", "performance"]
+        )
+        assert args.func == _aidw.cmd_review_targeted
+        assert args.files == "scripts/aidw.py"
+        assert args.focus == "performance"
+
+    def test_review_targeted_writes_output(self, tmp_path, capsys):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        # Create and modify a tracked file so targeted diff has content.
+        target = repo / "scripts" / "demo.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("print('v1')\n", encoding="utf-8")
+        subprocess.run(["git", "add", "scripts/demo.py"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "add demo"], cwd=str(repo), check=True, capture_output=True)
+        target.write_text("print('v2')\n", encoding="utf-8")
+
+        args = _aidw.build_parser().parse_args(
+            ["review-targeted", str(repo), "--files", "scripts/demo.py", "--focus", "error-handling", "--no-auto-start"]
+        )
+
+        fake_payload = {
+            "message": {
+                "content": "high: Missing error handling in update path\nmedium: Add explicit exception tests"
+            }
+        }
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(fake_payload).encode("utf-8")
+        mock_urlopen = MagicMock()
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_diff = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout=(
+                "diff --git a/scripts/demo.py b/scripts/demo.py\n"
+                "--- a/scripts/demo.py\n"
+                "+++ b/scripts/demo.py\n"
+                "@@ -1 +1 @@\n"
+                "-print('v1')\n"
+                "+print('v2')\n"
+            ),
+            stderr="",
+        )
+        original_run = _aidw.run
+
+        def fake_run(cmd, cwd=None, check=True):
+            if cmd and cmd[0] == "git" and "diff" in cmd:
+                return mock_diff
+            return original_run(cmd, cwd=cwd, check=check)
+
+        with patch.object(_aidw, "validate_ollama_endpoint", return_value=None):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch.object(_aidw, "ollama_is_running", return_value=True):
+                    with patch.object(_aidw, "ollama_has_model", return_value=True):
+                        with patch.object(_aidw, "stop_ollama_model", return_value=True):
+                            with patch.object(_aidw, "run", side_effect=fake_run):
+                                with patch("urllib.request.urlopen", mock_urlopen):
+                                    rc = _aidw.cmd_review_targeted(args)
+
+        capsys.readouterr()
+        saved = json.loads((wip_dir / "ollama-review-targeted.json").read_text(encoding="utf-8"))
+
+        assert rc == 0
+        assert saved["focus"] == "error-handling"
+        assert saved["files"] == ["scripts/demo.py"]
+        assert isinstance(saved["findings"], list)
+        assert saved["kind"].startswith("targeted-")
+        assert saved["files"] == ["scripts/demo.py"]

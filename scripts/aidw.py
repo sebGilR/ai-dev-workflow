@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import logging
 import re
 import json
 import os
@@ -17,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+
+logger = logging.getLogger(__name__)
 
 REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "gotchas.md"]
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
@@ -109,6 +113,34 @@ def safe_slug(value: str) -> str:
         short_hash = hashlib.sha256(value.encode()).hexdigest()[:8]
         slug = f"{slug}-{short_hash}"
     return slug
+
+
+def parse_files_arg(repo: Path, files_str: str) -> list[Path]:
+    """Parse comma-separated file list and validate files exist in repo.
+    
+    Args:
+        repo: Repository root path
+        files_str: Comma-separated file paths (relative to repo)
+    
+    Returns:
+        List of validated Path objects
+    
+    Raises:
+        SystemExit: If any file doesn't exist
+    """
+    repo = git_toplevel(repo)
+    files = [f.strip() for f in files_str.split(",") if f.strip()]
+    validated: list[Path] = []
+    
+    for file_str in files:
+        file_path = repo / file_str
+        if not file_path.exists():
+            raise SystemExit(f"[aidw] File not found: {file_str}")
+        if not file_path.is_file():
+            raise SystemExit(f"[aidw] Not a file: {file_str}")
+        validated.append(file_path)
+    
+    return validated
 
 
 def detect_repos(workspace_root: Path) -> list[Path]:
@@ -613,7 +645,7 @@ def set_stage(repo: Path, stage: str, skip_verification: bool = False) -> dict[s
         try:
             write_context_summary(repo)
         except Exception as exc:
-            print(f"[aidw] Warning: failed to auto-regenerate context-summary.md: {exc}", file=sys.stderr)
+            logger.warning("[aidw] failed to auto-regenerate context-summary.md: %s", exc)
     return status
 
 
@@ -1143,15 +1175,62 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     # Preserve any existing Claude review content
     review_path = wip_dir / "review.md"
     existing_claude_content: str = ""
+    existing_gap_analysis: str = ""
+    existing_targeted_review: str = ""
     placeholder = "<!-- Claude should add its own review findings here -->"
+    
     if review_path.exists():
         existing_text = review_path.read_text(encoding="utf-8")
+        
+        # Extract Claude Review section
         heading_match = re.search(r"(?m)^## Claude Review\s*$", existing_text)
         if heading_match is not None:
             after_heading = existing_text[heading_match.end():].lstrip("\n")
-            if after_heading and after_heading.strip() != placeholder.strip():
-                existing_claude_content = after_heading.rstrip("\n")
+            # Find next ## heading or end of file
+            next_heading = re.search(r"(?m)^## ", after_heading)
+            if next_heading:
+                claude_section = after_heading[:next_heading.start()].rstrip("\n")
+            else:
+                claude_section = after_heading.rstrip("\n")
+            if claude_section and claude_section.strip() != placeholder.strip():
+                existing_claude_content = claude_section
+        
+        # Extract Gap Analysis section
+        gap_match = re.search(r"(?m)^## Gap Analysis\s*$", existing_text)
+        if gap_match is not None:
+            after_heading = existing_text[gap_match.end():].lstrip("\n")
+            next_heading = re.search(r"(?m)^## ", after_heading)
+            if next_heading:
+                gap_section = after_heading[:next_heading.start()].rstrip("\n")
+            else:
+                gap_section = after_heading.rstrip("\n")
+            if gap_section and gap_section.strip():
+                existing_gap_analysis = gap_section
+        
+        # Extract Targeted Review section
+        targeted_match = re.search(r"(?m)^## Targeted Review\s*$", existing_text)
+        if targeted_match is not None:
+            after_heading = existing_text[targeted_match.end():].lstrip("\n")
+            next_heading = re.search(r"(?m)^## ", after_heading)
+            if next_heading:
+                targeted_section = after_heading[:next_heading.start()].rstrip("\n")
+            else:
+                targeted_section = after_heading.rstrip("\n")
+            if targeted_section and targeted_section.strip():
+                existing_targeted_review = targeted_section
 
+    sections.append("## Gap Analysis\n")
+    if existing_gap_analysis:
+        sections.append(existing_gap_analysis + "\n")
+    else:
+        sections.append("<!-- Run `aidw review-gaps .` to analyze coverage gaps -->\n")
+    
+    sections.append("## Targeted Review\n")
+    if existing_targeted_review:
+        sections.append(existing_targeted_review + "\n")
+    else:
+        sections.append("<!-- Run `aidw review-targeted . --files <files> --focus <focus>` for focused follow-up -->\n")
+    
     sections.append("## Claude Review\n")
     if existing_claude_content:
         sections.append(existing_claude_content + "\n")
@@ -1164,7 +1243,7 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
         try:
             write_context_summary(repo)
         except Exception as exc:
-            print(f"[aidw] Warning: failed to auto-regenerate context-summary.md: {exc}", file=sys.stderr)
+            logger.warning("[aidw] failed to auto-regenerate context-summary.md: %s", exc)
 
     return {
         "review_path": str(review_path),
@@ -1604,7 +1683,17 @@ def cmd_review_all(args: argparse.Namespace) -> int:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=effective_parallel) as executor:
                     futures = {executor.submit(_run_one_safe, kind): kind for kind in batch}
                     for future in concurrent.futures.as_completed(futures):
-                        kind, parsed, success = future.result()
+                        try:
+                            kind, parsed, success = future.result()
+                        except Exception as exc:
+                            kind = futures[future]
+                            parsed = {
+                                "kind": kind,
+                                "summary": f"Failed: {exc}",
+                                "findings": [],
+                            }
+                            success = False
+                            print(f"  {kind}: failed ({exc})", file=sys.stderr)
                         results_by_kind[kind] = parsed
                         if not success:
                             batch_failed = True
@@ -1651,6 +1740,266 @@ def cmd_research_scan(args: argparse.Namespace) -> int:
 def cmd_synthesize_review(args: argparse.Namespace) -> int:
     result = synthesize_review(Path(args.path))
     print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_review_gaps(args: argparse.Namespace) -> int:
+    """Analyze review coverage and identify gaps for Claude follow-up.
+    
+    Reads review-bundle.json and ollama-review-*.json files, then provides
+    structured data showing what was reviewed and what areas may need deeper review.
+    """
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+    
+    # Read review bundle
+    bundle_path = wip_dir / "review-bundle.json"
+    if not bundle_path.exists():
+        raise SystemExit(
+            "[aidw] review-bundle.json not found. Run `aidw review-bundle .` first."
+        )
+    bundle = read_json(bundle_path)
+    
+    # Read all ollama review results
+    ollama_reviews: dict[str, dict[str, Any]] = {}
+    for kind in REVIEW_KINDS:
+        review_path = wip_dir / f"ollama-review-{kind}.json"
+        if review_path.exists():
+            ollama_reviews[kind] = read_json(review_path)
+    
+    if not ollama_reviews:
+        raise SystemExit(
+            "[aidw] No Ollama review results found. Run `aidw review-all .` first."
+        )
+    
+    # Analyze coverage
+    changed_files = bundle.get("changed_files", [])
+    all_findings: list[dict[str, Any]] = []
+    findings_by_severity: dict[str, list[dict[str, Any]]] = {
+        "high": [],
+        "medium": [],
+        "low": [],
+        "info": []
+    }
+    
+    for kind, review in ollama_reviews.items():
+        for finding in review.get("findings", []):
+            severity = finding.get("severity", "info").lower()
+            finding_with_kind = {**finding, "review_kind": kind}
+            all_findings.append(finding_with_kind)
+            if severity in findings_by_severity:
+                findings_by_severity[severity].append(finding_with_kind)
+    
+    # Identify potential gaps
+    gaps: list[str] = []
+    
+    # Check for files with no specific findings
+    files_mentioned = set()
+    for finding in all_findings:
+        issue_text = finding.get("issue", "") + " " + finding.get("recommendation", "")
+        for file in changed_files:
+            if file in issue_text or file.replace("/", ".").replace(".py", "") in issue_text:
+                files_mentioned.add(file)
+    
+    files_not_mentioned = [f for f in changed_files if f not in files_mentioned]
+    
+    if files_not_mentioned:
+        gaps.append(f"{len(files_not_mentioned)} file(s) had no specific findings")
+    
+    # Check review coverage by kind
+    missing_kinds = [k for k in REVIEW_KINDS if k not in ollama_reviews]
+    if missing_kinds:
+        gaps.append(f"Missing review kinds: {', '.join(missing_kinds)}")
+    
+    # Check if any high-severity findings need follow-up
+    if findings_by_severity["high"]:
+        gaps.append(f"{len(findings_by_severity['high'])} high-severity finding(s) may need detailed analysis")
+    
+    # Suggest areas for Claude's independent review
+    suggestions: list[str] = []
+    if len(changed_files) > 1:
+        suggestions.append("Review inter-file dependencies and API contracts")
+    if findings_by_severity["high"] or findings_by_severity["medium"]:
+        suggestions.append("Verify suggested mitigations are adequate and complete")
+    suggestions.append("Check for architectural fit and maintainability concerns")
+    suggestions.append("Verify edge case handling and error paths")
+    if "test" not in " ".join(changed_files).lower():
+        suggestions.append("Assess test coverage impact (no test files in changeset)")
+    
+    result = {
+        "repo": repo.name,
+        "branch": state["status"]["branch"],
+        "generated_at": now_iso(),
+        "bundle": {
+            "changed_files": changed_files,
+            "changed_files_count": len(changed_files),
+        },
+        "ollama_coverage": {
+            "kinds_completed": list(ollama_reviews.keys()),
+            "kinds_missing": missing_kinds,
+            "total_findings": len(all_findings),
+        },
+        "findings_by_severity": {
+            severity: len(findings)
+            for severity, findings in findings_by_severity.items()
+        },
+        "gaps_identified": gaps,
+        "claude_review_suggestions": suggestions,
+        "files_needing_attention": files_not_mentioned[:10] if files_not_mentioned else [],
+    }
+    
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_review_targeted(args: argparse.Namespace) -> int:
+    """Run targeted Ollama review on specific files with optional focus area.
+    
+    Allows Claude to request focused follow-up reviews on specific files or concerns
+    identified during gap analysis.
+    """
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+    
+    # Parse and validate files
+    files = parse_files_arg(repo, args.files)
+    focus = args.focus if hasattr(args, "focus") and args.focus else "general"
+    
+    # Validate Ollama setup
+    endpoint = getattr(args, "endpoint", DEFAULT_OLLAMA_ENDPOINT)
+    validate_ollama_endpoint(endpoint)
+    
+    if not ollama_is_installed():
+        raise SystemExit("Ollama is not installed. Run: aidw ollama-check")
+    
+    # Auto-start server if needed
+    server_proc: subprocess.Popen[str] | None = None
+    if not getattr(args, "no_auto_start", False):
+        server_proc = ollama_start_server(endpoint)
+    elif not ollama_is_running(endpoint):
+        raise SystemExit(f"Ollama is not running at {endpoint}. Run: ollama serve")
+    
+    # Use review model for targeted reviews
+    model = OLLAMA_MODEL_REVIEW
+    if not ollama_has_model(model, endpoint):
+        if server_proc is not None:
+            ollama_stop_server(server_proc)
+        raise SystemExit(f"Model '{model}' not available. Run: ollama pull {model}")
+    
+    # Build targeted diff context
+    file_list = [f.relative_to(repo) for f in files]
+    print(f"Running targeted review on {len(file_list)} file(s) with focus: {focus}...", file=sys.stderr)
+    
+    # Create a minimal bundle for these specific files
+    try:
+        cmd_result = run(["git", "-C", str(repo), "diff", "--unified=5", "main...HEAD", "--"] + [str(f) for f in file_list], check=False)
+        if cmd_result.returncode != 0:
+            # Fallback: try against current branch
+            cmd_result = run(["git", "-C", str(repo), "diff", "--unified=5", "HEAD", "--"] + [str(f) for f in file_list])
+        
+        diff_text = cmd_result.stdout
+        if not diff_text.strip():
+            print("  No changes found for specified files", file=sys.stderr)
+            return 0
+        
+        # Build targeted prompt
+        prompt_parts = [
+            f"Review the following code changes with focus on: {focus}",
+            "",
+            "Files under review:",
+        ]
+        for f in file_list:
+            prompt_parts.append(f"  - {f}")
+        prompt_parts.extend([
+            "",
+            "Diff:",
+            diff_text,
+            "",
+            f"Provide findings focused specifically on: {focus}",
+            "Format: severity (high/medium/low/info), issue description, recommendation",
+        ])
+        
+        prompt = "\n".join(prompt_parts)
+        
+        # Build Ollama request body
+        body = {
+            "model": model,
+            "stream": False,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a code review assistant. Be concrete, terse, and practical. "
+                        f"Focus your analysis specifically on: {focus}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+        }
+        
+        # Call Ollama API
+        req = urllib.request.Request(
+            endpoint.rstrip("/") + "/api/chat",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")
+        
+        findings_text = payload.get("message", {}).get("content", "")
+        
+        # Parse findings (simplified extraction)
+        findings: list[dict[str, Any]] = []
+        for line in findings_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Simple pattern: look for severity markers
+            severity_match = re.search(r"\b(high|medium|low|info)\b", line.lower())
+            if severity_match:
+                findings.append({
+                    "severity": severity_match.group(1),
+                    "issue": line,
+                    "recommendation": "",
+                    "file": str(file_list[0]) if len(file_list) == 1 else "",
+                })
+        
+        # Write result
+        result = {
+            "kind": f"targeted-{focus}",
+            "model": model,
+            "focus": focus,
+            "files": [str(f) for f in file_list],
+            "summary": f"Targeted review of {len(file_list)} file(s) focusing on {focus}",
+            "findings": findings,
+            "generated_at": now_iso(),
+        }
+        
+        output_path = wip_dir / "ollama-review-targeted.json"
+        atomic_write(output_path, json.dumps(result, indent=2))
+        
+        print(f"  {len(findings)} finding(s) written to {output_path.name}", file=sys.stderr)
+        print(json.dumps(result, indent=2))
+        
+        # Stop model
+        if not getattr(args, "no_stop", False):
+            print(f"Stopping model {model}...", file=sys.stderr)
+            stop_ollama_model(model, endpoint)
+        
+    finally:
+        if server_proc is not None:
+            ollama_stop_server(server_proc)
+    
     return 0
 
 
@@ -1866,6 +2215,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("synthesize-review", help="Merge review sources into review.md")
     p.add_argument("path")
     p.set_defaults(func=cmd_synthesize_review)
+
+    p = sub.add_parser("review-gaps", help="Analyze review coverage and identify gaps for Claude follow-up")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_review_gaps)
+
+    p = sub.add_parser("review-targeted", help="Run targeted Ollama review on specific files")
+    p.add_argument("path")
+    p.add_argument("--files", required=True, help="Comma-separated list of files to review")
+    p.add_argument("--focus", help="Specific concern to focus on (e.g., 'error-handling', 'performance')")
+    p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT, help="Ollama endpoint URL")
+    p.add_argument("--no-auto-start", action="store_true", help="Don't auto-start Ollama server")
+    p.add_argument("--no-stop", action="store_true", help="Don't stop models after review")
+    p.set_defaults(func=cmd_review_targeted)
 
     p = sub.add_parser("summarize-context", help="Generate context-summary.md from all WIP files")
     p.add_argument("path")
