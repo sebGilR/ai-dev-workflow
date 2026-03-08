@@ -7,6 +7,8 @@ When this skill is used:
 
 1. Ensure the repo is initialized for the current branch.
 2. Use the `wip-researcher` subagent to gather relevant codebase findings.
+   Prefer Serena for: symbol lookup, call chain tracing, file discovery, and pattern
+   identification. Fall back to Grep/Glob only for tasks outside Serena's scope.
 3. Update `research.md` with concrete findings.
 4. Update `context.md` with a concise distilled context snapshot for continuation.
 5. Run:

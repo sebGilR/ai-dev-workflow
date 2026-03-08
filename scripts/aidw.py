@@ -977,6 +977,23 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
                     has_m = ollama_has_model(model_name, DEFAULT_OLLAMA_ENDPOINT)
                     check(f"ollama: {role} model {model_name}", has_m, warn=not has_m)
 
+    # MCP / intelligence tools check (informational)
+    node_ok = shutil.which("node") is not None
+    check("mcp: Node.js installed", node_ok, warn=not node_ok)
+
+    mcp_config = claude_home / "mcp.json"
+    if mcp_config.exists():
+        try:
+            mcp_data = json.loads(mcp_config.read_text(encoding="utf-8"))
+            servers = mcp_data.get("mcpServers", {})
+            check("mcp: serena configured", "serena" in servers, warn="serena" not in servers)
+            check("mcp: context7 configured", "context7" in servers, warn="context7" not in servers)
+        except json.JSONDecodeError:
+            check("mcp: mcp.json valid JSON", False, "parse error")
+    else:
+        check("mcp: mcp.json exists", False,
+              "run installer or create ~/.claude/mcp.json manually", warn=True)
+
     results["ok"] = results["failed"] == 0
     return results
 

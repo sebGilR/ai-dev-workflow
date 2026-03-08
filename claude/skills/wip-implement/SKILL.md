@@ -6,6 +6,8 @@ description: Implement the next planned chunk of work and update execution notes
 When this skill is used:
 
 1. Read the current `plan.md`, `research.md`, `context.md`, and `status.json`.
+   When implementing against external libraries or APIs, use Context7 to retrieve
+   current documentation before writing integration code.
 2. Implement the next chunk of work.
 3. Append a concise update to `execution.md` describing what changed and why.
 4. Optionally refresh `context.md` if the implementation materially changed the continuation context.

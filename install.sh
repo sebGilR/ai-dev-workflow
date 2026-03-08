@@ -77,6 +77,23 @@ done
 "$PYTHON_BIN" "$SCRIPT_DIR/scripts/aidw.py" bootstrap-workspace "$WORKSPACE_ROOT"
 
 # ---------------------------------------------------------------------------
+# MCP server configuration (Serena, Context7)
+# ---------------------------------------------------------------------------
+
+if command -v node &>/dev/null; then
+    echo "→ Configuring MCP servers (Serena, Context7)..."
+    "$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_mcp_json.py" || {
+        echo ""
+        echo "⚠  MCP server configuration failed. Check ~/.claude/mcp.json for issues."
+        echo "   Re-run the installer once resolved."
+    }
+else
+    echo ""
+    echo "⚠  Node.js not found. MCP servers (Serena, Context7) were not configured."
+    echo "   Install Node.js from https://nodejs.org, then re-run the installer."
+fi
+
+# ---------------------------------------------------------------------------
 # Ollama environment setup
 # ---------------------------------------------------------------------------
 
@@ -200,3 +217,7 @@ echo "Ollama config:   aidw ollama-config"
 echo "Ollama check:    aidw ollama-check"
 echo
 echo "Suggested next step inside a repo: /wip-start"
+echo ""
+echo "Repository intelligence tools:"
+echo "  Serena   → semantic code navigation (symbol lookup, call chains, file discovery)"
+echo "  Context7 → up-to-date library documentation (API usage, framework examples)"
