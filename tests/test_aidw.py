@@ -1382,11 +1382,12 @@ class TestOllamaReviewTimeout:
 
 class TestOllamaReviewArtifactReuse:
     def test_existing_completed_artifact_is_reused(self, tmp_path):
-        """If a completed artifact exists, urlopen must not be called."""
+        """If a completed artifact exists with a matching head_sha, urlopen must not be called."""
         wip_dir = tmp_path / "wip"
         wip_dir.mkdir()
         completed = {
             "kind": "bug-risk",
+            "head_sha": "abc123",
             "summary": "All clear.",
             "findings": [{"severity": "low", "issue": "x", "recommendation": "y"}],
         }
@@ -1399,11 +1400,67 @@ class TestOllamaReviewArtifactReuse:
 
         with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
             with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
-                with patch("urllib.request.urlopen", side_effect=bomb):
-                    result = _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
+                with patch.object(_aidw, "current_head_sha", return_value="abc123"):
+                    with patch("urllib.request.urlopen", side_effect=bomb):
+                        result = _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
 
         assert result["summary"] == "All clear."
         assert len(result["findings"]) == 1
+
+    def test_stale_artifact_not_reused_after_new_commit(self, tmp_path):
+        """An artifact whose head_sha differs from current HEAD must be re-run, not reused."""
+        import socket
+        import urllib.error
+
+        wip_dir = tmp_path / "wip"
+        wip_dir.mkdir()
+        stale = {
+            "kind": "bug-risk",
+            "head_sha": "old-sha",
+            "summary": "Stale findings.",
+            "findings": [],
+        }
+        (wip_dir / "ollama-review-bug-risk.json").write_text(json.dumps(stale))
+
+        fake_state = {"wip_dir": str(wip_dir)}
+        exc = urllib.error.URLError(socket.timeout("timed out"))
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "current_head_sha", return_value="new-sha"):
+                    with patch.object(_aidw, "review_bundle", return_value={}):
+                        with patch("urllib.request.urlopen", side_effect=exc):
+                            result = _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
+
+        # Stale artifact must have been discarded; Ollama was called (and timed out here)
+        assert result["status"] == "timeout"
+        assert result.get("head_sha") == "new-sha"
+
+    def test_reuse_updates_status_json(self, tmp_path):
+        """Reusing an artifact must update review_passes in status.json."""
+        wip_dir = tmp_path / "wip"
+        wip_dir.mkdir()
+        completed = {
+            "kind": "bug-risk",
+            "head_sha": "abc123",
+            "summary": "All clear.",
+            "findings": [],
+        }
+        (wip_dir / "ollama-review-bug-risk.json").write_text(json.dumps(completed))
+
+        status_data = {"branch": "fix-timeouts", "review_passes": [], "updated_at": "old"}
+        (wip_dir / "status.json").write_text(json.dumps(status_data))
+
+        fake_state = {"wip_dir": str(wip_dir)}
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "current_head_sha", return_value="abc123"):
+                    _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
+
+        saved = json.loads((wip_dir / "status.json").read_text())
+        assert "bug-risk" in saved["review_passes"]
+        assert saved["updated_at"] != "old"
 
     def test_timeout_artifact_is_not_reused(self, tmp_path):
         """A timeout artifact (status=timeout) must be overwritten, not returned."""

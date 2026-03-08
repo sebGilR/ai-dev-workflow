@@ -137,6 +137,11 @@ def current_branch(repo: Path) -> str:
     return branch or "detached-head"
 
 
+def current_head_sha(repo: Path) -> str:
+    result = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def safe_slug(value: str) -> str:
     allowed = []
     for ch in value:
@@ -1065,20 +1070,38 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
 
     repo = git_toplevel(repo)
     timeout_s = resolve_timeout_for_kind(kind)
+    head_sha = current_head_sha(repo)
 
     # Resolve output path early so we can check for an existing completed artifact.
     state = ensure_branch_state(repo)
     out_path = Path(state["wip_dir"]) / f"ollama-review-{kind}.json"
 
-    # Artifact reuse: if a completed (non-timeout) artifact already exists, return it.
+    # Artifact reuse: if a completed (non-timeout) artifact exists and was produced
+    # from the same HEAD commit, return it without re-running Ollama.
+    reuse_artifact: dict[str, Any] | None = None
     if out_path.exists():
         try:
             existing = read_json(out_path)
             if existing.get("status") != "timeout":
-                print(f"  {kind}: reusing existing completed artifact", file=sys.stderr)
-                return existing
+                artifact_sha = existing.get("head_sha")
+                if not artifact_sha or artifact_sha == head_sha:
+                    reuse_artifact = existing
         except (json.JSONDecodeError, OSError):
             pass  # Corrupt artifact — fall through and re-run
+
+    if reuse_artifact is not None:
+        print(f"  {kind}: reusing existing completed artifact", file=sys.stderr)
+        status_path = Path(state["wip_dir"]) / "status.json"
+        if status_path.exists():
+            with _status_lock:
+                _st = read_json(status_path)
+                _rp = _st.get("review_passes", [])
+                if kind not in _rp:
+                    _rp.append(kind)
+                _st["review_passes"] = _rp
+                _st["updated_at"] = now_iso()
+                write_json(status_path, _st)
+        return reuse_artifact
 
     bundle = review_bundle(repo)
     prompt = {
@@ -1156,6 +1179,7 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
                 "kind": kind,
                 "status": "timeout",
                 "timeout_seconds": timeout_s,
+                "head_sha": head_sha,
                 "summary": f"The {kind} review pass timed out after {timeout_s}s.",
                 "findings": [],
             }
@@ -1179,6 +1203,7 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
     except json.JSONDecodeError:
         parsed = {"kind": kind, "summary": raw_message, "findings": []}
 
+    parsed["head_sha"] = head_sha
     write_json(out_path, parsed)
 
     status_path = Path(state["wip_dir"]) / "status.json"
