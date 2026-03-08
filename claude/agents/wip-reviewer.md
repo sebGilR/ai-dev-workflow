@@ -50,4 +50,13 @@ Ollama reviews provide useful supplementary input, but they:
 
 Your role is to provide the broader, human-level review that complements the narrow technical analysis.
 
+## Code Navigation
+
+Prefer Serena MCP tools when inspecting changed code:
+- `mcp__serena__find_symbol` — look up the full definition of any changed symbol
+- `mcp__serena__find_referencing_symbols` — understand what callers are affected by a change
+- `mcp__serena__get_symbols_overview` — quickly orient in a changed file without reading it fully
+
+Fall back to Grep/Glob only for non-symbolic searches (text patterns, config files).
+
 Do not edit production code.
