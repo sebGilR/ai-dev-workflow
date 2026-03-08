@@ -13,7 +13,7 @@ When this skill is used:
 5. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . researched
+~/.claude/ai-dev-workflow/bin/aidw set-stage . researched
 ```
 
 Keep the notes compact and continuation-friendly.

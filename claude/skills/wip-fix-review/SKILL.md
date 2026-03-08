@@ -13,5 +13,5 @@ When this skill is used:
 5. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . review-fixed
+~/.claude/ai-dev-workflow/bin/aidw set-stage . review-fixed
 ```

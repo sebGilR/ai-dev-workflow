@@ -4,22 +4,22 @@
     {
       "label": "AI Dev Workflow: Start",
       "type": "shell",
-      "command": "python ~/.claude/ai-dev-workflow/scripts/aidw.py start ."
+      "command": "~/.claude/ai-dev-workflow/bin/aidw start ."
     },
     {
       "label": "AI Dev Workflow: Resume",
       "type": "shell",
-      "command": "python ~/.claude/ai-dev-workflow/scripts/aidw.py status ."
+      "command": "~/.claude/ai-dev-workflow/bin/aidw status ."
     },
     {
       "label": "AI Dev Workflow: Review",
       "type": "shell",
-      "command": "python ~/.claude/ai-dev-workflow/scripts/aidw.py review-bundle ."
+      "command": "~/.claude/ai-dev-workflow/bin/aidw review-bundle ."
     },
     {
       "label": "AI Dev Workflow: PR Draft",
       "type": "shell",
-      "command": "python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . pr-prep"
+      "command": "~/.claude/ai-dev-workflow/bin/aidw set-stage . pr-prep"
     }
   ]
 }

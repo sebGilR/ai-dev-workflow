@@ -10,7 +10,7 @@ When this skill is used:
 2. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py start .
+~/.claude/ai-dev-workflow/bin/aidw start .
 ```
 
 3. Read the resulting `status.json` and `context.md`.

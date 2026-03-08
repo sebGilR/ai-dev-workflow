@@ -15,7 +15,7 @@
       "Bash(pytest *)",
       "Read(.wip/**)",
       "Edit(.wip/**)",
-      "Bash(python3 ~/.claude/ai-dev-workflow/scripts/aidw.py *)"
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw *)"
     ],
     "ask": [
       "Bash(git commit *)",

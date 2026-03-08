@@ -11,7 +11,7 @@ When this skill is used:
 3. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . pr-prep
+~/.claude/ai-dev-workflow/bin/aidw set-stage . pr-prep
 ```
 
 4. Present a concise PR-ready summary.

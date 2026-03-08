@@ -11,26 +11,20 @@ When this skill is used:
 2. Build the review bundle:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py review-bundle .
+~/.claude/ai-dev-workflow/bin/aidw review-bundle .
 ```
 
-3. Check if Ollama is available locally:
+3. Run all Ollama review passes. The server is started automatically if it is not already running and stopped when the passes complete:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ollama-check
-```
-
-4. If Ollama is available, run all review passes:
-
-```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py review-all .
+~/.claude/ai-dev-workflow/bin/aidw review-all .
 ```
 
 This runs `bug-risk`, `missing-tests`, `regression-risk`, and `docs-needed` passes and saves individual JSON results into `.wip/<branch>/`.
 
-If Ollama is not available, skip to step 5. The review can proceed with Claude's own analysis.
+If the command fails because Ollama is not installed, continue to step 4 without Ollama results. You can verify Ollama availability separately with `aidw ollama-check`. The review can proceed with Claude's own analysis.
 
-5. Use the `wip-reviewer` subagent to consolidate all findings into `review.md`.
+4. Use the `wip-reviewer` subagent to consolidate all findings into `review.md`.
 
 The reviewer should:
 - Read the review bundle (`review-bundle.json`)
@@ -42,16 +36,16 @@ The reviewer should:
   - Low priority (suggestions)
 - Note missing tests and regression risks
 
-6. Synthesize the final review:
+5. Synthesize the final review:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py synthesize-review .
+~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
-7. Update the stage:
+6. Update the stage:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . reviewed
+~/.claude/ai-dev-workflow/bin/aidw set-stage . reviewed
 ```
 
-8. Summarize the review findings, focusing on blockers and high-priority issues.
+7. Summarize the review findings, focusing on blockers and high-priority issues.
