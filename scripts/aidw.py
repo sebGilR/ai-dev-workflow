@@ -121,29 +121,38 @@ def safe_slug(value: str) -> str:
 
 def parse_files_arg(repo: Path, files_str: str) -> list[Path]:
     """Parse comma-separated file list and validate files exist in repo.
-    
+
     Args:
         repo: Repository root path
-        files_str: Comma-separated file paths (relative to repo)
-    
+        files_str: Comma-separated file paths (relative to repo root)
+
     Returns:
         List of validated Path objects
-    
+
     Raises:
-        SystemExit: If any file doesn't exist
+        SystemExit: If any file is invalid, outside the repo, or the list is empty
     """
-    repo = git_toplevel(repo)
+    repo_root = git_toplevel(repo).resolve()
     files = [f.strip() for f in files_str.split(",") if f.strip()]
+    if not files:
+        raise SystemExit("[aidw] No files specified.")
     validated: list[Path] = []
-    
+
     for file_str in files:
-        file_path = repo / file_str
+        raw_path = Path(file_str)
+        if raw_path.is_absolute():
+            raise SystemExit(f"[aidw] Absolute paths are not allowed: {file_str}")
+        file_path = (repo_root / raw_path).resolve()
+        try:
+            file_path.relative_to(repo_root)
+        except ValueError:
+            raise SystemExit(f"[aidw] File is outside the repository: {file_str}")
         if not file_path.exists():
             raise SystemExit(f"[aidw] File not found: {file_str}")
         if not file_path.is_file():
             raise SystemExit(f"[aidw] Not a file: {file_str}")
         validated.append(file_path)
-    
+
     return validated
 
 
@@ -560,7 +569,7 @@ def verify_wip_file(wip_dir: Path, filename: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"{filename} is not readable: {e}"
     if len(content.strip()) < 10:
-        return False, f"{filename} is too small or empty (< 10 bytes of content)"
+        return False, f"{filename} is too small or empty (< 10 characters of content)"
     return True, ""
 
 
@@ -1856,6 +1865,15 @@ def cmd_review_gaps(args: argparse.Namespace) -> int:
     }
     
     print(json.dumps(result, indent=2))
+
+    # Persist as a branch-local artifact for later incorporation into review.md
+    try:
+        wip_dir = Path(state["wip_dir"])
+        output_path = wip_dir / "review-gaps.json"
+        atomic_write(output_path, json.dumps(result, indent=2))
+    except Exception:
+        logger.warning("Failed to persist review-gaps.json", exc_info=True)
+
     return 0
 
 
@@ -1958,11 +1976,26 @@ def cmd_review_targeted(args: argparse.Namespace) -> int:
         
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                raw_body = response.read().decode("utf-8")
+                try:
+                    payload = json.loads(raw_body)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(
+                        f"Received invalid JSON response from Ollama at {endpoint}: {exc}"
+                    ) from exc
         except urllib.error.URLError as exc:
             raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")
-        
-        findings_text = payload.get("message", {}).get("content", "")
+
+        if not isinstance(payload, dict):
+            raise SystemExit(
+                f"Unexpected response format from Ollama at {endpoint}: {type(payload).__name__}"
+            )
+        try:
+            findings_text = payload.get("message", {}).get("content", "")
+        except AttributeError as exc:
+            raise SystemExit(
+                f"Unexpected response structure from Ollama at {endpoint}"
+            ) from exc
         
         # Parse findings (simplified extraction)
         findings: list[dict[str, Any]] = []

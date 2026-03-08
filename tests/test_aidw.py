@@ -1087,9 +1087,13 @@ class TestWipFileVerification:
         assert "plan.md" in out["file"]
     
     def test_verify_plan_failure_when_file_missing(self, tmp_path, capsys):
-        """Test verify-plan command fails when plan.md doesn't exist."""
+        """Test verify-plan command fails when plan.md has too small/placeholder content.
+
+        Note: ensure_branch_state always seeds plan.md with a minimal header, so the
+        failure path here is "content too small" rather than "file does not exist".
+        """
         repo = _make_git_repo(tmp_path)
-        _aidw.ensure_branch_state(repo)  # Initialize but don't create plan.md
+        _aidw.ensure_branch_state(repo)  # Seeds plan.md with a minimal placeholder
         
         args = _aidw.build_parser().parse_args(["verify-plan", str(repo)])
         rc = _aidw.cmd_verify_plan(args)
