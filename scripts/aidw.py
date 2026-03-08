@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import itertools
 import re
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -27,6 +29,8 @@ INDEX_MAX_FILES = 400
 INDEX_MAX_BYTES_PER_FILE = 60_000
 INDEX_MAX_POINTERS_PER_FILE = 20
 INDEX_MAX_SECTION_POINTERS = 5
+
+_status_lock = threading.Lock()
 
 PARALLEL_HARD_CAP = 2
 DEFAULT_OLLAMA_MAX_PARALLEL = 2
@@ -331,10 +335,10 @@ def build_repo_index(repo: Path) -> dict[str, Any]:
     truncated_files = False
     skipped_files: list[dict[str, str]] = []
 
-    all_files = sorted([p for p in repo.rglob("*") if p.is_file() and not _is_ignored_path(p)])
-    if len(all_files) > INDEX_MAX_FILES:
-        truncated_files = True
-        all_files = all_files[:INDEX_MAX_FILES]
+    _gen = (p for p in repo.rglob("*") if p.is_file() and not _is_ignored_path(p))
+    _sampled = list(itertools.islice(_gen, INDEX_MAX_FILES + 1))
+    truncated_files = len(_sampled) > INDEX_MAX_FILES
+    all_files = sorted(_sampled[:INDEX_MAX_FILES])
 
     for path in all_files:
         rel = path.relative_to(repo)
@@ -347,7 +351,8 @@ def build_repo_index(repo: Path) -> dict[str, Any]:
 
         try:
             if size > INDEX_MAX_BYTES_PER_FILE:
-                content = path.read_text(encoding="utf-8", errors="ignore")[:INDEX_MAX_BYTES_PER_FILE]
+                with path.open(encoding="utf-8", errors="ignore") as _fh:
+                    content = _fh.read(INDEX_MAX_BYTES_PER_FILE)
                 content_truncated = True
             else:
                 content = path.read_text(encoding="utf-8", errors="ignore")
@@ -1037,13 +1042,14 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
     write_json(out_path, parsed)
 
     status_path = Path(state["wip_dir"]) / "status.json"
-    status = read_json(status_path)
-    review_passes = status.get("review_passes", [])
-    if kind not in review_passes:
-        review_passes.append(kind)
-    status["review_passes"] = review_passes
-    status["updated_at"] = now_iso()
-    write_json(status_path, status)
+    with _status_lock:
+        status = read_json(status_path)
+        review_passes = status.get("review_passes", [])
+        if kind not in review_passes:
+            review_passes.append(kind)
+        status["review_passes"] = review_passes
+        status["updated_at"] = now_iso()
+        write_json(status_path, status)
 
     return parsed
 
