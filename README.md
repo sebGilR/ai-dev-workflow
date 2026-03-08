@@ -37,6 +37,9 @@ The installer creates or updates:
 | `~/.claude/settings.json` | Merged permission rules |
 | `~/.claude/CLAUDE.md` | Managed workflow block (non-destructive merge) |
 | `~/.claude/ai-dev-workflow` | Symlink pointing to this repo |
+| `~/.claude/statusline.sh` | Claude statusline renderer (context + token summary) |
+| `~/.claude/claude-watch.sh` | Daily token watcher (20s loop, threshold warnings) |
+| `~/.claude/save-wip-snapshot.sh` | Snapshot helper used by watcher and Claude hooks |
 
 Claude Code picks up skills and agents natively because they live in the standard user-level directories.
 
@@ -120,6 +123,28 @@ To continue after a break:
 ```
 /wip-resume
 ```
+
+### 5. Optional: token monitor + autosave
+
+Run this in a second terminal while working:
+
+```bash
+~/.claude/claude-watch.sh
+```
+
+Defaults:
+
+- Daily limit: `200000` tokens
+- Warn at `75%`
+- Autosave snapshot at `85%` (`warn`)
+- Final autosave snapshot at `92%` (`critical`)
+
+Snapshots are written in the active repo under `.wip/<branch>/` and include:
+
+- `research.md`
+- `plan.md`
+- `handoff.md`
+- `progress.log`
 
 ---
 
