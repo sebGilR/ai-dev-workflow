@@ -17,8 +17,12 @@ repo_root=""
 branch=""
 
 if command -v git >/dev/null 2>&1; then
+  # Get repo root from the most reliable source: rev-parse --show-toplevel
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  branch="$(git -C "${repo_root:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  # Only use rev-parse --abbrev-ref if we have a valid repo_root
+  if [[ -n "$repo_root" ]]; then
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
 fi
 
 if [[ -z "$repo_root" ]]; then

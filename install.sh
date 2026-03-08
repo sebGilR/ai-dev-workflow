@@ -116,6 +116,11 @@ data = json.loads(settings_path.read_text(encoding="utf-8"))
 status_cmd = str(claude_home / "statusline.sh")
 snapshot_script = str(claude_home / "save-wip-snapshot.sh")
 
+# Verify managed scripts are actually symlinks (installed successfully).
+# Only write paths if the scripts are managed; skip if unmanaged local files exist.
+if not Path(status_cmd).exists() or not Path(snapshot_script).exists():
+  raise SystemExit(0)
+
 # Normalize statusLine only when missing or already pointing at a statusline helper.
 status_line = data.get("statusLine")
 if not isinstance(status_line, dict):
@@ -169,8 +174,11 @@ for hook_name, arg in managed_kinds.items():
     for entry in item_hooks:
       if not isinstance(entry, dict):
         continue
-      cmd = str(entry.get("command", ""))
-      if "save-wip-snapshot.sh" in cmd and cmd.strip().endswith(f" {arg}"):
+      cmd = str(entry.get("command", "")).strip()
+      # Check if this is a managed variant: save-wip-snapshot.sh with the matching argument
+      # Use split() for robust parsing instead of endswith() to handle spacing/comments
+      parts = cmd.split()
+      if len(parts) >= 2 and "save-wip-snapshot.sh" in parts[0] and parts[1] == arg:
         is_managed_variant = True
         break
 

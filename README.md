@@ -37,13 +37,15 @@ The installer creates or updates:
 | `~/.claude/settings.json` | Merged permission rules |
 | `~/.claude/CLAUDE.md` | Managed workflow block (non-destructive merge) |
 | `~/.claude/ai-dev-workflow` | Symlink pointing to this repo |
-| `~/.claude/statusline.sh` | Claude statusline renderer (context + token summary) |
-| `~/.claude/claude-watch.sh` | Daily token watcher (20s loop, threshold warnings) |
+| `~/.claude/statusline.sh` | Claude statusline renderer (usage summary + session token summary) |
+| `~/.claude/claude-watch.sh` | Daily token watcher and usage-cache writer (20s loop, threshold warnings) |
 | `~/.claude/save-wip-snapshot.sh` | Snapshot helper used by watcher and Claude hooks |
 
 Claude Code picks up skills and agents natively because they live in the standard user-level directories.
 
 Because skills and agents are symlinks (not copies), any edit you make to files in this repo is picked up immediately — no need to re-run the installer. Re-running install is only needed when you add a new skill or agent directory (to create its symlink), or if a symlink becomes stale.
+
+Managed scripts such as `~/.claude/statusline.sh` and `~/.claude/claude-watch.sh` follow the same rule only when they are installed as symlinks. If one of those files already exists as an unmanaged local file, the installer will not overwrite it; move or rename it and re-run `install.sh` if you want the repo version to take over.
 
 ### In each repo detected in the workspace
 
@@ -138,6 +140,31 @@ Defaults:
 - Warn at `75%`
 - Autosave snapshot at `85%` (`warn`)
 - Final autosave snapshot at `92%` (`critical`)
+
+What this currently powers:
+
+- `~/.claude/claude-watch.sh` writes `~/.claude/usage-status.json`
+- `~/.claude/statusline.sh` reads that cache and shows Claude usage plus session token percentage
+- The current cache source is `transcript-estimate`, derived from `~/.claude/projects/*.jsonl`
+
+Current limitation:
+
+- Direct `claude /usage` integration is not enabled yet because there is no confirmed supported non-interactive CLI path for it.
+- Until Claude exposes a stable automation path, the top usage line is best-effort cached telemetry rather than guaranteed exact account data.
+
+Current statusline shape:
+
+```text
+Claude usage: 142k / 200k today | 71% | source transcript-estimate
+Session: 38% | last 1240/311 | total 18240/5290
+```
+
+If the watcher is not running or the cache file is missing, the statusline falls back to:
+
+```text
+Claude usage: unavailable
+Session: 38% | last 1240/311 | total 18240/5290
+```
 
 Snapshots are written in the active repo under `.wip/<branch>/` and include:
 

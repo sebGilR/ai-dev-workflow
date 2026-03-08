@@ -9,6 +9,7 @@ LIMIT=200000
 INTERVAL=20
 PROJECTS_DIR="${HOME}/.claude/projects"
 SNAPSHOT_SCRIPT="${HOME}/.claude/save-wip-snapshot.sh"
+USAGE_CACHE_FILE="${CLAUDE_USAGE_CACHE:-$HOME/.claude/usage-status.json}"
 
 warn75_sent=0
 warn85_sent=0
@@ -20,7 +21,8 @@ tokens_today() {
     return
   fi
 
-  find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null | while IFS= read -r f; do
+  local result
+  result="$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null | while IFS= read -r f; do
     awk -v d="$(date '+%Y-%m-%d')" 'index($0, d) > 0' "$f" 2>/dev/null
   done | jq -Rs '
     split("\n")
@@ -32,7 +34,14 @@ tokens_today() {
       + (.cache_read_input_tokens // 0)
       )
     | add // 0
-  ' 2>/dev/null
+  ' 2>/dev/null)"
+  
+  # Validate result is a valid integer; if jq output is corrupted/partial, return 0.
+  if [[ "$result" =~ ^[0-9]+$ ]]; then
+    echo "$result"
+  else
+    echo 0
+  fi
 }
 
 human_time() {
@@ -49,10 +58,53 @@ human_time() {
   }'
 }
 
+write_usage_cache() {
+  local used="$1"
+  local remaining="$2"
+  local usage_pct="$3"
+  local eta="$4"
+  local updated_at="$5"
+
+  # Validate numeric inputs before passing to jq --argjson
+  local validated_used="$used"
+  local validated_remaining="$remaining"
+  
+  if ! [[ "$validated_used" =~ ^[0-9]+$ ]]; then
+    validated_used="0"
+  fi
+  if ! [[ "$validated_remaining" =~ ^[0-9]+$ ]]; then
+    validated_remaining="0"
+  fi
+
+  jq -n \
+    --arg source "transcript-estimate" \
+    --argjson used_tokens "$validated_used" \
+    --argjson limit_tokens "$LIMIT" \
+    --argjson remaining_tokens "$validated_remaining" \
+    --arg usage_percentage "$usage_pct" \
+    --arg eta "$eta" \
+    --arg updated_at "$updated_at" \
+    --arg daily_reset_at "" \
+    --arg weekly_reset_at "" \
+    '{
+      source: $source,
+      used_tokens: $used_tokens,
+      limit_tokens: $limit_tokens,
+      remaining_tokens: $remaining_tokens,
+      usage_percentage: $usage_percentage,
+      eta: $eta,
+      updated_at: $updated_at,
+      daily_reset_at: $daily_reset_at,
+      weekly_reset_at: $weekly_reset_at
+    }' > "$USAGE_CACHE_FILE" 2>/dev/null || true
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for claude-watch.sh"
   exit 1
 fi
+
+mkdir -p "$(dirname "$USAGE_CACHE_FILE")" 2>/dev/null || true
 
 while true; do
   used="$(tokens_today)"
@@ -93,7 +145,10 @@ while true; do
   echo "Remaining: ${remaining}"
   echo "Usage %: ${usage_pct}%"
   echo "Estimated remaining: ${eta}"
-  echo "Updated: $(date '+%Y-%m-%d %H:%M:%S')"
+  updated_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "Updated: ${updated_at}"
+
+  write_usage_cache "$used" "$remaining" "$usage_pct" "$eta" "$updated_at"
 
   pct_int="$(awk -v p="$usage_pct" 'BEGIN { printf "%d", p }')"
 
