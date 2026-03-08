@@ -160,7 +160,7 @@ To continue after a break:
 | `/wip-resume` | Summarize current state and continue from the right stage |
 | `/wip-pr` | Draft PR content into `pr.md` |
 
-All action skills have `disable-model-invocation: true`, meaning Claude will not auto-invoke them. You invoke them explicitly with `/wip-*`.
+Action skills can be invoked explicitly with `/wip-*` slash commands, or Claude will infer the right skill to invoke based on your conversation context (e.g. saying "plan this out" or "let's implement").
 
 ---
 

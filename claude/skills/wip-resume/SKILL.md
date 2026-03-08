@@ -1,7 +1,6 @@
 ---
 name: wip-resume
 description: Resume work from the current branch state without redoing the full workflow.
-disable-model-invocation: true
 ---
 
 When this skill is used:

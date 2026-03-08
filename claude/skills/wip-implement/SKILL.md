@@ -1,7 +1,6 @@
 ---
 name: wip-implement
 description: Implement the next planned chunk of work and update execution notes.
-disable-model-invocation: true
 ---
 
 When this skill is used:

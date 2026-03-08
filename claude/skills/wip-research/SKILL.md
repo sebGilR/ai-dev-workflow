@@ -1,7 +1,6 @@
 ---
 name: wip-research
 description: Gather relevant implementation research and save it into .wip files.
-disable-model-invocation: true
 ---
 
 When this skill is used:
