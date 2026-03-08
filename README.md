@@ -450,7 +450,8 @@ What it improves:
 
 | Requirement | Notes |
 |-------------|-------|
-| Node.js | Required to run both MCP servers via `npx` |
+| uv / uvx | Required for Serena. Install: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Node.js / npx | Required for Context7. Install from https://nodejs.org |
 | Claude Code MCP support | Both servers run as MCP processes |
 
 ### Configuration
@@ -461,19 +462,22 @@ The installer configures both servers in `~/.claude/mcp.json`:
 {
   "mcpServers": {
     "serena": {
-      "command": "npx",
-      "args": ["-y", "serena-mcp"]
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena@v0.1.4", "serena", "start-mcp-server"]
     },
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
+      "args": ["-y", "@upstash/context7-mcp@2.1.3"]
     }
   }
 }
 ```
 
-If Node.js is not installed, the installer prints instructions instead of writing
-the config. Re-run `install.sh` after installing Node.js to complete setup.
+Both servers are pinned to specific audited versions. To upgrade, update the version
+references in `scripts/merge_mcp_json.py` and re-run the installer.
+
+If `uvx` or `npx` is not installed, the installer prints instructions instead of
+writing the config. Re-run `install.sh` after installing the missing tools.
 
 ### Verify
 
@@ -481,7 +485,7 @@ the config. Re-run `install.sh` after installing Node.js to complete setup.
 ~/.claude/ai-dev-workflow/bin/aidw verify
 ```
 
-Look for `mcp:` checks in the output. Warnings indicate missing Node.js or an
+Look for `mcp:` checks in the output. Warnings indicate missing `uvx`/`npx` or an
 unconfigured server.
 
 ---
