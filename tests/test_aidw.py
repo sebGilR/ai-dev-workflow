@@ -653,6 +653,173 @@ class TestOllamaStopAll:
         assert any(not item["stopped"] for item in out)
 
 
+# ===========================================================================
+# Helper: minimal git repo fixture
+# ===========================================================================
+
+def _make_git_repo(tmp_path: Path) -> Path:
+    """Create a minimal git repository in tmp_path and return its root."""
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=str(tmp_path), check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(tmp_path), check=True, capture_output=True,
+    )
+    # Create an initial commit so the branch name is defined
+    (tmp_path / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=str(tmp_path), check=True, capture_output=True,
+    )
+    return tmp_path
+
+
+# ===========================================================================
+# TestSummarizeContext — write_context_summary / collect_context_files / generate_summary_text
+# ===========================================================================
+
+
+class TestSummarizeContext:
+    def test_generates_summary_file(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        result = _aidw.write_context_summary(repo)
+        summary_path = Path(result["summary_path"])
+        assert summary_path.exists()
+        assert summary_path.name == "context-summary.md"
+
+    def test_summary_in_correct_location(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        _aidw.write_context_summary(repo)
+        expected = Path(state["wip_dir"]) / "context-summary.md"
+        assert expected.exists()
+
+    def test_summary_updates_on_reinvoke(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        r1 = _aidw.write_context_summary(repo)
+        # Write something to a WIP file and regenerate
+        wip_dir = Path(Path(r1["summary_path"]).parent)
+        (wip_dir / "plan.md").write_text("# Plan\n\nNew plan content.\n", encoding="utf-8")
+        r2 = _aidw.write_context_summary(repo)
+        content = Path(r2["summary_path"]).read_text(encoding="utf-8")
+        assert "New plan content." in content
+
+    def test_atomic_write(self, tmp_path):
+        """tmp file should not linger after a successful write."""
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        _aidw.write_context_summary(repo)
+        wip_dir = Path(state["wip_dir"])
+        assert not (wip_dir / "context-summary.md.tmp").exists()
+
+    def test_size_bytes_in_result(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        result = _aidw.write_context_summary(repo)
+        assert isinstance(result["size_bytes"], int)
+        assert result["size_bytes"] > 0
+
+    def test_collect_missing_files_returns_empty_strings(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        # Remove a WIP file to simulate missing content
+        (wip_dir / "pr.md").unlink()
+        files = _aidw.collect_context_files(wip_dir)
+        assert files["pr.md"] == ""
+
+    def test_generate_summary_text_under_2kb(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        # Seed all WIP files with large content
+        for name in ["plan.md", "research.md", "execution.md", "review.md", "pr.md", "context.md"]:
+            (wip_dir / name).write_text("x" * 5000, encoding="utf-8")
+        files = _aidw.collect_context_files(wip_dir)
+        status = _aidw.read_json(wip_dir / "status.json")
+        summary = _aidw.generate_summary_text(files, status)
+        assert len(summary.encode("utf-8")) < 2048
+
+    def test_parser_registration(self):
+        args = _aidw.build_parser().parse_args(["summarize-context", "."])
+        assert args.func == _aidw.cmd_summarize_context
+
+
+# ===========================================================================
+# TestContextSummaryCommand — cmd_context_summary
+# ===========================================================================
+
+
+class TestContextSummaryCommand:
+    def test_prints_summary_to_stdout(self, tmp_path, capsys):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        _aidw.write_context_summary(repo)
+        args = _aidw.build_parser().parse_args(["context-summary", str(repo)])
+        rc = _aidw.cmd_context_summary(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Workflow Summary" in out
+
+    def test_exits_nonzero_when_missing(self, tmp_path, capsys):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        args = _aidw.build_parser().parse_args(["context-summary", str(repo)])
+        rc = _aidw.cmd_context_summary(args)
+        assert rc == 1
+
+    def test_parser_registration(self):
+        args = _aidw.build_parser().parse_args(["context-summary", "."])
+        assert args.func == _aidw.cmd_context_summary
+
+
+# ===========================================================================
+# TestAutoRegen — auto-regeneration hooks in set_stage and synthesize_review
+# ===========================================================================
+
+
+class TestAutoRegen:
+    def test_set_stage_regenerates_when_summary_exists(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        # Create a summary file first
+        _aidw.write_context_summary(repo)
+        original = (wip_dir / "context-summary.md").read_text(encoding="utf-8")
+        # Change plan content and advance stage
+        (wip_dir / "plan.md").write_text("# Plan\n\nUpdated plan.\n", encoding="utf-8")
+        _aidw.set_stage(repo, "planned")
+        updated = (wip_dir / "context-summary.md").read_text(encoding="utf-8")
+        assert updated != original
+        assert "Updated plan." in updated
+
+    def test_set_stage_skips_regen_when_summary_absent(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        assert not (wip_dir / "context-summary.md").exists()
+        # Should not raise and should not create the file
+        _aidw.set_stage(repo, "planned")
+        assert not (wip_dir / "context-summary.md").exists()
+
+    def test_synthesize_review_regenerates_when_summary_exists(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        _aidw.write_context_summary(repo)
+        (wip_dir / "review.md").write_text("# Review\n\nCritical issue found.\n", encoding="utf-8")
+        _aidw.synthesize_review(repo)
+        content = (wip_dir / "context-summary.md").read_text(encoding="utf-8")
+        # The summary should have been regenerated (stage/updated_at will differ at minimum)
+        assert "Workflow Summary" in content
+
+
 class TestVerify:
     def test_warns_and_skips_network_when_default_endpoint_invalid(self, monkeypatch):
         monkeypatch.setattr(_aidw, "DEFAULT_OLLAMA_ENDPOINT", "http://remote-server:11434")

@@ -220,6 +220,13 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically using a temp file + rename."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.rename(path)
+
+
 def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]:
     repo = git_toplevel(repo)
     ensure_repo(repo)
@@ -280,7 +287,87 @@ def set_stage(repo: Path, stage: str) -> dict[str, Any]:
     status["updated_at"] = now_iso()
     status["last_completed_step"] = stage
     write_json(status_path, status)
+    wip_dir = Path(state["wip_dir"])
+    if (wip_dir / "context-summary.md").exists():
+        try:
+            write_context_summary(repo)
+        except Exception:
+            pass
     return status
+
+
+def collect_context_files(wip_dir: Path) -> dict[str, str]:
+    """Read all WIP files and return a filename-keyed dict of their contents."""
+    filenames = ["plan.md", "research.md", "execution.md", "review.md", "pr.md", "context.md"]
+    result: dict[str, str] = {}
+    for name in filenames:
+        p = wip_dir / name
+        result[name] = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+    json_path = wip_dir / "status.json"
+    try:
+        result["status.json"] = json_path.read_text(encoding="utf-8").strip() if json_path.exists() else ""
+    except OSError:
+        result["status.json"] = ""
+    return result
+
+
+def _trim(text: str, limit: int) -> str:
+    """Trim text to limit chars, appending an ellipsis marker if truncated."""
+    text = text.strip()
+    if not text:
+        return "_none_"
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + " …"
+
+
+def generate_summary_text(files: dict[str, str], status: dict) -> str:
+    """Produce a compact structured markdown summary from WIP file contents."""
+    branch = status.get("branch", "unknown")
+    stage = status.get("stage", "unknown")
+    updated = status.get("updated_at", "")
+
+    lines = [
+        "# Workflow Summary",
+        "",
+        f"## Branch\n{branch}",
+        "",
+        f"## Current Stage\n{stage}  (updated: {updated})",
+        "",
+        f"## Goal\n{_trim(files.get('context.md', ''), 300)}",
+        "",
+        f"## Implementation Plan\n{_trim(files.get('plan.md', ''), 400)}",
+        "",
+        f"## Key Research Findings\n{_trim(files.get('research.md', ''), 300)}",
+        "",
+        f"## Implementation Progress\n{_trim(files.get('execution.md', ''), 300)}",
+        "",
+        f"## Review Findings\n{_trim(files.get('review.md', ''), 200)}",
+        "",
+        f"## PR Preparation\n{_trim(files.get('pr.md', ''), 150)}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_context_summary(repo: Path, branch: str | None = None) -> dict[str, Any]:
+    """Generate context-summary.md for the current branch."""
+    repo = git_toplevel(repo)
+    state = ensure_branch_state(repo, branch)
+    wip_dir = Path(state["wip_dir"])
+    status = state["status"]
+
+    files = collect_context_files(wip_dir)
+    summary = generate_summary_text(files, status)
+
+    summary_path = wip_dir / "context-summary.md"
+    atomic_write(summary_path, summary)
+
+    return {
+        "summary_path": str(summary_path),
+        "size_bytes": len(summary.encode("utf-8")),
+        "branch": status.get("branch", "unknown"),
+    }
 
 
 def summarize_status(repo: Path) -> str:
@@ -752,6 +839,12 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
 
     review_path.write_text("\n".join(sections) + "\n", encoding="utf-8")
 
+    if (wip_dir / "context-summary.md").exists():
+        try:
+            write_context_summary(repo)
+        except Exception:
+            pass
+
     return {
         "review_path": str(review_path),
         "ollama_passes": len(ollama_results),
@@ -926,6 +1019,23 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_set_stage(args: argparse.Namespace) -> int:
     status = set_stage(Path(args.path), args.stage)
     print(json.dumps(status, indent=2))
+    return 0
+
+
+def cmd_summarize_context(args: argparse.Namespace) -> int:
+    result = write_context_summary(Path(args.path))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_context_summary(args: argparse.Namespace) -> int:
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    summary_path = Path(state["wip_dir"]) / "context-summary.md"
+    if not summary_path.exists():
+        print("No context-summary.md found. Run: aidw summarize-context <path>", file=sys.stderr)
+        return 1
+    print(summary_path.read_text(encoding="utf-8"), end="")
     return 0
 
 
@@ -1227,6 +1337,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("synthesize-review", help="Merge review sources into review.md")
     p.add_argument("path")
     p.set_defaults(func=cmd_synthesize_review)
+
+    p = sub.add_parser("summarize-context", help="Generate context-summary.md from all WIP files")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_summarize_context)
+
+    p = sub.add_parser("context-summary", help="Print context-summary.md to stdout")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_context_summary)
 
     p = sub.add_parser("verify", help="Verify installation and configuration")
     p.add_argument("--workspace", help="Optional workspace path to also check repos")

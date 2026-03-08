@@ -437,7 +437,44 @@ The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underl
 | `ollama-stop --model M [--endpoint E]` | Unload a specific model to free RAM |
 | `ollama-stop-all [--endpoint E]` | Unload all configured models to free RAM |
 | `synthesize-review <path>` | Merge review sources into `review.md` |
+| `summarize-context <path>` | Generate `context-summary.md` from all WIP files |
+| `context-summary <path>` | Print `context-summary.md` to stdout |
 | `verify [--workspace PATH]` | Verify installation and configuration |
+
+---
+
+## Context distillation
+
+As a branch progresses, `.wip/<branch>/` accumulates multiple files that Claude must read to get oriented. `context-summary.md` reduces this cost to a single compact file.
+
+### Generating the summary
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw summarize-context .
+```
+
+This reads `plan.md`, `research.md`, `execution.md`, `review.md`, `pr.md`, `context.md`, and `status.json`, then writes a structured `context-summary.md` (target size: < 2 KB) to the branch WIP directory.
+
+### Viewing the summary
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw context-summary .
+```
+
+Prints the summary to stdout. Exits non-zero if no summary exists yet.
+
+### Automatic regeneration
+
+`context-summary.md` is automatically regenerated when:
+
+- `aidw set-stage` advances the workflow stage
+- `aidw synthesize-review` merges review sources
+
+The auto-regen only fires if `context-summary.md` already exists — fresh branches are unaffected.
+
+### How Claude uses it
+
+When `/wip-resume` is invoked, Claude checks for `context-summary.md` first. If it exists, Claude reads only that file instead of the four individual WIP files. The full documents remain available as a fallback when deeper context is needed.
 
 ---
 
