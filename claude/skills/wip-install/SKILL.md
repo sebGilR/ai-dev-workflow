@@ -16,10 +16,10 @@ When this skill is used:
 ~/.claude/ai-dev-workflow/install.sh .
 ```
 
-Use `python ~/.claude/ai-dev-workflow/scripts/aidw.py ensure-repo .` when you need to seed the current repo only.
+Use `~/.claude/ai-dev-workflow/bin/aidw ensure-repo .` when you need to seed the current repo only.
 
 For a full verification:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py verify
+~/.claude/ai-dev-workflow/bin/aidw verify
 ```

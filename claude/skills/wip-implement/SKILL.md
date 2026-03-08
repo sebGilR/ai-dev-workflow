@@ -13,7 +13,7 @@ When this skill is used:
 5. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py set-stage . implementing
+~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
 ```
 
 6. Summarize completed work and remaining work.

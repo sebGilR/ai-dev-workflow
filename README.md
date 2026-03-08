@@ -40,6 +40,8 @@ The installer creates or updates:
 
 Claude Code picks up skills and agents natively because they live in the standard user-level directories.
 
+Because skills and agents are symlinks (not copies), any edit you make to files in this repo is picked up immediately — no need to re-run the installer. Re-running install is only needed when you add a new skill or agent directory (to create its symlink), or if a symlink becomes stale.
+
 ### In each repo detected in the workspace
 
 | Path | Purpose |
@@ -90,13 +92,13 @@ Or with an explicit workspace path:
 ### 3. Verify the installation
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py verify
+~/.claude/ai-dev-workflow/bin/aidw verify
 ```
 
 Or with workspace checking:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py verify --workspace /path/to/workspace
+~/.claude/ai-dev-workflow/bin/aidw verify --workspace /path/to/workspace
 ```
 
 ### 4. Start using the workflow
@@ -222,8 +224,8 @@ It deduplicates by resolved git toplevel, so nested repos or symlinks won't caus
 For unusual workspace layouts, use the CLI directly:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py bootstrap-workspace /path/to/workspace
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ensure-repo /path/to/specific-repo
+~/.claude/ai-dev-workflow/bin/aidw bootstrap-workspace /path/to/workspace
+~/.claude/ai-dev-workflow/bin/aidw ensure-repo /path/to/specific-repo
 ```
 
 ---
@@ -302,7 +304,7 @@ Alternative models that work well for code review:
 #### 4. Verify readiness
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ollama-check
+~/.claude/ai-dev-workflow/bin/aidw ollama-check
 ```
 
 This checks: Ollama installed, service running, model pulled. Returns JSON with actionable guidance if anything is missing.
@@ -311,13 +313,32 @@ This checks: Ollama installed, service running, model pulled. Returns JSON with 
 
 | Environment variable | Default | Purpose |
 |---------------------|---------|---------|
-| `AIDW_OLLAMA_MODEL` | `qwen2.5-coder:14b` | Model to use for review passes |
-| `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
+| `AIDW_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Fallback model when a task kind does not map to a per-role model |
+| `AIDW_OLLAMA_MODEL_FAST` | `phi3:mini` | Model used for docs/summaries/synthesis tasks |
+| `AIDW_OLLAMA_MODEL_REVIEW` | `qwen2.5-coder:7b` | Model used for review-oriented tasks |
+| `AIDW_OLLAMA_MODEL_GENERATE` | `deepseek-coder:6.7b` | Model used for code-generation tasks |
+| `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Base Ollama API endpoint |
+| `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
 
+### Endpoint safety
+
+By default, only local endpoints (`localhost`, `127.0.0.1`, `::1`) are accepted. Attempts to use a remote endpoint will fail with a clear error:
+
+```
+Ollama endpoint 'http://remote-host:11434' is not a local address.
+Only localhost, 127.0.0.1, and ::1 are allowed by default.
+Set AIDW_OLLAMA_ALLOW_REMOTE=1 to allow remote endpoints.
+```
+
+To allow a remote endpoint, set the env var explicitly:
+
+```bash
+AIDW_OLLAMA_ALLOW_REMOTE=1 ~/.claude/ai-dev-workflow/bin/aidw ollama-check --endpoint http://remote-host:11434
+```
 Override per-command:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ollama-review . --kind bug-risk --model qwen2.5-coder:7b
+~/.claude/ai-dev-workflow/bin/aidw ollama-review . --kind bug-risk --model qwen2.5-coder:7b
 ```
 
 ### Review passes
@@ -335,16 +356,16 @@ Four structured review passes are available:
 
 ```bash
 # Check Ollama readiness
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ollama-check
+~/.claude/ai-dev-workflow/bin/aidw ollama-check
 
 # Run a single review pass
-python ~/.claude/ai-dev-workflow/scripts/aidw.py ollama-review . --kind bug-risk
+~/.claude/ai-dev-workflow/bin/aidw ollama-review . --kind bug-risk
 
 # Run all four review passes in sequence
-python ~/.claude/ai-dev-workflow/scripts/aidw.py review-all .
+~/.claude/ai-dev-workflow/bin/aidw review-all .
 
 # Merge all review sources into review.md
-python ~/.claude/ai-dev-workflow/scripts/aidw.py synthesize-review .
+~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
 Each review pass outputs structured JSON and saves results to `.wip/<branch>/ollama-review-<kind>.json`.
@@ -363,6 +384,27 @@ If Ollama is not available, the review still works. Claude does the review entir
 
 ---
 
+## Review bundle behavior
+
+Running `review-bundle` builds a JSON snapshot of the current branch state. It captures three diff sources:
+
+| Key | Source | Purpose |
+|-----|--------|---------|
+| `branch_diff` | `git diff <merge-base>..HEAD` | Full set of committed changes on this branch vs `main`/`master` |
+| `diff` | `git diff -- .` | Unstaged working-tree changes |
+| `staged_diff` | `git diff --cached -- .` | Staged but uncommitted changes |
+
+Each source includes metadata in `diff_sources`:
+
+- `description` — the exact git command used
+- `base` — the merge-base commit SHA (for `branch_diff`)
+- `truncated` — `true` if the content was cut off
+- `original_bytes` — original size before truncation
+
+All diff sources are truncated at 50 KB to stay within model context limits. If truncated, `truncated: true` appears in the metadata so downstream tools know the content is incomplete.
+
+---
+
 ## VS Code integration
 
 The installer merges convenience tasks into `.vscode/tasks.json`:
@@ -378,7 +420,7 @@ These are convenience shortcuts. The real workflow lives in skills and scripts.
 
 ## CLI reference
 
-The `aidw` CLI is available at `~/.claude/ai-dev-workflow/scripts/aidw.py` or via the wrapper at `~/.claude/ai-dev-workflow/bin/aidw`.
+The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underlying script is `~/.claude/ai-dev-workflow/scripts/aidw.py`.
 
 | Command | Purpose |
 |---------|---------|
@@ -388,9 +430,12 @@ The `aidw` CLI is available at `~/.claude/ai-dev-workflow/scripts/aidw.py` or vi
 | `status <path>` | Show current branch status |
 | `set-stage <path> <stage>` | Update the workflow stage |
 | `review-bundle <path>` | Build a review bundle from the current diff |
-| `ollama-check [--model M] [--endpoint E]` | Check Ollama readiness |
-| `ollama-review <path> --kind KIND [--model M] [--endpoint E]` | Run a single Ollama review pass |
-| `review-all <path> [--model M] [--endpoint E]` | Run all Ollama review passes |
+| `ollama-config [--endpoint E]` | Print resolved Ollama endpoint and model configuration |
+| `ollama-check [--endpoint E]` | Check Ollama installation and all configured models |
+| `ollama-review <path> --kind KIND [--model M] [--endpoint E] [--no-stop]` | Run a single Ollama pass (model auto-routed by kind) |
+| `review-all <path> [--endpoint E] [--no-stop]` | Run all four review passes with per-kind model routing |
+| `ollama-stop --model M [--endpoint E]` | Unload a specific model to free RAM |
+| `ollama-stop-all [--endpoint E]` | Unload all configured models to free RAM |
 | `synthesize-review <path>` | Merge review sources into `review.md` |
 | `verify [--workspace PATH]` | Verify installation and configuration |
 
@@ -401,7 +446,8 @@ The `aidw` CLI is available at `~/.claude/ai-dev-workflow/scripts/aidw.py` or vi
 - Tune `~/.claude/settings.json` permission rules for your environment
 - Fill in repo docs with real project knowledge
 - Decide whether review findings should be fixed or deferred
-- Install and choose your preferred Ollama model
+- Pull Ollama models if not done during install: `ollama pull phi3:mini && ollama pull qwen2.5-coder:7b && ollama pull deepseek-coder:6.7b`
+- Edit `~/.claude/ai-dev-workflow/aidw.env.sh` to override model defaults
 - Adjust VS Code tasks if you have a complex existing `.vscode/tasks.json`
 
 ---
@@ -412,7 +458,7 @@ The `aidw` CLI is available at `~/.claude/ai-dev-workflow/scripts/aidw.py` or vi
 The installer updates a managed block inside your global `CLAUDE.md`. It does not wipe the rest of the file.
 
 ### Existing `~/.claude/settings.json`
-The installer merges permission arrays. Existing rules are preserved.
+The installer merges permission arrays and nested objects. Existing rules are preserved. Scalar values you have already set are **not overwritten** — only missing keys are added. If the file contains invalid JSON it is backed up (`.json.bak`) and rebuilt from the template.
 
 ### Existing `.vscode/tasks.json`
 Tasks are merged by label. Existing tasks with the same label are not overwritten.
@@ -430,7 +476,10 @@ Skills are loaded at session start. If you install while a session is running, r
 The installer sets `core.excludesfile` in your global git config. If you use a non-standard gitignore path, verify with `git config --global core.excludesfile`.
 
 ### Ollama review timeout
-Review passes have a 120-second timeout. Large diffs may exceed this. The diff is truncated to 50KB to mitigate this.
+Review passes have a 120-second timeout. Large diffs may exceed this. All diff sources are truncated to 50 KB each to mitigate this. The `branch_diff` field in the bundle always covers the full committed branch diff since the merge-base, not just working-tree changes.
+
+### Branch directory naming
+`.wip/` subdirectory names are derived from the branch name. Characters outside `a-z0-9-` are replaced with `-`, and a short SHA-256 hash suffix is appended when the slugified name would differ from the original (e.g. `feature/foo` → `feature-foo-<hash>`). This prevents collisions between branches that would otherwise resolve to the same slug.
 
 ---
 

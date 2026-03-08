@@ -9,7 +9,7 @@ When this skill is used:
 1. Run:
 
 ```bash
-python ~/.claude/ai-dev-workflow/scripts/aidw.py status .
+~/.claude/ai-dev-workflow/bin/aidw status .
 ```
 
 2. Read the current branch `.wip` files, starting with `status.json`, `context.md`, `plan.md`, and `execution.md`.

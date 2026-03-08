@@ -1,25 +1,54 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "gotchas.md"]
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
 REVIEW_KINDS = ["bug-risk", "missing-tests", "regression-risk", "docs-needed"]
 
-DEFAULT_OLLAMA_MODEL = os.environ.get("AIDW_OLLAMA_MODEL", "qwen2.5-coder:14b")
+# Per-task model defaults (tuned for 16 GB M1 Mac)
+_DEFAULT_MODEL_FAST = "phi3:mini"
+_DEFAULT_MODEL_REVIEW = "qwen2.5-coder:7b"
+_DEFAULT_MODEL_GENERATE = "deepseek-coder:6.7b"
+
+OLLAMA_MODEL_FAST = os.environ.get("AIDW_OLLAMA_MODEL_FAST", _DEFAULT_MODEL_FAST)
+OLLAMA_MODEL_REVIEW = os.environ.get("AIDW_OLLAMA_MODEL_REVIEW", _DEFAULT_MODEL_REVIEW)
+OLLAMA_MODEL_GENERATE = os.environ.get("AIDW_OLLAMA_MODEL_GENERATE", _DEFAULT_MODEL_GENERATE)
+
+DEFAULT_OLLAMA_MODEL = os.environ.get("AIDW_OLLAMA_MODEL", OLLAMA_MODEL_REVIEW)
 DEFAULT_OLLAMA_ENDPOINT = os.environ.get("AIDW_OLLAMA_ENDPOINT", "http://localhost:11434")
+
+# Task kind → model bucket mapping
+_REVIEW_TASK_KINDS = frozenset({"bug-risk", "missing-tests", "regression-risk"})
+_FAST_TASK_KINDS = frozenset({"docs-needed", "summaries", "synthesis"})
+_GENERATE_TASK_KINDS = frozenset({"generate-code", "debug-patch", "patch-draft"})
+ALL_TASK_KINDS = sorted(_REVIEW_TASK_KINDS | _FAST_TASK_KINDS | _GENERATE_TASK_KINDS)
+
+
+def resolve_model_for_kind(kind: str) -> str:
+    """Return the appropriate Ollama model name for a given task kind."""
+    if kind in _REVIEW_TASK_KINDS:
+        return OLLAMA_MODEL_REVIEW
+    if kind in _FAST_TASK_KINDS:
+        return OLLAMA_MODEL_FAST
+    if kind in _GENERATE_TASK_KINDS:
+        return OLLAMA_MODEL_GENERATE
+    return DEFAULT_OLLAMA_MODEL
 
 
 def now_iso() -> str:
@@ -61,7 +90,13 @@ def safe_slug(value: str) -> str:
             allowed.append(ch)
         else:
             allowed.append("-")
-    return "".join(allowed).strip("-") or "unknown-branch"
+    slug = "".join(allowed).strip("-") or "unknown-branch"
+    # Add a short hash when the slug differs from the original to prevent
+    # collisions (e.g. "feature/foo" and "feature-foo" producing the same slug).
+    if slug != value:
+        short_hash = hashlib.sha256(value.encode()).hexdigest()[:8]
+        slug = f"{slug}-{short_hash}"
+    return slug
 
 
 def detect_repos(workspace_root: Path) -> list[Path]:
@@ -301,22 +336,83 @@ def merge_vscode_tasks(repo: Path) -> None:
     tasks_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
 
+MAX_DIFF_BYTES = 50_000
+
+
+def _find_merge_base(repo: Path, branch: str) -> str | None:
+    """Find the merge-base of the current branch against main or master."""
+    for base_branch in ("main", "master"):
+        result = run(
+            ["git", "-C", str(repo), "merge-base", base_branch, "HEAD"],
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None
+
+
+def _truncate_diff(text: str, limit: int = MAX_DIFF_BYTES) -> tuple[str, bool]:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text, False
+    truncated = encoded[:limit].decode("utf-8", errors="ignore")
+    return truncated, True
+
+
 def review_bundle(repo: Path) -> dict[str, Any]:
     repo = git_toplevel(repo)
-    diff = run(["git", "-C", str(repo), "diff", "--", "."], check=False).stdout
-    staged_diff = run(["git", "-C", str(repo), "diff", "--cached", "--", "."], check=False).stdout
+    branch = current_branch(repo)
+    merge_base = _find_merge_base(repo, branch)
+
+    # Full branch diff (all committed changes since divergence from base)
+    branch_diff = ""
+    branch_diff_truncated = False
+    if merge_base:
+        raw = run(
+            ["git", "-C", str(repo), "diff", merge_base, "HEAD", "--"],
+            check=False,
+        ).stdout
+        branch_diff, branch_diff_truncated = _truncate_diff(raw)
+
+    # Working-tree (unstaged) changes
+    raw_diff = run(["git", "-C", str(repo), "diff", "--", "."], check=False).stdout
+    diff, diff_truncated = _truncate_diff(raw_diff)
+
+    # Staged changes
+    raw_staged = run(["git", "-C", str(repo), "diff", "--cached", "--", "."], check=False).stdout
+    staged_diff, staged_diff_truncated = _truncate_diff(raw_staged)
+
     status = run(["git", "-C", str(repo), "status", "--short"], check=False).stdout
     changed_files = [line[3:] for line in status.splitlines() if len(line) > 3]
 
     bundle = {
         "repo": repo.name,
         "repo_path": str(repo),
-        "branch": current_branch(repo),
+        "branch": branch,
         "generated_at": now_iso(),
+        "diff_sources": {
+            "branch_diff": {
+                "base": merge_base,
+                "description": f"git diff {merge_base[:10]}..HEAD" if merge_base else "unavailable (no merge base found)",
+                "truncated": branch_diff_truncated,
+                "original_bytes": len(raw) if merge_base else 0,
+            },
+            "working_tree": {
+                "description": "git diff -- .",
+                "truncated": diff_truncated,
+                "original_bytes": len(raw_diff),
+            },
+            "staged": {
+                "description": "git diff --cached -- .",
+                "truncated": staged_diff_truncated,
+                "original_bytes": len(raw_staged),
+            },
+        },
         "changed_files": changed_files,
         "status": status,
-        "diff": diff[:50000],
-        "staged_diff": staged_diff[:50000],
+        "branch_diff": branch_diff,
+        "diff": diff,
+        "staged_diff": staged_diff,
     }
 
     state = ensure_branch_state(repo)
@@ -328,6 +424,39 @@ def review_bundle(repo: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Ollama helpers
 # ---------------------------------------------------------------------------
+
+ALLOWED_OLLAMA_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def validate_ollama_endpoint(endpoint: str) -> None:
+    """Reject non-local Ollama endpoints unless explicitly opted in."""
+    if "://" not in endpoint:
+        raise SystemExit(
+            f"Invalid Ollama endpoint '{endpoint}'.\n"
+            f"Please include a scheme, e.g. 'http://localhost:11434' or 'https://localhost:11434'."
+        )
+    parsed = urlparse(endpoint)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise SystemExit(
+            f"Invalid Ollama endpoint scheme '{parsed.scheme}' in '{endpoint}'.\n"
+            f"Only http and https schemes are supported."
+        )
+    if parsed.path not in ("", "/"):
+        raise SystemExit(
+            f"Invalid Ollama endpoint '{endpoint}'.\n"
+            f"Please provide the base Ollama URL without a path, e.g. 'http://localhost:11434'."
+        )
+    hostname = parsed.hostname or ""
+    if hostname not in ALLOWED_OLLAMA_HOSTS:
+        if os.environ.get("AIDW_OLLAMA_ALLOW_REMOTE", "").strip() in ("1", "true", "yes"):
+            return
+        raise SystemExit(
+            f"Ollama endpoint '{endpoint}' is not a local address.\n"
+            f"Only localhost, 127.0.0.1, and ::1 are allowed by default.\n"
+            f"Set AIDW_OLLAMA_ALLOW_REMOTE=1 to allow remote endpoints."
+        )
+
 
 def ollama_is_installed() -> bool:
     return shutil.which("ollama") is not None
@@ -363,6 +492,96 @@ def ollama_list_models(endpoint: str) -> list[str]:
         return []
 
 
+def stop_ollama_model(model: str, endpoint: str) -> bool:
+    """Request Ollama to unload a model from memory (sets keep_alive=0).
+
+    Returns True on success. Failures are logged as warnings, never fatal.
+    Important on RAM-constrained machines (e.g. 16 GB M1 Mac).
+    """
+    try:
+        body = json.dumps({"model": model, "keep_alive": 0, "stream": False}).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint.rstrip("/") + "/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception as exc:
+        print(f"Warning: could not stop model '{model}': {exc}", file=sys.stderr)
+        return False
+
+
+def ollama_start_server(endpoint: str, timeout_sec: int = 30) -> "subprocess.Popen[str] | None":
+    """Start the Ollama server if it is not already running.
+
+    Only starts a server for local endpoints (localhost / 127.0.0.1 / ::1).
+    Returns the ``Popen`` object if *we* started the server so the caller can
+    stop it later, or ``None`` if the server was already running (or the
+    endpoint is remote and we should not touch it).
+
+    Raises ``SystemExit`` when Ollama is not installed or fails to start.
+    """
+    parsed = urlparse(endpoint)
+    hostname = parsed.hostname or ""
+    if hostname not in ALLOWED_OLLAMA_HOSTS:
+        # Remote endpoint — never auto-start.
+        return None
+
+    if ollama_is_running(endpoint):
+        return None  # Already up; nothing to do.
+
+    if not ollama_is_installed():
+        raise SystemExit(
+            "Ollama is not installed. Cannot auto-start.\n"
+            "  macOS : brew install ollama\n"
+            "  Linux : curl -fsSL https://ollama.com/install.sh | sh\n"
+            "  Windows: https://ollama.com/download"
+        )
+
+    print("Auto-starting Ollama server...", file=sys.stderr)
+    parsed = urlparse(endpoint)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 11434)
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = f"{host}:{port}"
+    proc: subprocess.Popen[str] = subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        if proc.poll() is not None:
+            raise SystemExit(
+                f"Ollama server process exited unexpectedly (code {proc.returncode})."
+            )
+        if ollama_is_running(endpoint):
+            print(f"Ollama server started (PID {proc.pid}).", file=sys.stderr)
+            return proc
+
+    proc.terminate()
+    raise SystemExit(f"Ollama server did not become ready within {timeout_sec}s.")
+
+
+def ollama_stop_server(proc: "subprocess.Popen[str]") -> None:
+    """Terminate an Ollama server process started by :func:`ollama_start_server`."""
+    if proc.poll() is not None:
+        return  # Already exited.
+    print(f"Stopping Ollama server (PID {proc.pid})...", file=sys.stderr)
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    print("Ollama server stopped.", file=sys.stderr)
+
+
 def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str, Any]:
     repo = git_toplevel(repo)
     bundle = review_bundle(repo)
@@ -371,9 +590,14 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
         "missing-tests": "Review this diff and identify missing tests or validation coverage gaps.",
         "regression-risk": "Review this diff for likely regressions, affected nearby code paths, and brittle changes.",
         "docs-needed": "Review this diff and determine what documentation, runbooks, or notes should be updated.",
+        "summaries": "Produce a concise, structured summary of what this diff changes and why it matters.",
+        "synthesis": "Synthesize the key themes and risk areas across this diff into a brief executive review summary.",
+        "generate-code": "Analyze this diff and generate any missing implementation, stubs, or helpers that would complete the feature.",
+        "debug-patch": "Analyze this diff for bugs and produce a concrete minimal patch that fixes the most critical issue found.",
+        "patch-draft": "Draft a minimal, focused patch that addresses the most important correctness or reliability issue in this diff.",
     }.get(kind)
     if not prompt:
-        raise SystemExit(f"Unsupported review kind: {kind}")
+        raise SystemExit(f"Unsupported kind: {kind}. Allowed: {ALL_TASK_KINDS}")
 
     schema_hint = {
         "type": "object",
@@ -629,11 +853,21 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
     # Ollama check (informational)
     check("ollama: binary installed", ollama_is_installed(), warn=not ollama_is_installed())
     if ollama_is_installed():
-        running = ollama_is_running(DEFAULT_OLLAMA_ENDPOINT)
-        check("ollama: service running", running, warn=not running)
-        if running:
-            has_model = ollama_has_model(DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_ENDPOINT)
-            check(f"ollama: model {DEFAULT_OLLAMA_MODEL}", has_model, warn=not has_model)
+        try:
+            validate_ollama_endpoint(DEFAULT_OLLAMA_ENDPOINT)
+        except SystemExit as exc:
+            check("ollama: endpoint configuration", False, str(exc), warn=True)
+        else:
+            running = ollama_is_running(DEFAULT_OLLAMA_ENDPOINT)
+            check("ollama: service running", running, warn=not running)
+            if running:
+                for role, model_name in [
+                    ("fast", OLLAMA_MODEL_FAST),
+                    ("review", OLLAMA_MODEL_REVIEW),
+                    ("generate", OLLAMA_MODEL_GENERATE),
+                ]:
+                    has_m = ollama_has_model(model_name, DEFAULT_OLLAMA_ENDPOINT)
+                    check(f"ollama: {role} model {model_name}", has_m, warn=not has_m)
 
     results["ok"] = results["failed"] == 0
     return results
@@ -687,14 +921,31 @@ def cmd_review_bundle(args: argparse.Namespace) -> int:
 
 
 def cmd_ollama_review(args: argparse.Namespace) -> int:
-    parsed = ollama_review(Path(args.path), args.kind, args.model, args.endpoint)
-    print(json.dumps(parsed, indent=2))
+    endpoint = args.endpoint
+    validate_ollama_endpoint(endpoint)
+    model = args.model if args.model else resolve_model_for_kind(args.kind)
+
+    server_proc: subprocess.Popen[str] | None = None
+    if not getattr(args, "no_auto_start", False):
+        server_proc = ollama_start_server(endpoint)
+    elif not ollama_is_running(endpoint):
+        raise SystemExit(f"Ollama is not running at {endpoint}. Run: ollama serve")
+
+    print(f"[ollama-review] kind={args.kind} model={model} endpoint={endpoint}", file=sys.stderr)
+    try:
+        parsed = ollama_review(Path(args.path), args.kind, model, endpoint)
+        if not getattr(args, "no_stop", False):
+            stop_ollama_model(model, endpoint)
+        print(json.dumps(parsed, indent=2))
+    finally:
+        if server_proc is not None:
+            ollama_stop_server(server_proc)
     return 0
 
 
 def cmd_ollama_check(args: argparse.Namespace) -> int:
     endpoint = args.endpoint
-    model = args.model
+    validate_ollama_endpoint(endpoint)
     results: dict[str, Any] = {}
 
     results["ollama_installed"] = ollama_is_installed()
@@ -718,48 +969,83 @@ def cmd_ollama_check(args: argparse.Namespace) -> int:
         return 1
 
     results["available_models"] = ollama_list_models(endpoint)
-    results["requested_model"] = model
-    results["model_available"] = ollama_has_model(model, endpoint)
+    models_to_check = {
+        "fast": OLLAMA_MODEL_FAST,
+        "review": OLLAMA_MODEL_REVIEW,
+        "generate": OLLAMA_MODEL_GENERATE,
+    }
+    model_results: dict[str, Any] = {}
+    missing_models: list[str] = []
+    for role, model_name in models_to_check.items():
+        available = ollama_has_model(model_name, endpoint)
+        model_results[role] = {"model": model_name, "available": available}
+        if not available:
+            missing_models.append(model_name)
 
-    if not results["model_available"]:
+    results["models"] = model_results
+
+    if missing_models:
         results["ok"] = False
-        results["message"] = f"Model '{model}' is not pulled locally."
-        results["pull_help"] = f"Run: ollama pull {model}"
+        results["message"] = f"{len(missing_models)} model(s) not pulled locally."
+        results["pull_help"] = [f"ollama pull {m}" for m in missing_models]
         if results["available_models"]:
-            results["hint"] = f"Available models: {', '.join(results['available_models'][:10])}"
+            results["hint"] = f"Available: {', '.join(results['available_models'][:10])}"
         print(json.dumps(results, indent=2))
         return 1
 
     results["ok"] = True
-    results["message"] = f"Ollama is ready with model '{model}' at {endpoint}."
+    results["message"] = "Ollama is ready. All configured models are available."
     print(json.dumps(results, indent=2))
     return 0
 
 
 def cmd_review_all(args: argparse.Namespace) -> int:
     repo = Path(args.path)
-    model = args.model
     endpoint = args.endpoint
+    validate_ollama_endpoint(endpoint)
 
-    # Check Ollama readiness first
     if not ollama_is_installed():
         raise SystemExit("Ollama is not installed. Run: aidw ollama-check")
-    if not ollama_is_running(endpoint):
+
+    # Auto-start the server if it is not running (unless opted out).
+    server_proc: subprocess.Popen[str] | None = None
+    if not getattr(args, "no_auto_start", False):
+        server_proc = ollama_start_server(endpoint)
+    elif not ollama_is_running(endpoint):
         raise SystemExit(f"Ollama is not running at {endpoint}. Run: ollama serve")
-    if not ollama_has_model(model, endpoint):
-        raise SystemExit(f"Model '{model}' not available. Run: ollama pull {model}")
+
+    # Resolve per-kind models; verify all required ones are available.
+    kind_models: dict[str, str] = {kind: resolve_model_for_kind(kind) for kind in REVIEW_KINDS}
+    required_models = set(kind_models.values())
+    for model_name in sorted(required_models):
+        if not ollama_has_model(model_name, endpoint):
+            if server_proc is not None:
+                ollama_stop_server(server_proc)
+            raise SystemExit(f"Model '{model_name}' not available. Run: ollama pull {model_name}")
 
     results: list[dict[str, Any]] = []
-    for kind in REVIEW_KINDS:
-        print(f"Running {kind} review pass...", file=sys.stderr)
-        try:
-            parsed = ollama_review(repo, kind, model, endpoint)
-            findings_count = len(parsed.get("findings", []))
-            print(f"  {kind}: {findings_count} finding(s)", file=sys.stderr)
-            results.append(parsed)
-        except SystemExit as exc:
-            print(f"  {kind}: failed ({exc})", file=sys.stderr)
-            results.append({"kind": kind, "summary": f"Failed: {exc}", "findings": []})
+    used_models: set[str] = set()
+    try:
+        for kind in REVIEW_KINDS:
+            model = kind_models[kind]
+            print(f"Running {kind} review pass (model: {model})...", file=sys.stderr)
+            used_models.add(model)
+            try:
+                parsed = ollama_review(repo, kind, model, endpoint)
+                findings_count = len(parsed.get("findings", []))
+                print(f"  {kind}: {findings_count} finding(s)", file=sys.stderr)
+                results.append(parsed)
+            except SystemExit as exc:
+                print(f"  {kind}: failed ({exc})", file=sys.stderr)
+                results.append({"kind": kind, "summary": f"Failed: {exc}", "findings": []})
+
+        if not getattr(args, "no_stop", False):
+            for model_name in sorted(used_models):
+                print(f"Stopping model {model_name}...", file=sys.stderr)
+                stop_ollama_model(model_name, endpoint)
+    finally:
+        if server_proc is not None:
+            ollama_stop_server(server_proc)
 
     print(json.dumps(results, indent=2))
     return 0
@@ -769,6 +1055,77 @@ def cmd_synthesize_review(args: argparse.Namespace) -> int:
     result = synthesize_review(Path(args.path))
     print(json.dumps(result, indent=2))
     return 0
+
+
+def cmd_ollama_config(args: argparse.Namespace) -> int:
+    endpoint = getattr(args, "endpoint", DEFAULT_OLLAMA_ENDPOINT)
+    config = {
+        "endpoint": endpoint,
+        "models": {
+            "fast": {
+                "env": "AIDW_OLLAMA_MODEL_FAST",
+                "effective": OLLAMA_MODEL_FAST,
+                "default": _DEFAULT_MODEL_FAST,
+                "uses": sorted(_FAST_TASK_KINDS),
+            },
+            "review": {
+                "env": "AIDW_OLLAMA_MODEL_REVIEW",
+                "effective": OLLAMA_MODEL_REVIEW,
+                "default": _DEFAULT_MODEL_REVIEW,
+                "uses": sorted(_REVIEW_TASK_KINDS),
+            },
+            "generate": {
+                "env": "AIDW_OLLAMA_MODEL_GENERATE",
+                "effective": OLLAMA_MODEL_GENERATE,
+                "default": _DEFAULT_MODEL_GENERATE,
+                "uses": sorted(_GENERATE_TASK_KINDS),
+            },
+        },
+        "fallback_model": {
+            "env": "AIDW_OLLAMA_MODEL",
+            "effective": DEFAULT_OLLAMA_MODEL,
+        },
+        "env_vars": {
+            "AIDW_OLLAMA_ENDPOINT": os.environ.get("AIDW_OLLAMA_ENDPOINT", "(not set — using default)"),
+            "AIDW_OLLAMA_MODEL": os.environ.get("AIDW_OLLAMA_MODEL", "(not set — using review model)"),
+            "AIDW_OLLAMA_MODEL_FAST": os.environ.get("AIDW_OLLAMA_MODEL_FAST", "(not set — using default)"),
+            "AIDW_OLLAMA_MODEL_REVIEW": os.environ.get("AIDW_OLLAMA_MODEL_REVIEW", "(not set — using default)"),
+            "AIDW_OLLAMA_MODEL_GENERATE": os.environ.get("AIDW_OLLAMA_MODEL_GENERATE", "(not set — using default)"),
+            "AIDW_OLLAMA_ALLOW_REMOTE": os.environ.get("AIDW_OLLAMA_ALLOW_REMOTE", "(not set — remote blocked)"),
+        },
+    }
+    print(json.dumps(config, indent=2))
+    return 0
+
+
+def cmd_ollama_stop(args: argparse.Namespace) -> int:
+    endpoint = args.endpoint
+    validate_ollama_endpoint(endpoint)
+    success = stop_ollama_model(args.model, endpoint)
+    print(json.dumps({"model": args.model, "stopped": success}, indent=2))
+    return 0 if success else 1
+
+
+def cmd_ollama_stop_all(args: argparse.Namespace) -> int:
+    endpoint = args.endpoint
+    validate_ollama_endpoint(endpoint)
+    models_to_stop = [OLLAMA_MODEL_FAST, OLLAMA_MODEL_REVIEW, OLLAMA_MODEL_GENERATE]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in models_to_stop:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    results: list[dict[str, Any]] = []
+    all_stopped = True
+    for model_name in unique:
+        success = stop_ollama_model(model_name, endpoint)
+        if not success:
+            all_stopped = False
+        results.append({"model": model_name, "stopped": success})
+    print(json.dumps(results, indent=2))
+    return 0 if all_stopped else 1
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -815,23 +1172,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("path")
     p.set_defaults(func=cmd_review_bundle)
 
-    p = sub.add_parser("ollama-review", help="Run a single Ollama review pass")
-    p.add_argument("path")
-    p.add_argument("--kind", required=True, choices=REVIEW_KINDS)
-    p.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
+    p = sub.add_parser("ollama-config", help="Show resolved Ollama model configuration")
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.set_defaults(func=cmd_ollama_config)
+
+    p = sub.add_parser("ollama-review", help="Run a single Ollama review/generate pass")
+    p.add_argument("path")
+    p.add_argument("--kind", required=True, choices=ALL_TASK_KINDS)
+    p.add_argument("--model", default=None, help="Override model (default: auto-selected by kind)")
+    p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.add_argument("--no-stop", dest="no_stop", action="store_true",
+                   help="Do not unload the model after the run (keeps it loaded in RAM)")
+    p.add_argument("--no-auto-start", dest="no_auto_start", action="store_true",
+                   help="Do not auto-start the Ollama server; fail if it is not already running")
     p.set_defaults(func=cmd_ollama_review)
 
-    p = sub.add_parser("ollama-check", help="Check Ollama installation and model availability")
-    p.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
+    p = sub.add_parser("ollama-check", help="Check Ollama installation and all configured models")
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
     p.set_defaults(func=cmd_ollama_check)
 
     p = sub.add_parser("review-all", help="Run all Ollama review passes in sequence")
     p.add_argument("path")
-    p.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.add_argument("--no-stop", dest="no_stop", action="store_true",
+                   help="Do not unload models after all passes complete")
+    p.add_argument("--no-auto-start", dest="no_auto_start", action="store_true",
+                   help="Do not auto-start the Ollama server; fail if it is not already running")
     p.set_defaults(func=cmd_review_all)
+
+    p = sub.add_parser("ollama-stop", help="Stop a specific Ollama model to free RAM")
+    p.add_argument("--model", required=True, help="Model name to unload")
+    p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.set_defaults(func=cmd_ollama_stop)
+
+    p = sub.add_parser("ollama-stop-all", help="Stop all configured Ollama models to free RAM")
+    p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.set_defaults(func=cmd_ollama_stop_all)
 
     p = sub.add_parser("synthesize-review", help="Merge review sources into review.md")
     p.add_argument("path")
