@@ -44,7 +44,7 @@ def main() -> int:
     content = json.dumps(existing, indent=2) + "\n"
     tmp = mcp_path.with_name(mcp_path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
-    tmp.rename(mcp_path)
+    tmp.replace(mcp_path)
 
     if added:
         print(f"MCP servers added: {', '.join(added)}")

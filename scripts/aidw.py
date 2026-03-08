@@ -221,10 +221,10 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def atomic_write(path: Path, content: str) -> None:
-    """Write content to path atomically using a temp file + rename."""
+    """Write content to path atomically using a temp file + replace."""
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
-    tmp.rename(path)
+    tmp.replace(path)
 
 
 def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]:
