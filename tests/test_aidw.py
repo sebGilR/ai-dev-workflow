@@ -803,6 +803,8 @@ class TestAutoRegen:
         repo = _make_git_repo(tmp_path)
         state = _aidw.ensure_branch_state(repo)
         wip_dir = Path(state["wip_dir"])
+        # Create minimal plan.md to satisfy stage verification
+        (wip_dir / "plan.md").write_text("# Plan\n\nMinimal plan.\n", encoding="utf-8")
         assert not (wip_dir / "context-summary.md").exists()
         # Should not raise and should not create the file
         _aidw.set_stage(repo, "planned")
@@ -1002,6 +1004,41 @@ class TestReviewAllParallelFallback:
         assert any(item["kind"] == "missing-tests" and "Failed:" in item["summary"] for item in out)
         assert "regression-risk" in call_order
         assert "docs-needed" in call_order
+
+    def test_single_model_forces_sequential_despite_parallel_request(self, tmp_path, monkeypatch, capsys):
+        """When all review kinds use the same model, force sequential to avoid memory contention."""
+        repo = _make_git_repo(tmp_path)
+        args = _aidw.build_parser().parse_args(["review-all", str(repo), "--no-auto-start", "--parallel", "2"])
+
+        monkeypatch.setenv("AIDW_REVIEW_PARALLEL", "2")
+        monkeypatch.setenv("AIDW_OLLAMA_MAX_PARALLEL", "2")
+
+        # Force all kinds to use the same model
+        def fake_resolve_model(_kind):
+            return "qwen2.5-coder:3b"
+
+        def fake_ollama_review(_repo, kind, _model, _endpoint):
+            return {"kind": kind, "summary": "ok", "findings": []}
+
+        with patch.object(_aidw, "validate_ollama_endpoint", return_value=None):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch.object(_aidw, "ollama_is_running", return_value=True):
+                    with patch.object(_aidw, "ollama_has_model", return_value=True):
+                        with patch.object(_aidw, "stop_ollama_model", return_value=True):
+                            with patch.object(_aidw, "resolve_model_for_kind", side_effect=fake_resolve_model):
+                                with patch.object(_aidw, "ollama_review", side_effect=fake_ollama_review):
+                                    rc = _aidw.cmd_review_all(args)
+
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert rc == 0
+        assert len(out) == 4
+
+        # Verify sequential execution path was taken (no "parallel review batch" message)
+        assert "parallel review batch" not in captured.err.lower()
+        # Verify individual review pass messages (characteristic of sequential execution)
+        assert "bug-risk" in captured.err.lower()
+        assert "missing-tests" in captured.err.lower()
 
 
 class TestParallelConfigClamp:

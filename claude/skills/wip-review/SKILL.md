@@ -42,10 +42,16 @@ The reviewer should:
 - Note missing tests and regression risks
 - Include a final verdict
 
-6. Update the stage:
+6. Verify the review.md write succeeded:
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw verify-review .
+```
+
+7. If verification passes, update the stage:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw set-stage . reviewed
 ```
 
-7. Summarize the review findings, focusing on blockers and high-priority issues.
+8. Summarize the review findings, focusing on blockers and high-priority issues.

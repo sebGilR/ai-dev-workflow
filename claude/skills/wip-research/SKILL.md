@@ -11,7 +11,13 @@ When this skill is used:
    identification. Fall back to Grep/Glob only for tasks outside Serena's scope.
 3. Update `research.md` with concrete findings.
 4. Update `context.md` with a concise distilled context snapshot for continuation.
-5. Run:
+5. Verify the write succeeded:
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw verify-research .
+```
+
+6. If verification passes, set the stage:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw set-stage . researched

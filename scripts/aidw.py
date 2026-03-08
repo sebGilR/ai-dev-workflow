@@ -508,6 +508,25 @@ def research_scan(repo: Path, goal: str) -> dict[str, Any]:
     return result
 
 
+def verify_wip_file(wip_dir: Path, filename: str) -> tuple[bool, str]:
+    """Verify a WIP file exists, is readable, and is non-empty.
+    
+    Returns (success, error_message). Error message is empty string on success.
+    """
+    file_path = wip_dir / filename
+    if not file_path.exists():
+        return False, f"{filename} does not exist"
+    if not file_path.is_file():
+        return False, f"{filename} is not a regular file"
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return False, f"{filename} is not readable: {e}"
+    if len(content.strip()) < 10:
+        return False, f"{filename} is too small or empty (< 10 bytes of content)"
+    return True, ""
+
+
 def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]:
     repo = git_toplevel(repo)
     ensure_repo(repo)
@@ -540,7 +559,7 @@ def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]
     context_path = wip_dir / "context.md"
     existing_context = context_path.read_text(encoding="utf-8").strip()
     if existing_context in {"# Context", ""} or "- Repo: ``" in existing_context:
-        context_path.write_text(textwrap.dedent(f"""\
+        atomic_write(context_path, textwrap.dedent(f"""\
         # Context
 
         - Repo: `{repo.name}`
@@ -548,7 +567,7 @@ def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]
         - Branch: `{branch_name}`
         - Initialized at: `{now_iso()}`
         - Current status file: `status.json`
-        """), encoding="utf-8")
+        """))
 
     return {
         "repo": str(repo),
@@ -558,17 +577,38 @@ def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]
     }
 
 
-def set_stage(repo: Path, stage: str) -> dict[str, Any]:
+def set_stage(repo: Path, stage: str, skip_verification: bool = False) -> dict[str, Any]:
     if stage not in STAGES:
         raise SystemExit(f"Unsupported stage: {stage}. Allowed: {sorted(STAGES)}")
     state = ensure_branch_state(repo)
-    status_path = Path(state["wip_dir"]) / "status.json"
+    wip_dir = Path(state["wip_dir"])
+    
+    # Verify required files exist for specific stages
+    if not skip_verification:
+        required_file: str | None = None
+        if stage == "planned":
+            required_file = "plan.md"
+        elif stage == "researched":
+            required_file = "research.md"
+        elif stage == "reviewed":
+            required_file = "review.md"
+        
+        if required_file:
+            success, error = verify_wip_file(wip_dir, required_file)
+            if not success:
+                raise SystemExit(
+                    f"[aidw] Cannot transition to stage '{stage}': {error}\n"
+                    f"Hint: Ensure {required_file} exists and has content before setting this stage.\n"
+                    f"      Use --skip-verification to bypass this check (not recommended)."
+                )
+    
+    status_path = wip_dir / "status.json"
     status = read_json(status_path)
     status["stage"] = stage
     status["updated_at"] = now_iso()
     status["last_completed_step"] = stage
     write_json(status_path, status)
-    wip_dir = Path(state["wip_dir"])
+    
     if (wip_dir / "context-summary.md").exists():
         try:
             write_context_summary(repo)
@@ -1118,7 +1158,7 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     else:
         sections.append(placeholder + "\n")
 
-    review_path.write_text("\n".join(sections) + "\n", encoding="utf-8")
+    atomic_write(review_path, "\n".join(sections) + "\n")
 
     if (wip_dir / "context-summary.md").exists():
         try:
@@ -1325,9 +1365,61 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_set_stage(args: argparse.Namespace) -> int:
-    status = set_stage(Path(args.path), args.stage)
+    skip_verification = getattr(args, 'skip_verification', False)
+    status = set_stage(Path(args.path), args.stage, skip_verification=skip_verification)
     print(json.dumps(status, indent=2))
     return 0
+
+
+def cmd_verify_plan(args: argparse.Namespace) -> int:
+    """Verify that plan.md exists and has content."""
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+    success, error = verify_wip_file(wip_dir, "plan.md")
+    result = {
+        "file": "plan.md",
+        "wip_dir": str(wip_dir),
+        "verified": success,
+    }
+    if not success:
+        result["error"] = error
+    print(json.dumps(result, indent=2))
+    return 0 if success else 1
+
+
+def cmd_verify_research(args: argparse.Namespace) -> int:
+    """Verify that research.md exists and has content."""
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+    success, error = verify_wip_file(wip_dir, "research.md")
+    result = {
+        "file": "research.md",
+        "wip_dir": str(wip_dir),
+        "verified": success,
+    }
+    if not success:
+        result["error"] = error
+    print(json.dumps(result, indent=2))
+    return 0 if success else 1
+
+
+def cmd_verify_review(args: argparse.Namespace) -> int:
+    """Verify that review.md exists and has content."""
+    repo = git_toplevel(Path(args.path))
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+    success, error = verify_wip_file(wip_dir, "review.md")
+    result = {
+        "file": "review.md",
+        "wip_dir": str(wip_dir),
+        "verified": success,
+    }
+    if not success:
+        result["error"] = error
+    print(json.dumps(result, indent=2))
+    return 0 if success else 1
 
 
 def cmd_summarize_context(args: argparse.Namespace) -> int:
@@ -1703,7 +1795,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("set-stage", help="Update the workflow stage")
     p.add_argument("path")
     p.add_argument("stage")
+    p.add_argument("--skip-verification", action="store_true",
+                   help="Skip file verification checks (emergency bypass)")
     p.set_defaults(func=cmd_set_stage)
+
+    p = sub.add_parser("verify-plan", help="Verify plan.md exists and has content")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_verify_plan)
+
+    p = sub.add_parser("verify-research", help="Verify research.md exists and has content")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_verify_research)
+
+    p = sub.add_parser("verify-review", help="Verify review.md exists and has content")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_verify_review)
 
     p = sub.add_parser("review-bundle", help="Build a review bundle from the current diff")
     p.add_argument("path")
