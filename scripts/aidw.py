@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse
+import concurrent.futures
 import hashlib
 import re
 import json
@@ -21,6 +22,16 @@ REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "got
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
 REVIEW_KINDS = ["bug-risk", "missing-tests", "regression-risk", "docs-needed"]
+
+INDEX_MAX_FILES = 400
+INDEX_MAX_BYTES_PER_FILE = 60_000
+INDEX_MAX_POINTERS_PER_FILE = 20
+INDEX_MAX_SECTION_POINTERS = 5
+
+PARALLEL_HARD_CAP = 2
+DEFAULT_OLLAMA_MAX_PARALLEL = 2
+DEFAULT_RESEARCH_PARALLEL = 1
+DEFAULT_REVIEW_PARALLEL = 1
 
 # Per-task model defaults (tuned for 16 GB M1 Mac)
 _DEFAULT_MODEL_FAST = "phi3:mini"
@@ -213,7 +224,7 @@ def initial_status(repo: Path, branch: str) -> dict[str, Any]:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -225,6 +236,276 @@ def atomic_write(path: Path, content: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
+
+
+def _parse_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        parsed = int(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+def _effective_parallel(requested: int, global_max: int) -> int:
+    return max(1, min(requested, global_max, PARALLEL_HARD_CAP))
+
+
+def _repo_index_path(repo: Path) -> Path:
+    return repo / ".wip" / "repo-index.json"
+
+
+def _is_ignored_path(path: Path) -> bool:
+    ignored = {".git", ".wip", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
+    return any(part in ignored for part in path.parts)
+
+
+def _file_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return "python"
+    if suffix in {".js", ".jsx", ".mjs", ".cjs"}:
+        return "javascript"
+    if suffix in {".ts", ".tsx"}:
+        return "typescript"
+    if suffix == ".md":
+        return "markdown"
+    if suffix in {".sh", ".zsh", ".bash"}:
+        return "shell"
+    if suffix == ".json":
+        return "json"
+    if suffix in {".yml", ".yaml"}:
+        return "yaml"
+    if suffix in {".toml", ".ini", ".cfg"}:
+        return "config"
+    if suffix in {".env"} or path.name.endswith(".env"):
+        return "env"
+    return "other"
+
+
+def _extract_top_level_keys(text: str) -> list[str]:
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return [str(k) for k in list(data.keys())[:INDEX_MAX_POINTERS_PER_FILE]]
+    except Exception:
+        pass
+    return []
+
+
+def _extract_pointers(kind: str, text: str) -> dict[str, list[str]]:
+    pointers: dict[str, list[str]] = {"symbols": [], "headings": [], "keys": []}
+    lines = text.splitlines()
+
+    if kind == "python":
+        rx = re.compile(r"^\s*(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+        pointers["symbols"] = [m.group(1) for line in lines for m in [rx.match(line)] if m][:INDEX_MAX_POINTERS_PER_FILE]
+    elif kind in {"javascript", "typescript"}:
+        rx = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|class|const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+        pointers["symbols"] = [m.group(1) for line in lines for m in [rx.match(line)] if m][:INDEX_MAX_POINTERS_PER_FILE]
+    elif kind == "markdown":
+        headings = [line.strip() for line in lines if line.lstrip().startswith("#")]
+        pointers["headings"] = headings[:INDEX_MAX_POINTERS_PER_FILE]
+    elif kind == "shell":
+        fn_rx = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{")
+        section_rx = re.compile(r"^\s*##+\s+(.+)$")
+        fns = [m.group(1) for line in lines for m in [fn_rx.match(line)] if m]
+        sections = [m.group(1).strip() for line in lines for m in [section_rx.match(line)] if m]
+        pointers["symbols"] = fns[:INDEX_MAX_POINTERS_PER_FILE]
+        pointers["headings"] = sections[:INDEX_MAX_POINTERS_PER_FILE]
+    elif kind == "json":
+        pointers["keys"] = _extract_top_level_keys(text)
+    elif kind in {"yaml", "config", "env"}:
+        key_rx = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]")
+        keys = [m.group(1) for line in lines for m in [key_rx.match(line)] if m]
+        pointers["keys"] = keys[:INDEX_MAX_POINTERS_PER_FILE]
+
+    return pointers
+
+
+def build_repo_index(repo: Path) -> dict[str, Any]:
+    repo = git_toplevel(repo)
+    entries: list[dict[str, Any]] = []
+    truncated_files = False
+    skipped_files: list[dict[str, str]] = []
+
+    all_files = sorted([p for p in repo.rglob("*") if p.is_file() and not _is_ignored_path(p)])
+    if len(all_files) > INDEX_MAX_FILES:
+        truncated_files = True
+        all_files = all_files[:INDEX_MAX_FILES]
+
+    for path in all_files:
+        rel = path.relative_to(repo)
+        kind = _file_kind(path)
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            skipped_files.append({"path": str(rel), "reason": f"stat failed: {exc}"})
+            continue
+
+        try:
+            if size > INDEX_MAX_BYTES_PER_FILE:
+                content = path.read_text(encoding="utf-8", errors="ignore")[:INDEX_MAX_BYTES_PER_FILE]
+                content_truncated = True
+            else:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                content_truncated = False
+        except OSError as exc:
+            skipped_files.append({"path": str(rel), "reason": f"read failed: {exc}"})
+            continue
+
+        pointers = _extract_pointers(kind, content)
+        line_count = content.count("\n") + (1 if content else 0)
+
+        entries.append(
+            {
+                "path": str(rel),
+                "kind": kind,
+                "line_count": line_count,
+                "size_bytes": size,
+                "content_truncated": content_truncated,
+                "pointers": pointers,
+            }
+        )
+
+    index = {
+        "repo": repo.name,
+        "repo_path": str(repo),
+        "generated_at": now_iso(),
+        "limits": {
+            "max_files": INDEX_MAX_FILES,
+            "max_bytes_per_file": INDEX_MAX_BYTES_PER_FILE,
+            "max_pointers_per_file": INDEX_MAX_POINTERS_PER_FILE,
+        },
+        "truncated": {"files": truncated_files, "skipped_files": len(skipped_files)},
+        "skipped": skipped_files[:20],
+        "files": entries,
+    }
+
+    index_path = _repo_index_path(repo)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(index_path, index)
+    return index
+
+
+def _tokenize_goal(goal: str) -> list[str]:
+    return [t for t in re.findall(r"[a-zA-Z0-9_-]+", goal.lower()) if len(t) >= 3]
+
+
+def _entry_text_for_scoring(entry: dict[str, Any]) -> str:
+    pointers = entry.get("pointers", {})
+    tokens = [entry.get("path", ""), entry.get("kind", "")]
+    for key in ("symbols", "headings", "keys"):
+        tokens.extend(pointers.get(key, []))
+    return " ".join(tokens).lower()
+
+
+def _score_entry(entry: dict[str, Any], terms: list[str]) -> int:
+    if not terms:
+        return 1
+    haystack = _entry_text_for_scoring(entry)
+    score = 0
+    for term in terms:
+        if term in haystack:
+            score += 2
+        if term in entry.get("path", "").lower():
+            score += 1
+    return score
+
+
+def _select_lane(index: dict[str, Any], terms: list[str], lane: str, limit: int) -> list[dict[str, Any]]:
+    files = index.get("files", [])
+    if lane == "code":
+        allowed = {"python", "javascript", "typescript", "shell"}
+    else:
+        allowed = {"markdown", "yaml", "json", "config", "env", "other"}
+    ranked = []
+    for entry in files:
+        if entry.get("kind") not in allowed:
+            continue
+        score = _score_entry(entry, terms)
+        if score > 0:
+            ranked.append((score, entry))
+    ranked.sort(key=lambda it: (-it[0], it[1].get("path", "")))
+    return [entry for _, entry in ranked[:limit]]
+
+
+def research_scan(repo: Path, goal: str) -> dict[str, Any]:
+    repo = git_toplevel(repo)
+    index_path = _repo_index_path(repo)
+    index = read_json(index_path) if index_path.exists() else build_repo_index(repo)
+
+    requested_research_parallel = _parse_int_env(
+        "AIDW_RESEARCH_PARALLEL", DEFAULT_RESEARCH_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    ollama_max_parallel = _parse_int_env(
+        "AIDW_OLLAMA_MAX_PARALLEL", DEFAULT_OLLAMA_MAX_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    effective_research_parallel = _effective_parallel(requested_research_parallel, ollama_max_parallel)
+
+    terms = _tokenize_goal(goal)
+    if effective_research_parallel <= 1:
+        code_lane = _select_lane(index, terms, lane="code", limit=5)
+        docs_lane = _select_lane(index, terms, lane="docs", limit=5)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=effective_research_parallel) as executor:
+            code_future = executor.submit(_select_lane, index, terms, "code", 5)
+            docs_future = executor.submit(_select_lane, index, terms, "docs", 5)
+            # Resolve in lane order for deterministic output while still parallelizing work.
+            code_lane = code_future.result()
+            docs_lane = docs_future.result()
+
+    merged: dict[str, dict[str, Any]] = {}
+    for lane_name, entries in (("code", code_lane), ("docs", docs_lane)):
+        for entry in entries:
+            path = entry.get("path", "")
+            pointers = entry.get("pointers", {})
+            sections = (pointers.get("symbols", []) + pointers.get("headings", []) + pointers.get("keys", []))
+            sections = sections[:INDEX_MAX_SECTION_POINTERS]
+            reason = f"{lane_name} lane score={_score_entry(entry, terms)}"
+            if path in merged:
+                merged[path]["lanes"].append(lane_name)
+                merged[path]["why"].append(reason)
+            else:
+                merged[path] = {
+                    "path": path,
+                    "kind": entry.get("kind", "other"),
+                    "lanes": [lane_name],
+                    "sections": sections,
+                    "why": [reason],
+                }
+
+    selected = sorted(merged.values(), key=lambda item: item["path"])[:10]
+    state = ensure_branch_state(repo)
+    out_path = Path(state["wip_dir"]) / "research-scan.json"
+    result = {
+        "repo": repo.name,
+        "branch": state["status"]["branch"],
+        "goal": goal,
+        "generated_at": now_iso(),
+        "terms": terms,
+        "limits": {
+            "max_results": 10,
+            "max_sections_per_file": INDEX_MAX_SECTION_POINTERS,
+        },
+        "lanes": {
+            "code_count": len(code_lane),
+            "docs_count": len(docs_lane),
+        },
+        "parallel": {
+            "requested": requested_research_parallel,
+            "effective": effective_research_parallel,
+            "ollama_max_parallel": ollama_max_parallel,
+        },
+        "results": selected,
+        "truncated": {
+            "results": len(merged) > len(selected),
+        },
+    }
+    write_json(out_path, result)
+    return result
 
 
 def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]:
@@ -291,8 +572,8 @@ def set_stage(repo: Path, stage: str) -> dict[str, Any]:
     if (wip_dir / "context-summary.md").exists():
         try:
             write_context_summary(repo)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Warning: could not refresh context-summary.md after set-stage ({exc})", file=sys.stderr)
     return status
 
 
@@ -842,8 +1123,8 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     if (wip_dir / "context-summary.md").exists():
         try:
             write_context_summary(repo)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Warning: could not refresh context-summary.md after synthesize-review ({exc})", file=sys.stderr)
 
     return {
         "review_path": str(review_path),
@@ -1165,21 +1446,80 @@ def cmd_review_all(args: argparse.Namespace) -> int:
                 ollama_stop_server(server_proc)
             raise SystemExit(f"Model '{model_name}' not available. Run: ollama pull {model_name}")
 
-    results: list[dict[str, Any]] = []
+    review_parallel_requested = _parse_int_env(
+        "AIDW_REVIEW_PARALLEL", DEFAULT_REVIEW_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    ollama_max_parallel = _parse_int_env(
+        "AIDW_OLLAMA_MAX_PARALLEL", DEFAULT_OLLAMA_MAX_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    cli_parallel = getattr(args, "parallel", None)
+    if cli_parallel is not None:
+        requested = max(1, min(int(cli_parallel), PARALLEL_HARD_CAP))
+    else:
+        requested = review_parallel_requested
+    effective_parallel = _effective_parallel(requested, ollama_max_parallel)
+
+    if effective_parallel > 1 and len(required_models) == 1:
+        # A single shared model often causes local contention; keep stable default.
+        effective_parallel = 1
+
+    results_by_kind: dict[str, dict[str, Any]] = {}
     used_models: set[str] = set()
+
+    def _run_one(kind: str) -> tuple[str, dict[str, Any]]:
+        model = kind_models[kind]
+        used_models.add(model)
+        parsed = ollama_review(repo, kind, model, endpoint)
+        return kind, parsed
+
+    def _run_one_safe(kind: str) -> tuple[str, dict[str, Any], bool]:
+        model = kind_models[kind]
+        print(f"Running {kind} review pass (model: {model})...", file=sys.stderr)
+        try:
+            _, parsed = _run_one(kind)
+            print(f"  {kind}: {len(parsed.get('findings', []))} finding(s)", file=sys.stderr)
+            return kind, parsed, True
+        except SystemExit as exc:
+            print(f"  {kind}: failed ({exc})", file=sys.stderr)
+            return kind, {"kind": kind, "summary": f"Failed: {exc}", "findings": []}, False
+        except Exception as exc:
+            print(f"  {kind}: failed ({exc})", file=sys.stderr)
+            return kind, {"kind": kind, "summary": f"Failed: {exc}", "findings": []}, False
+
     try:
-        for kind in REVIEW_KINDS:
-            model = kind_models[kind]
-            print(f"Running {kind} review pass (model: {model})...", file=sys.stderr)
-            used_models.add(model)
-            try:
-                parsed = ollama_review(repo, kind, model, endpoint)
-                findings_count = len(parsed.get("findings", []))
-                print(f"  {kind}: {findings_count} finding(s)", file=sys.stderr)
-                results.append(parsed)
-            except SystemExit as exc:
-                print(f"  {kind}: failed ({exc})", file=sys.stderr)
-                results.append({"kind": kind, "summary": f"Failed: {exc}", "findings": []})
+        if effective_parallel <= 1:
+            for kind in REVIEW_KINDS:
+                _, parsed, _ = _run_one_safe(kind)
+                results_by_kind[kind] = parsed
+        else:
+            batches = [REVIEW_KINDS[:2], REVIEW_KINDS[2:]]
+            pending_sequential: list[str] = []
+            for batch in batches:
+                if not batch:
+                    continue
+                print(f"Running parallel review batch: {', '.join(batch)}", file=sys.stderr)
+                batch_failed = False
+                with concurrent.futures.ThreadPoolExecutor(max_workers=effective_parallel) as executor:
+                    futures = {executor.submit(_run_one_safe, kind): kind for kind in batch}
+                    for future in concurrent.futures.as_completed(futures):
+                        kind, parsed, success = future.result()
+                        results_by_kind[kind] = parsed
+                        if not success:
+                            batch_failed = True
+                if batch_failed:
+                    index = batches.index(batch)
+                    for remainder in batches[index + 1:]:
+                        pending_sequential.extend(remainder)
+                    break
+
+            if pending_sequential:
+                print(
+                    "Parallel instability detected; falling back to sequential for remaining passes.",
+                    file=sys.stderr,
+                )
+                for kind in pending_sequential:
+                    _, parsed, _ = _run_one_safe(kind)
+                    results_by_kind[kind] = parsed
 
         if not getattr(args, "no_stop", False):
             for model_name in sorted(used_models):
@@ -1189,7 +1529,20 @@ def cmd_review_all(args: argparse.Namespace) -> int:
         if server_proc is not None:
             ollama_stop_server(server_proc)
 
+    results = [results_by_kind.get(kind, {"kind": kind, "summary": "Not run", "findings": []}) for kind in REVIEW_KINDS]
     print(json.dumps(results, indent=2))
+    return 0
+
+
+def cmd_build_index(args: argparse.Namespace) -> int:
+    result = build_repo_index(Path(args.path))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_research_scan(args: argparse.Namespace) -> int:
+    result = research_scan(Path(args.path), args.goal)
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -1201,6 +1554,15 @@ def cmd_synthesize_review(args: argparse.Namespace) -> int:
 
 def cmd_ollama_config(args: argparse.Namespace) -> int:
     endpoint = getattr(args, "endpoint", DEFAULT_OLLAMA_ENDPOINT)
+    requested_review_parallel = _parse_int_env(
+        "AIDW_REVIEW_PARALLEL", DEFAULT_REVIEW_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    requested_research_parallel = _parse_int_env(
+        "AIDW_RESEARCH_PARALLEL", DEFAULT_RESEARCH_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
+    ollama_max_parallel = _parse_int_env(
+        "AIDW_OLLAMA_MAX_PARALLEL", DEFAULT_OLLAMA_MAX_PARALLEL, 1, PARALLEL_HARD_CAP
+    )
     config = {
         "endpoint": endpoint,
         "models": {
@@ -1227,12 +1589,35 @@ def cmd_ollama_config(args: argparse.Namespace) -> int:
             "env": "AIDW_OLLAMA_MODEL",
             "effective": DEFAULT_OLLAMA_MODEL,
         },
+        "parallel": {
+            "hard_cap": PARALLEL_HARD_CAP,
+            "ollama_max_parallel": {
+                "env": "AIDW_OLLAMA_MAX_PARALLEL",
+                "effective": ollama_max_parallel,
+                "default": DEFAULT_OLLAMA_MAX_PARALLEL,
+            },
+            "research_parallel": {
+                "env": "AIDW_RESEARCH_PARALLEL",
+                "effective": requested_research_parallel,
+                "default": DEFAULT_RESEARCH_PARALLEL,
+                "effective_with_max": _effective_parallel(requested_research_parallel, ollama_max_parallel),
+            },
+            "review_parallel": {
+                "env": "AIDW_REVIEW_PARALLEL",
+                "effective": requested_review_parallel,
+                "default": DEFAULT_REVIEW_PARALLEL,
+                "effective_with_max": _effective_parallel(requested_review_parallel, ollama_max_parallel),
+            },
+        },
         "env_vars": {
             "AIDW_OLLAMA_ENDPOINT": os.environ.get("AIDW_OLLAMA_ENDPOINT", "(not set — using default)"),
             "AIDW_OLLAMA_MODEL": os.environ.get("AIDW_OLLAMA_MODEL", "(not set — using review model)"),
             "AIDW_OLLAMA_MODEL_FAST": os.environ.get("AIDW_OLLAMA_MODEL_FAST", "(not set — using default)"),
             "AIDW_OLLAMA_MODEL_REVIEW": os.environ.get("AIDW_OLLAMA_MODEL_REVIEW", "(not set — using default)"),
             "AIDW_OLLAMA_MODEL_GENERATE": os.environ.get("AIDW_OLLAMA_MODEL_GENERATE", "(not set — using default)"),
+            "AIDW_OLLAMA_MAX_PARALLEL": os.environ.get("AIDW_OLLAMA_MAX_PARALLEL", "(not set — using default)"),
+            "AIDW_RESEARCH_PARALLEL": os.environ.get("AIDW_RESEARCH_PARALLEL", "(not set — using default)"),
+            "AIDW_REVIEW_PARALLEL": os.environ.get("AIDW_REVIEW_PARALLEL", "(not set — using default)"),
             "AIDW_OLLAMA_ALLOW_REMOTE": os.environ.get("AIDW_OLLAMA_ALLOW_REMOTE", "(not set — remote blocked)"),
         },
     }
@@ -1314,6 +1699,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("path")
     p.set_defaults(func=cmd_review_bundle)
 
+    p = sub.add_parser("build-index", help="Build a lightweight repository structure index")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_build_index)
+
+    p = sub.add_parser("research-scan", help="Run index-first staged research scan")
+    p.add_argument("path")
+    p.add_argument("--goal", required=True, help="Research goal statement used for relevance ranking")
+    p.set_defaults(func=cmd_research_scan)
+
     p = sub.add_parser("ollama-config", help="Show resolved Ollama model configuration")
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
     p.set_defaults(func=cmd_ollama_config)
@@ -1333,9 +1727,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
     p.set_defaults(func=cmd_ollama_check)
 
-    p = sub.add_parser("review-all", help="Run all Ollama review passes in sequence")
+    p = sub.add_parser("review-all", help="Run all Ollama review passes (sequential by default)")
     p.add_argument("path")
     p.add_argument("--endpoint", default=DEFAULT_OLLAMA_ENDPOINT)
+    p.add_argument("--parallel", type=int, choices=[1, 2], default=None,
+                   help="Override review parallel workers (1=sequential, 2=bounded parallel)")
     p.add_argument("--no-stop", dest="no_stop", action="store_true",
                    help="Do not unload models after all passes complete")
     p.add_argument("--no-auto-start", dest="no_auto_start", action="store_true",
