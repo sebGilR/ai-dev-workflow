@@ -53,6 +53,29 @@ OLLAMA_MODEL_GENERATE = os.environ.get("AIDW_OLLAMA_MODEL_GENERATE", _DEFAULT_MO
 DEFAULT_OLLAMA_MODEL = os.environ.get("AIDW_OLLAMA_MODEL", OLLAMA_MODEL_REVIEW)
 DEFAULT_OLLAMA_ENDPOINT = os.environ.get("AIDW_OLLAMA_ENDPOINT", "http://localhost:11434")
 
+# Per-task timeout defaults (seconds, tuned for 16 GB M1 Mac)
+_DEFAULT_TIMEOUT_GENERIC = 180
+_DEFAULT_TIMEOUT_FAST = 120
+_DEFAULT_TIMEOUT_REVIEW = 300
+_DEFAULT_TIMEOUT_GENERATE = 240
+
+
+def _parse_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        parsed = int(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+OLLAMA_TIMEOUT = _parse_int_env("AIDW_OLLAMA_TIMEOUT", _DEFAULT_TIMEOUT_GENERIC, 10, 3600)
+OLLAMA_TIMEOUT_FAST = _parse_int_env("AIDW_OLLAMA_TIMEOUT_FAST", _DEFAULT_TIMEOUT_FAST, 10, 3600)
+OLLAMA_TIMEOUT_REVIEW = _parse_int_env("AIDW_OLLAMA_TIMEOUT_REVIEW", _DEFAULT_TIMEOUT_REVIEW, 10, 3600)
+OLLAMA_TIMEOUT_GENERATE = _parse_int_env("AIDW_OLLAMA_TIMEOUT_GENERATE", _DEFAULT_TIMEOUT_GENERATE, 10, 3600)
+
 # Task kind → model bucket mapping
 _REVIEW_TASK_KINDS = frozenset({"bug-risk", "missing-tests", "regression-risk"})
 _FAST_TASK_KINDS = frozenset({"docs-needed", "summaries", "synthesis"})
@@ -69,6 +92,17 @@ def resolve_model_for_kind(kind: str) -> str:
     if kind in _GENERATE_TASK_KINDS:
         return OLLAMA_MODEL_GENERATE
     return DEFAULT_OLLAMA_MODEL
+
+
+def resolve_timeout_for_kind(kind: str) -> int:
+    """Return the appropriate HTTP timeout in seconds for a given task kind."""
+    if kind in _REVIEW_TASK_KINDS:
+        return OLLAMA_TIMEOUT_REVIEW
+    if kind in _FAST_TASK_KINDS:
+        return OLLAMA_TIMEOUT_FAST
+    if kind in _GENERATE_TASK_KINDS:
+        return OLLAMA_TIMEOUT_GENERATE
+    return OLLAMA_TIMEOUT
 
 
 def now_iso() -> str:
@@ -101,6 +135,11 @@ def current_branch(repo: Path) -> str:
     result = run(["git", "-C", str(repo), "branch", "--show-current"])
     branch = result.stdout.strip()
     return branch or "detached-head"
+
+
+def current_head_sha(repo: Path) -> str:
+    result = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def safe_slug(value: str) -> str:
@@ -281,17 +320,6 @@ def atomic_write(path: Path, content: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
-
-
-def _parse_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        parsed = int(raw.strip())
-    except ValueError:
-        return default
-    return max(minimum, min(parsed, maximum))
 
 
 def _effective_parallel(requested: int, global_max: int) -> int:
@@ -1038,7 +1066,43 @@ def ollama_stop_server(proc: "subprocess.Popen[str]") -> None:
 
 
 def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str, Any]:
+    import socket as _socket
+
     repo = git_toplevel(repo)
+    timeout_s = resolve_timeout_for_kind(kind)
+    head_sha = current_head_sha(repo)
+
+    # Resolve output path early so we can check for an existing completed artifact.
+    state = ensure_branch_state(repo)
+    out_path = Path(state["wip_dir"]) / f"ollama-review-{kind}.json"
+
+    # Artifact reuse: if a completed (non-timeout) artifact exists and was produced
+    # from the same HEAD commit, return it without re-running Ollama.
+    reuse_artifact: dict[str, Any] | None = None
+    if out_path.exists():
+        try:
+            existing = read_json(out_path)
+            if existing.get("status") != "timeout":
+                artifact_sha = existing.get("head_sha")
+                if not artifact_sha or artifact_sha == head_sha:
+                    reuse_artifact = existing
+        except (json.JSONDecodeError, OSError):
+            pass  # Corrupt artifact — fall through and re-run
+
+    if reuse_artifact is not None:
+        print(f"  {kind}: reusing existing completed artifact", file=sys.stderr)
+        status_path = Path(state["wip_dir"]) / "status.json"
+        if status_path.exists():
+            with _status_lock:
+                _st = read_json(status_path)
+                _rp = _st.get("review_passes", [])
+                if kind not in _rp:
+                    _rp.append(kind)
+                _st["review_passes"] = _rp
+                _st["updated_at"] = now_iso()
+                write_json(status_path, _st)
+        return reuse_artifact
+
     bundle = review_bundle(repo)
     prompt = {
         "bug-risk": "Review this diff for likely correctness issues, hidden bugs, and risky assumptions.",
@@ -1107,9 +1171,30 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.urlopen(req, timeout=timeout_s) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (_socket.timeout, TimeoutError)):
+            timeout_result: dict[str, Any] = {
+                "kind": kind,
+                "status": "timeout",
+                "timeout_seconds": timeout_s,
+                "head_sha": head_sha,
+                "summary": f"The {kind} review pass timed out after {timeout_s}s.",
+                "findings": [],
+            }
+            write_json(out_path, timeout_result)
+            status_path = Path(state["wip_dir"]) / "status.json"
+            if status_path.exists():
+                with _status_lock:
+                    _st = read_json(status_path)
+                    _rp = _st.get("review_passes", [])
+                    if kind not in _rp:
+                        _rp.append(kind)
+                    _st["review_passes"] = _rp
+                    _st["updated_at"] = now_iso()
+                    write_json(status_path, _st)
+            return timeout_result
         raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")
 
     raw_message = payload.get("message", {}).get("content", "{}")
@@ -1118,8 +1203,7 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
     except json.JSONDecodeError:
         parsed = {"kind": kind, "summary": raw_message, "findings": []}
 
-    state = ensure_branch_state(repo)
-    out_path = Path(state["wip_dir"]) / f"ollama-review-{kind}.json"
+    parsed["head_sha"] = head_sha
     write_json(out_path, parsed)
 
     status_path = Path(state["wip_dir"]) / "status.json"
@@ -1614,6 +1698,12 @@ def cmd_ollama_check(args: argparse.Namespace) -> int:
 
     results["ok"] = True
     results["message"] = "Ollama is ready. All configured models are available."
+    results["timeouts"] = {
+        "generic": OLLAMA_TIMEOUT,
+        "fast": OLLAMA_TIMEOUT_FAST,
+        "review": OLLAMA_TIMEOUT_REVIEW,
+        "generate": OLLAMA_TIMEOUT_GENERATE,
+    }
     print(json.dumps(results, indent=2))
     return 0
 
@@ -1670,16 +1760,24 @@ def cmd_review_all(args: argparse.Namespace) -> int:
 
     def _run_one_safe(kind: str) -> tuple[str, dict[str, Any], bool]:
         model = kind_models[kind]
-        print(f"Running {kind} review pass (model: {model})...", file=sys.stderr)
+        timeout_s = resolve_timeout_for_kind(kind)
+        print(f"Running {kind} review pass (model: {model}, timeout: {timeout_s}s)...", file=sys.stderr)
         try:
             _, parsed = _run_one(kind)
-            print(f"  {kind}: {len(parsed.get('findings', []))} finding(s)", file=sys.stderr)
+            if parsed.get("status") == "timeout":
+                print(f"  {kind}: timed out after {parsed.get('timeout_seconds', timeout_s)}s", file=sys.stderr)
+            else:
+                print(f"  {kind}: {len(parsed.get('findings', []))} finding(s)", file=sys.stderr)
             return kind, parsed, True
         except SystemExit as exc:
-            print(f"  {kind}: failed ({exc})", file=sys.stderr)
-            return kind, {"kind": kind, "summary": f"Failed: {exc}", "findings": []}, False
+            msg = str(exc)
+            if "not available" in msg or "not running" in msg or "not installed" in msg:
+                print(f"  {kind}: Ollama unavailable — {msg}", file=sys.stderr)
+            else:
+                print(f"  {kind}: failed — {msg}", file=sys.stderr)
+            return kind, {"kind": kind, "summary": f"Failed: {msg}", "findings": []}, False
         except Exception as exc:
-            print(f"  {kind}: failed ({exc})", file=sys.stderr)
+            print(f"  {kind}: failed — {exc}", file=sys.stderr)
             return kind, {"kind": kind, "summary": f"Failed: {exc}", "findings": []}, False
 
     try:
@@ -1974,8 +2072,9 @@ def cmd_review_targeted(args: argparse.Namespace) -> int:
             method="POST",
         )
         
+        targeted_timeout_s = resolve_timeout_for_kind("bug-risk")  # targeted uses review model/timeout
         try:
-            with urllib.request.urlopen(req, timeout=120) as response:
+            with urllib.request.urlopen(req, timeout=targeted_timeout_s) as response:
                 raw_body = response.read().decode("utf-8")
                 try:
                     payload = json.loads(raw_body)
@@ -1984,6 +2083,9 @@ def cmd_review_targeted(args: argparse.Namespace) -> int:
                         f"Received invalid JSON response from Ollama at {endpoint}: {exc}"
                     ) from exc
         except urllib.error.URLError as exc:
+            import socket as _socket
+            if isinstance(exc.reason, (_socket.timeout, TimeoutError)):
+                raise SystemExit(f"Targeted review timed out after {targeted_timeout_s}s.")
             raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")
 
         if not isinstance(payload, dict):
@@ -2099,6 +2201,29 @@ def cmd_ollama_config(args: argparse.Namespace) -> int:
                 "effective_with_max": _effective_parallel(requested_review_parallel, ollama_max_parallel),
             },
         },
+        "timeouts": {
+            "generic": {
+                "env": "AIDW_OLLAMA_TIMEOUT",
+                "effective": OLLAMA_TIMEOUT,
+                "default": _DEFAULT_TIMEOUT_GENERIC,
+            },
+            "fast": {
+                "env": "AIDW_OLLAMA_TIMEOUT_FAST",
+                "effective": OLLAMA_TIMEOUT_FAST,
+                "default": _DEFAULT_TIMEOUT_FAST,
+            },
+            "review": {
+                "env": "AIDW_OLLAMA_TIMEOUT_REVIEW",
+                "effective": OLLAMA_TIMEOUT_REVIEW,
+                "default": _DEFAULT_TIMEOUT_REVIEW,
+            },
+            "generate": {
+                "env": "AIDW_OLLAMA_TIMEOUT_GENERATE",
+                "effective": OLLAMA_TIMEOUT_GENERATE,
+                "default": _DEFAULT_TIMEOUT_GENERATE,
+            },
+            "resolved_by_kind": {kind: resolve_timeout_for_kind(kind) for kind in ALL_TASK_KINDS},
+        },
         "env_vars": {
             "AIDW_OLLAMA_ENDPOINT": os.environ.get("AIDW_OLLAMA_ENDPOINT", "(not set — using default)"),
             "AIDW_OLLAMA_MODEL": os.environ.get("AIDW_OLLAMA_MODEL", "(not set — using review model)"),
@@ -2109,6 +2234,10 @@ def cmd_ollama_config(args: argparse.Namespace) -> int:
             "AIDW_RESEARCH_PARALLEL": os.environ.get("AIDW_RESEARCH_PARALLEL", "(not set — using default)"),
             "AIDW_REVIEW_PARALLEL": os.environ.get("AIDW_REVIEW_PARALLEL", "(not set — using default)"),
             "AIDW_OLLAMA_ALLOW_REMOTE": os.environ.get("AIDW_OLLAMA_ALLOW_REMOTE", "(not set — remote blocked)"),
+            "AIDW_OLLAMA_TIMEOUT": os.environ.get("AIDW_OLLAMA_TIMEOUT", "(not set — using default)"),
+            "AIDW_OLLAMA_TIMEOUT_FAST": os.environ.get("AIDW_OLLAMA_TIMEOUT_FAST", "(not set — using default)"),
+            "AIDW_OLLAMA_TIMEOUT_REVIEW": os.environ.get("AIDW_OLLAMA_TIMEOUT_REVIEW", "(not set — using default)"),
+            "AIDW_OLLAMA_TIMEOUT_GENERATE": os.environ.get("AIDW_OLLAMA_TIMEOUT_GENERATE", "(not set — using default)"),
         },
     }
     print(json.dumps(config, indent=2))

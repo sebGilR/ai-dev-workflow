@@ -324,6 +324,10 @@ This checks: Ollama installed, service running, model pulled. Returns JSON with 
 | `AIDW_RESEARCH_PARALLEL` | `1` | Research lane concurrency request (kept sequential by default) |
 | `AIDW_REVIEW_PARALLEL` | `1` | Review pass concurrency request (sequential default, max 2) |
 | `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
+| `AIDW_OLLAMA_TIMEOUT` | `180` | Generic HTTP timeout fallback (seconds) |
+| `AIDW_OLLAMA_TIMEOUT_FAST` | `120` | Timeout for fast tasks (docs-needed, summaries, synthesis) |
+| `AIDW_OLLAMA_TIMEOUT_REVIEW` | `300` | Timeout for review passes (bug-risk, missing-tests, regression-risk) |
+| `AIDW_OLLAMA_TIMEOUT_GENERATE` | `240` | Timeout for code-generation tasks |
 
 ### 16 GB tuning guidance
 
@@ -460,6 +464,20 @@ Four structured review passes are available:
 ```
 
 Each review pass outputs structured JSON and saves results to `.wip/<branch>/ollama-review-<kind>.json`. In parallel mode, failures in a batch trigger automatic fallback to sequential execution for the remaining passes.
+
+If a review pass times out, a structured result is written to the artifact file instead of crashing the run:
+
+```json
+{
+  "kind": "bug-risk",
+  "status": "timeout",
+  "timeout_seconds": 300,
+  "summary": "The bug-risk review pass timed out after 300s.",
+  "findings": []
+}
+```
+
+On the next run, if a completed (non-timeout) artifact already exists for a pass, that artifact is reused and the HTTP call is skipped. This prevents re-running work that Ollama already completed. A `status: "timeout"` artifact is never reused — the pass is always retried.
 
 ### How /wip-review uses Ollama
 
@@ -676,10 +694,27 @@ Skills are loaded at session start. If you install while a session is running, r
 The installer sets `core.excludesfile` in your global git config. If you use a non-standard gitignore path, verify with `git config --global core.excludesfile`.
 
 ### Ollama review timeout
-Review passes have a 120-second timeout. Large diffs may exceed this. All diff sources are truncated to 50 KB each to mitigate this. The `branch_diff` field in the bundle always covers the full committed branch diff since the merge-base, not just working-tree changes.
+Review passes use per-task-kind timeouts (default: 300s for review passes, 120s for fast tasks). Large diffs may take longer — all diff sources are truncated to 50 KB each to mitigate this. The `branch_diff` field in the bundle always covers the full committed branch diff since the merge-base, not just working-tree changes.
+
+If a pass times out, the run continues with the remaining passes. A structured `status: "timeout"` artifact is written so the result is recorded cleanly. You can increase timeouts via environment variables:
+
+```bash
+export AIDW_OLLAMA_TIMEOUT_REVIEW=600   # 10 minutes for review passes on large diffs
+export AIDW_OLLAMA_TIMEOUT_FAST=180     # 3 minutes for fast tasks
+```
 
 ### Branch directory naming
 `.wip/` subdirectory names are derived from the branch name. Characters outside `a-z0-9-` are replaced with `-`, and a short SHA-256 hash suffix is appended when the slugified name would differ from the original (e.g. `feature/foo` → `feature-foo-<hash>`). This prevents collisions between branches that would otherwise resolve to the same slug.
+
+---
+
+## Known limitations and future improvements
+
+### Streaming support
+Review passes currently wait for Ollama to return the full response before writing results. Adding `stream: true` to the `/api/chat` request would let passes succeed incrementally, reducing sensitivity to timeouts on slow models or large diffs. This requires parsing the NDJSON response stream and reassembling the structured output.
+
+### Review chunking for large diffs
+All diff sources are already truncated to 50 KB each, but very large changes may still stress a single review pass. A future improvement would split the diff into segments and run passes on each chunk, then merge and deduplicate findings. This is complementary to streaming and would further reduce timeout exposure on large PRs.
 
 ---
 
