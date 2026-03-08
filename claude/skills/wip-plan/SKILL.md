@@ -1,7 +1,6 @@
 ---
 name: wip-plan
 description: Create or refresh the implementation plan for the current branch.
-disable-model-invocation: true
 ---
 
 When this skill is used:

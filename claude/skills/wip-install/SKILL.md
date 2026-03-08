@@ -1,7 +1,6 @@
 ---
 name: wip-install
 description: Verify the ai-dev-workflow installation and explain how to bootstrap a repo or workspace.
-disable-model-invocation: true
 ---
 
 When this skill is used:

@@ -1,7 +1,6 @@
 ---
 name: wip-fix-review
 description: Work through review findings and document what was fixed.
-disable-model-invocation: true
 ---
 
 When this skill is used:

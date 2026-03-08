@@ -1,7 +1,6 @@
 ---
 name: wip-pr
 description: Prepare PR-ready notes for the current branch.
-disable-model-invocation: true
 ---
 
 When this skill is used:

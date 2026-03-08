@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -731,10 +732,24 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    sections.append("## Claude Review\n")
-    sections.append("<!-- Claude should add its own review findings here -->\n")
-
+    # Preserve any existing Claude review content
     review_path = wip_dir / "review.md"
+    existing_claude_content: str = ""
+    placeholder = "<!-- Claude should add its own review findings here -->"
+    if review_path.exists():
+        existing_text = review_path.read_text(encoding="utf-8")
+        heading_match = re.search(r"(?m)^## Claude Review\s*$", existing_text)
+        if heading_match is not None:
+            after_heading = existing_text[heading_match.end():].lstrip("\n")
+            if after_heading and after_heading.strip() != placeholder.strip():
+                existing_claude_content = after_heading.rstrip("\n")
+
+    sections.append("## Claude Review\n")
+    if existing_claude_content:
+        sections.append(existing_claude_content + "\n")
+    else:
+        sections.append(placeholder + "\n")
+
     review_path.write_text("\n".join(sections) + "\n", encoding="utf-8")
 
     return {

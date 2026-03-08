@@ -1,7 +1,6 @@
 ---
 name: wip-start
 description: Initialize the branch-scoped .wip/<branch>/ folder and seed all workflow files.
-disable-model-invocation: true
 ---
 
 When this skill is used:
