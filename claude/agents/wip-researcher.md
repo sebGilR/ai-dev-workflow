@@ -10,7 +10,9 @@ You are the research specialist.
 
 Before exploring the codebase, check for a pre-narrowed file list:
 
-1. Resolve the WIP directory: `git rev-parse --show-toplevel` + `.wip/` + `git branch --show-current`
+1. Resolve the WIP directory by running `~/.claude/ai-dev-workflow/bin/aidw status .`
+   and reading the `WIP directory:` line from its output. Do not construct the path
+   manually — `aidw` applies slug normalization that may differ from the raw branch name.
 2. If `research-scan.json` exists in that directory, read it. The `results` array lists
    the top-scored files with `path` and `sections` pointers. Use these as your starting
    file list — read those files and their indicated sections first before opening

@@ -1170,31 +1170,36 @@ def ollama_review(repo: Path, kind: str, model: str, endpoint: str) -> dict[str,
         method="POST",
     )
 
+    def _handle_timeout() -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "kind": kind,
+            "status": "timeout",
+            "timeout_seconds": timeout_s,
+            "head_sha": head_sha,
+            "summary": f"The {kind} review pass timed out after {timeout_s}s.",
+            "findings": [],
+        }
+        write_json(out_path, result)
+        _sp = Path(state["wip_dir"]) / "status.json"
+        if _sp.exists():
+            with _status_lock:
+                _st = read_json(_sp)
+                _rp = _st.get("review_passes", [])
+                if kind not in _rp:
+                    _rp.append(kind)
+                _st["review_passes"] = _rp
+                _st["updated_at"] = now_iso()
+                write_json(_sp, _st)
+        return result
+
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except (TimeoutError, _socket.timeout):
+        return _handle_timeout()
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, (_socket.timeout, TimeoutError)):
-            timeout_result: dict[str, Any] = {
-                "kind": kind,
-                "status": "timeout",
-                "timeout_seconds": timeout_s,
-                "head_sha": head_sha,
-                "summary": f"The {kind} review pass timed out after {timeout_s}s.",
-                "findings": [],
-            }
-            write_json(out_path, timeout_result)
-            status_path = Path(state["wip_dir"]) / "status.json"
-            if status_path.exists():
-                with _status_lock:
-                    _st = read_json(status_path)
-                    _rp = _st.get("review_passes", [])
-                    if kind not in _rp:
-                        _rp.append(kind)
-                    _st["review_passes"] = _rp
-                    _st["updated_at"] = now_iso()
-                    write_json(status_path, _st)
-            return timeout_result
+            return _handle_timeout()
         raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")
 
     raw_message = payload.get("message", {}).get("content", "{}")
@@ -2065,13 +2070,14 @@ def cmd_review_targeted(args: argparse.Namespace) -> int:
         }
         
         # Call Ollama API
+        import socket as _socket
         req = urllib.request.Request(
             endpoint.rstrip("/") + "/api/chat",
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        
+
         targeted_timeout_s = resolve_timeout_for_kind("bug-risk")  # targeted uses review model/timeout
         try:
             with urllib.request.urlopen(req, timeout=targeted_timeout_s) as response:
@@ -2082,8 +2088,9 @@ def cmd_review_targeted(args: argparse.Namespace) -> int:
                     raise SystemExit(
                         f"Received invalid JSON response from Ollama at {endpoint}: {exc}"
                     ) from exc
+        except (TimeoutError, _socket.timeout):
+            raise SystemExit(f"Targeted review timed out after {targeted_timeout_s}s.")
         except urllib.error.URLError as exc:
-            import socket as _socket
             if isinstance(exc.reason, (_socket.timeout, TimeoutError)):
                 raise SystemExit(f"Targeted review timed out after {targeted_timeout_s}s.")
             raise SystemExit(f"Failed to reach Ollama at {endpoint}: {exc}")

@@ -14,8 +14,9 @@ When this skill is used:
 
    Replace `<topic>` with the exact research topic from the skill arguments (do not
    paraphrase). If no topic was provided, use the goal sentence from `context.md`.
-   The subagent will read `.wip/<branch>/research-scan.json` automatically and use
-   its `results` array as its starting file list.
+   The subagent will read `research-scan.json` from the current branch WIP directory
+   (use `aidw status .` to locate it) automatically and use its `results` array as
+   its starting file list.
 
 3. Use the `wip-researcher` subagent to gather codebase findings, starting from the
    files identified in `research-scan.json`. Prefer Serena for symbol lookup, call chain
