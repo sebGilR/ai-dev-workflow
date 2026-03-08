@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -737,10 +738,9 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     placeholder = "<!-- Claude should add its own review findings here -->"
     if review_path.exists():
         existing_text = review_path.read_text(encoding="utf-8")
-        marker = "## Claude Review"
-        marker_idx = existing_text.find(marker)
-        if marker_idx != -1:
-            after_heading = existing_text[marker_idx + len(marker):].lstrip("\n")
+        heading_match = re.search(r"(?m)^## Claude Review\s*$", existing_text)
+        if heading_match is not None:
+            after_heading = existing_text[heading_match.end():].lstrip("\n")
             if after_heading and after_heading.strip() != placeholder.strip():
                 existing_claude_content = after_heading.rstrip("\n")
 
