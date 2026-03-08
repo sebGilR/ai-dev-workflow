@@ -104,11 +104,8 @@ fi
 
 write_ollama_env() {
   local env_file="$CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
-  if [ -f "$env_file" ]; then
-    echo "Ollama env file already exists: $env_file (skipping)"
-    return 0
-  fi
-  cat > "$env_file" << 'ENVEOF'
+  if [ ! -f "$env_file" ]; then
+    cat > "$env_file" << 'ENVEOF'
 # ai-dev-workflow managed Ollama model configuration
 # Edit this file to customise your models. It is NOT committed to git.
 # Sourced automatically by your shell profile after install.
@@ -121,6 +118,12 @@ write_ollama_env() {
 # Parallelism defaults (stability-first on 16 GB machines):
 #   - Keep research/review sequential by default.
 #   - Raise AIDW_RESEARCH_PARALLEL or AIDW_REVIEW_PARALLEL to 2 only after stable runs.
+#
+# Timeout defaults (seconds, tuned for 16 GB Mac):
+#   AIDW_OLLAMA_TIMEOUT         - generic fallback (180s)
+#   AIDW_OLLAMA_TIMEOUT_FAST    - fast tasks like docs-needed (120s)
+#   AIDW_OLLAMA_TIMEOUT_REVIEW  - review passes on larger diffs (300s)
+#   AIDW_OLLAMA_TIMEOUT_GENERATE - code generation tasks (240s)
 export AIDW_OLLAMA_MODEL_FAST="phi3:mini"
 export AIDW_OLLAMA_MODEL_REVIEW="qwen2.5-coder:7b"
 export AIDW_OLLAMA_MODEL_GENERATE="deepseek-coder:6.7b"
@@ -129,8 +132,33 @@ export AIDW_OLLAMA_ENDPOINT="http://localhost:11434"
 export AIDW_OLLAMA_MAX_PARALLEL="2"
 export AIDW_RESEARCH_PARALLEL="1"
 export AIDW_REVIEW_PARALLEL="1"
+export AIDW_OLLAMA_TIMEOUT="180"
+export AIDW_OLLAMA_TIMEOUT_FAST="120"
+export AIDW_OLLAMA_TIMEOUT_REVIEW="300"
+export AIDW_OLLAMA_TIMEOUT_GENERATE="240"
 ENVEOF
-  echo "Created Ollama env file:  $env_file"
+    echo "Created Ollama env file:  $env_file"
+  else
+    echo "Ollama env file already exists: $env_file (appending missing vars if needed)"
+    # Append any timeout vars that are missing from an existing env file
+    local _added=0
+    for _var_line in \
+      'export AIDW_OLLAMA_TIMEOUT="180"' \
+      'export AIDW_OLLAMA_TIMEOUT_FAST="120"' \
+      'export AIDW_OLLAMA_TIMEOUT_REVIEW="300"' \
+      'export AIDW_OLLAMA_TIMEOUT_GENERATE="240"'
+    do
+      local _var_name
+      _var_name=$(echo "$_var_line" | sed 's/export \([^=]*\)=.*/\1/')
+      if ! grep -q "^export ${_var_name}=" "$env_file" 2>/dev/null; then
+        echo "$_var_line" >> "$env_file"
+        _added=$((_added + 1))
+      fi
+    done
+    if [ "$_added" -gt 0 ]; then
+      echo "  Added $_added missing timeout var(s) to $env_file"
+    fi
+  fi
 }
 
 patch_shell_profile() {

@@ -444,10 +444,10 @@ class TestEnvFileContent:
         assert "--pull-ollama-models" in content
 
     def test_install_sh_idempotent_env_file(self):
-        """write_ollama_env skips creation if the file already exists."""
+        """write_ollama_env checks for existence before writing (either guard form)."""
         content = self._INSTALL_SH.read_text()
-        # The bash function should check for existence before writing
-        assert '[ -f "$env_file" ]' in content
+        # The bash function must check for file existence — either positive or negative guard
+        assert '[ -f "$env_file" ]' in content or '[ ! -f "$env_file" ]' in content
 
     def test_install_sh_idempotent_source_line(self):
         """patch_shell_profile skips adding the line if already present."""
@@ -1239,3 +1239,273 @@ class TestReviewTargetedAndAtomicWrite:
         assert isinstance(saved["findings"], list)
         assert saved["kind"].startswith("targeted-")
         assert saved["files"] == ["scripts/demo.py"]
+
+
+# ===========================================================================
+# resolve_timeout_for_kind — per-task-kind timeout routing
+# ===========================================================================
+
+
+class TestResolveTimeoutForKind:
+    def test_bug_risk_uses_review_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("bug-risk") == _aidw.OLLAMA_TIMEOUT_REVIEW
+
+    def test_missing_tests_uses_review_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("missing-tests") == _aidw.OLLAMA_TIMEOUT_REVIEW
+
+    def test_regression_risk_uses_review_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("regression-risk") == _aidw.OLLAMA_TIMEOUT_REVIEW
+
+    def test_docs_needed_uses_fast_timeout(self):
+        """docs-needed is in REVIEW_KINDS but must route to the fast timeout bucket."""
+        assert _aidw.resolve_timeout_for_kind("docs-needed") == _aidw.OLLAMA_TIMEOUT_FAST
+
+    def test_summaries_uses_fast_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("summaries") == _aidw.OLLAMA_TIMEOUT_FAST
+
+    def test_synthesis_uses_fast_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("synthesis") == _aidw.OLLAMA_TIMEOUT_FAST
+
+    def test_generate_code_uses_generate_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("generate-code") == _aidw.OLLAMA_TIMEOUT_GENERATE
+
+    def test_debug_patch_uses_generate_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("debug-patch") == _aidw.OLLAMA_TIMEOUT_GENERATE
+
+    def test_patch_draft_uses_generate_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("patch-draft") == _aidw.OLLAMA_TIMEOUT_GENERATE
+
+    def test_unknown_kind_falls_back_to_generic_timeout(self):
+        assert _aidw.resolve_timeout_for_kind("unknown-kind") == _aidw.OLLAMA_TIMEOUT
+
+    def test_all_task_kinds_resolve_to_positive_int(self):
+        for kind in _aidw.ALL_TASK_KINDS:
+            t = _aidw.resolve_timeout_for_kind(kind)
+            assert isinstance(t, int) and t > 0
+
+    def test_defaults_match_expected_values(self):
+        """Sanity-check the shipped defaults without env overrides."""
+        assert _aidw._DEFAULT_TIMEOUT_REVIEW == 300
+        assert _aidw._DEFAULT_TIMEOUT_FAST == 120
+        assert _aidw._DEFAULT_TIMEOUT_GENERATE == 240
+        assert _aidw._DEFAULT_TIMEOUT_GENERIC == 180
+
+    def test_env_override_changes_review_timeout(self, monkeypatch):
+        monkeypatch.setenv("AIDW_OLLAMA_TIMEOUT_REVIEW", "600")
+        import importlib.util as _util
+        spec = _util.spec_from_file_location("aidw_timeout_fresh", _AIDW_PATH)
+        fresh = _util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        assert fresh.OLLAMA_TIMEOUT_REVIEW == 600
+        assert fresh.resolve_timeout_for_kind("bug-risk") == 600
+
+
+# ===========================================================================
+# ollama_review() — timeout detection and structured artifact
+# ===========================================================================
+
+
+class TestOllamaReviewTimeout:
+    def test_timeout_returns_structured_result(self, tmp_path):
+        """When urlopen raises URLError(socket.timeout), return structured timeout dict."""
+        import socket
+        import urllib.error
+
+        # Minimal git repo structure so ensure_branch_state can find wip dir
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/fix-timeouts\n")
+
+        # Patch all repo-inspection helpers to use tmp_path
+        fake_state = {"wip_dir": str(tmp_path / "wip")}
+        (tmp_path / "wip").mkdir()
+
+        def fake_review_bundle(r):
+            return {"branch_diff": "", "changed_files": []}
+
+        exc = urllib.error.URLError(socket.timeout("timed out"))
+
+        with patch.object(_aidw, "git_toplevel", return_value=repo):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "review_bundle", side_effect=fake_review_bundle):
+                    with patch("urllib.request.urlopen", side_effect=exc):
+                        result = _aidw.ollama_review(repo, "bug-risk", "qwen2.5-coder:7b", "http://localhost:11434")
+
+        assert result["status"] == "timeout"
+        assert result["kind"] == "bug-risk"
+        assert result["timeout_seconds"] == _aidw.OLLAMA_TIMEOUT_REVIEW
+        assert result["findings"] == []
+        assert "timed out" in result["summary"].lower()
+
+        # Structured artifact must be written to disk
+        artifact = tmp_path / "wip" / "ollama-review-bug-risk.json"
+        assert artifact.exists()
+        saved = json.loads(artifact.read_text())
+        assert saved["status"] == "timeout"
+
+    def test_timeout_does_not_raise_system_exit(self, tmp_path):
+        """A timeout must NOT propagate as SystemExit."""
+        import socket
+        import urllib.error
+
+        fake_state = {"wip_dir": str(tmp_path)}
+        exc = urllib.error.URLError(socket.timeout("timed out"))
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "review_bundle", return_value={}):
+                    with patch("urllib.request.urlopen", side_effect=exc):
+                        # Must not raise
+                        result = _aidw.ollama_review(tmp_path, "bug-risk", "qwen2.5-coder:7b", "http://localhost:11434")
+        assert result["status"] == "timeout"
+
+    def test_non_timeout_url_error_still_raises_system_exit(self, tmp_path):
+        """A connection-refused URLError must still raise SystemExit (Ollama unreachable)."""
+        import urllib.error
+
+        fake_state = {"wip_dir": str(tmp_path)}
+        exc = urllib.error.URLError("Connection refused")
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "review_bundle", return_value={}):
+                    with patch("urllib.request.urlopen", side_effect=exc):
+                        with pytest.raises(SystemExit):
+                            _aidw.ollama_review(tmp_path, "bug-risk", "qwen2.5-coder:7b", "http://localhost:11434")
+
+
+# ===========================================================================
+# ollama_review() — artifact reuse
+# ===========================================================================
+
+
+class TestOllamaReviewArtifactReuse:
+    def test_existing_completed_artifact_is_reused(self, tmp_path):
+        """If a completed artifact exists, urlopen must not be called."""
+        wip_dir = tmp_path / "wip"
+        wip_dir.mkdir()
+        completed = {
+            "kind": "bug-risk",
+            "summary": "All clear.",
+            "findings": [{"severity": "low", "issue": "x", "recommendation": "y"}],
+        }
+        (wip_dir / "ollama-review-bug-risk.json").write_text(json.dumps(completed))
+
+        fake_state = {"wip_dir": str(wip_dir)}
+
+        def bomb(*a, **kw):
+            raise AssertionError("urlopen must not be called when artifact exists")
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch("urllib.request.urlopen", side_effect=bomb):
+                    result = _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
+
+        assert result["summary"] == "All clear."
+        assert len(result["findings"]) == 1
+
+    def test_timeout_artifact_is_not_reused(self, tmp_path):
+        """A timeout artifact (status=timeout) must be overwritten, not returned."""
+        import socket
+        import urllib.error
+
+        wip_dir = tmp_path / "wip"
+        wip_dir.mkdir()
+        timeout_artifact = {
+            "kind": "bug-risk",
+            "status": "timeout",
+            "timeout_seconds": 300,
+            "summary": "Timed out.",
+            "findings": [],
+        }
+        (wip_dir / "ollama-review-bug-risk.json").write_text(json.dumps(timeout_artifact))
+
+        fake_state = {"wip_dir": str(wip_dir)}
+        exc = urllib.error.URLError(socket.timeout("timed out again"))
+
+        with patch.object(_aidw, "git_toplevel", return_value=tmp_path):
+            with patch.object(_aidw, "ensure_branch_state", return_value=fake_state):
+                with patch.object(_aidw, "review_bundle", return_value={}):
+                    with patch("urllib.request.urlopen", side_effect=exc):
+                        result = _aidw.ollama_review(tmp_path, "bug-risk", "any-model", "http://localhost:11434")
+
+        # Result should still be a timeout (re-ran and timed out again), not the old artifact
+        assert result["status"] == "timeout"
+
+
+# ===========================================================================
+# cmd_review_all() — continues after timeout
+# ===========================================================================
+
+
+class TestReviewAllContinuesAfterTimeout:
+    def test_one_timeout_does_not_abort_remaining_passes(self, tmp_path):
+        """review-all must complete all passes even if one times out."""
+        import argparse
+
+        completed_kinds: list[str] = []
+
+        def fake_ollama_review(repo, kind, model, endpoint):
+            completed_kinds.append(kind)
+            if kind == "bug-risk":
+                return {
+                    "kind": kind,
+                    "status": "timeout",
+                    "timeout_seconds": 300,
+                    "summary": "Timed out.",
+                    "findings": [],
+                }
+            return {"kind": kind, "summary": "ok", "findings": []}
+
+        args = argparse.Namespace(
+            path=str(tmp_path),
+            endpoint="http://localhost:11434",
+            no_auto_start=True,
+            no_stop=True,
+            parallel=None,
+        )
+
+        with patch.object(_aidw, "validate_ollama_endpoint", return_value=None):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch.object(_aidw, "ollama_is_running", return_value=True):
+                    with patch.object(_aidw, "ollama_has_model", return_value=True):
+                        with patch.object(_aidw, "ollama_review", side_effect=fake_ollama_review):
+                            with patch.object(_aidw, "ensure_branch_state", return_value={"wip_dir": str(tmp_path)}):
+                                rc = _aidw.cmd_review_all(args)
+
+        assert rc == 0
+        # All four kinds must have been attempted
+        assert set(completed_kinds) == set(_aidw.REVIEW_KINDS)
+
+
+# ===========================================================================
+# install.sh — timeout env vars in heredoc
+# ===========================================================================
+
+
+class TestEnvFileTimeoutContent:
+    _INSTALL_SH = _ROOT / "install.sh"
+
+    def test_install_sh_contains_timeout_generic(self):
+        content = self._INSTALL_SH.read_text()
+        assert 'AIDW_OLLAMA_TIMEOUT="180"' in content
+
+    def test_install_sh_contains_timeout_fast(self):
+        content = self._INSTALL_SH.read_text()
+        assert 'AIDW_OLLAMA_TIMEOUT_FAST="120"' in content
+
+    def test_install_sh_contains_timeout_review(self):
+        content = self._INSTALL_SH.read_text()
+        assert 'AIDW_OLLAMA_TIMEOUT_REVIEW="300"' in content
+
+    def test_install_sh_contains_timeout_generate(self):
+        content = self._INSTALL_SH.read_text()
+        assert 'AIDW_OLLAMA_TIMEOUT_GENERATE="240"' in content
+
+    def test_install_sh_appends_missing_vars_to_existing_file(self):
+        """write_ollama_env must append missing timeout vars rather than skipping."""
+        content = self._INSTALL_SH.read_text()
+        # The append logic must check per-var with grep
+        assert "AIDW_OLLAMA_TIMEOUT" in content
+        assert "grep -q" in content or "grep -qF" in content or 'grep -q "^export' in content
