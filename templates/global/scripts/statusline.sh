@@ -87,6 +87,37 @@ format_usage_pct() {
   }'
 }
 
+# Always emit ANSI color codes — this script is exclusively used for terminal
+# statusline display. Claude Code captures stdout (not a TTY) but renders the
+# ANSI sequences in the status bar, so the TTY check would strip all colors.
+c_reset='\033[0m'
+c_dim='\033[2m'
+c_green='\033[92m'
+c_yellow='\033[93m'
+c_orange='\033[33m'
+c_red='\033[91m'
+
+color_pct() {
+  local pct="$1" text="$2" int_pct
+  int_pct="$(awk -v p="$pct" 'BEGIN { printf "%d", p+0 }')"
+  if   (( int_pct >= 90 )); then printf "${c_red}%s${c_reset}"    "$text"
+  elif (( int_pct >= 75 )); then printf "${c_orange}%s${c_reset}"  "$text"
+  elif (( int_pct >= 50 )); then printf "${c_yellow}%s${c_reset}"  "$text"
+  else                            printf "${c_green}%s${c_reset}"  "$text"
+  fi
+}
+
+dim() { printf "${c_dim}%s${c_reset}" "$1"; }
+
+format_reset_time() {
+  local raw="$1"
+  [[ -n "$raw" ]] || return
+  # Strip fractional seconds (.085098) and normalize timezone colon (+00:00 → +0000)
+  local normalized
+  normalized="$(printf '%s' "$raw" | sed -E 's/\.[0-9]+([+-])/\1/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')"
+  date -j -f "%Y-%m-%dT%H:%M:%S%z" "$normalized" "+%a %H:%M" 2>/dev/null || printf '%s' "$raw"
+}
+
 usage_cache_get() {
   local key="$1"
   if [[ ! -f "$CLAUDE_USAGE_CACHE" ]]; then
@@ -113,30 +144,42 @@ limit_tokens="$(usage_cache_get '.limit_tokens')"
 source_label="$(usage_cache_get '.source')"
 daily_reset_at="$(usage_cache_get '.daily_reset_at')"
 weekly_reset_at="$(usage_cache_get '.weekly_reset_at')"
+seven_day_pct="$(usage_cache_get '.seven_day_pct')"
 usage_pct_display="$(format_usage_pct "$usage_pct")"
+seven_day_pct_display="$(format_usage_pct "$seven_day_pct")"
 
-usage_line="Claude usage: unavailable"
+usage_line="$(dim "Claude usage:") unavailable"
 if (( cache_corrupted )); then
-  usage_line="Claude usage: cache error"
-elif [[ -n "$usage_pct_display" && -n "$used_tokens" ]]; then
-  usage_line="Claude usage: $(human_tokens "$used_tokens")"
-  if [[ -n "$limit_tokens" && "$limit_tokens" != "0" ]]; then
-    usage_line+=" / $(human_tokens "$limit_tokens") today"
+  usage_line="$(dim "Claude usage:") ${c_red}cache error${c_reset}"
+elif [[ -n "$usage_pct_display" ]]; then
+  if [[ -n "$used_tokens" && "$used_tokens" != "0" ]]; then
+    # Transcript-estimate path: show token counts
+    usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "$(human_tokens "$used_tokens")")"
+    if [[ -n "$limit_tokens" && "$limit_tokens" != "0" ]]; then
+      usage_line+="$(dim " / $(human_tokens "$limit_tokens") today")"
+    fi
+    usage_line+=" $(color_pct "$usage_pct" "${usage_pct_display}%")"
+  else
+    # OAuth path: percentage only
+    usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "${usage_pct_display}%")"
   fi
-  usage_line+=" | ${usage_pct_display}%"
+
+  if [[ -n "$seven_day_pct_display" ]]; then
+    usage_line+=" $(dim "|") $(dim "7d") $(color_pct "$seven_day_pct" "${seven_day_pct_display}%")"
+  fi
 
   if [[ -n "$daily_reset_at" ]]; then
-    usage_line+=" | daily reset ${daily_reset_at}"
+    usage_line+=" $(dim "| resets $(format_reset_time "$daily_reset_at")")"
   fi
 
-  if [[ -n "$weekly_reset_at" ]]; then
-    usage_line+=" | weekly reset ${weekly_reset_at}"
+  if [[ -n "$weekly_reset_at" && "$weekly_reset_at" != "$daily_reset_at" ]]; then
+    usage_line+=" $(dim "| 7d resets $(format_reset_time "$weekly_reset_at")")"
   fi
 
-  if [[ -n "$source_label" ]]; then
-    usage_line+=" | source ${source_label}"
+  if [[ -n "$source_label" && "$source_label" != "oauth" ]]; then
+    usage_line+=" $(dim "| $source_label")"
   fi
 fi
 
-echo "$usage_line"
-echo "Session: ${used_pct}% | last ${last_in}/${last_out} | total ${total_in}/${total_out}"
+printf "%b\n" "$usage_line"
+printf "%b\n" "$(dim "Session:") $(color_pct "$used_pct" "${used_pct}%")"

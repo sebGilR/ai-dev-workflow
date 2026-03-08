@@ -76,6 +76,8 @@ install_managed_script() {
 install_managed_script "templates/global/scripts/statusline.sh" "statusline.sh"
 install_managed_script "templates/global/scripts/claude-watch.sh" "claude-watch.sh"
 install_managed_script "templates/global/scripts/save-wip-snapshot.sh" "save-wip-snapshot.sh"
+install_managed_script "templates/global/scripts/claude-fetch-usage.sh" "claude-fetch-usage.sh"
+install_managed_script "templates/global/scripts/start-claude-watch.sh" "start-claude-watch.sh"
 
 mkdir -p "$CLAUDE_HOME/skills" "$CLAUDE_HOME/agents"
 
@@ -193,6 +195,37 @@ for hook_name, arg in managed_kinds.items():
     normalized.append(canonical)
 
   hooks[hook_name] = normalized
+
+# Normalize SessionStart → start-claude-watch.sh (different script, same pattern)
+start_script = str(claude_home / "start-claude-watch.sh")
+start_canonical = {
+  "matcher": "*",
+  "hooks": [{"type": "command", "command": start_script}],
+}
+existing_start = hooks.get("SessionStart", [])
+if not isinstance(existing_start, list):
+  existing_start = []
+normalized_start = []
+found_managed_start = False
+for item in existing_start:
+  if not isinstance(item, dict):
+    normalized_start.append(item)
+    continue
+  is_managed = any(
+    isinstance(e, dict) and
+    Path(str(e.get("command", "")).split()[0]).name == "start-claude-watch.sh"
+    for e in item.get("hooks", [])
+    if isinstance(e, dict)
+  )
+  if is_managed:
+    if not found_managed_start:
+      normalized_start.append(start_canonical)
+      found_managed_start = True
+  else:
+    normalized_start.append(item)
+if not found_managed_start:
+  normalized_start.append(start_canonical)
+hooks["SessionStart"] = normalized_start
 
 settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY

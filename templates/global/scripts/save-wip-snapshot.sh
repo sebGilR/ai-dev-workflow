@@ -26,7 +26,22 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 if [[ -z "$repo_root" ]]; then
+  # Fall back to last known active repo written by start-claude-watch.sh.
+  # Verify it is still a valid git repo before using it.
+  _fallback="$(cat "${HOME}/.claude/.active-repo" 2>/dev/null || true)"
+  if [[ -n "$_fallback" ]] && git -C "$_fallback" rev-parse --show-toplevel >/dev/null 2>&1; then
+    repo_root="$_fallback"
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+fi
+
+if [[ -z "$repo_root" ]]; then
   repo_root="$PWD"
+fi
+
+# Keep the active-repo file current whenever we successfully resolve a git repo.
+if [[ -n "$repo_root" ]] && git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+  printf '%s\n' "$repo_root" > "${HOME}/.claude/.active-repo" 2>/dev/null || true
 fi
 
 if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
@@ -96,5 +111,64 @@ fi
 } > "$handoff_file" 2>/dev/null || true
 
 printf '%s | level=%s | branch=%s | repo=%s\n' "$timestamp" "$level" "$branch" "$repo_root" >> "$progress_file" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Session end: decrement reference count; stop watcher when last session ends.
+# ---------------------------------------------------------------------------
+if [[ "$level" == "sessionend" ]]; then
+  PID_FILE="${HOME}/.claude/.claude-watch.pid"
+  SESSION_COUNT_FILE="${HOME}/.claude/.claude-watch-sessions"
+
+  count="$(cat "$SESSION_COUNT_FILE" 2>/dev/null || echo 1)"
+  count=$(( count - 1 ))
+  if (( count <= 0 )); then
+    count=0
+    if [[ -f "$PID_FILE" ]]; then
+      pid="$(cat "$PID_FILE" 2>/dev/null)"
+      [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+      rm -f "$PID_FILE" 2>/dev/null || true
+    fi
+  fi
+  printf '%d\n' "$count" > "$SESSION_COUNT_FILE" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# Emergency save: if the watcher wrote ~/.claude/.wip-emergency-save and this
+# is a Stop hook, update context.md and block the next Claude turn so Claude
+# is forced to run /wip-sync before consuming more tokens.
+# ---------------------------------------------------------------------------
+EMERGENCY_FLAG="${HOME}/.claude/.wip-emergency-save"
+if [[ "$level" == "stop" && -f "$EMERGENCY_FLAG" ]]; then
+  context_file="$wip_dir/context.md"
+  wrote_context=0
+  if [[ -f "$context_file" ]]; then
+    if printf '\n---\n**Emergency save %s — usage at 90%%+.**\nRun /wip-sync to persist in-memory progress before the limit resets.\n' \
+        "$timestamp" >> "$context_file" 2>/dev/null; then
+      wrote_context=1
+    fi
+  fi
+
+  if (( wrote_context )); then
+    rm -f "$EMERGENCY_FLAG" 2>/dev/null || true  # consume flag only after successful write
+    printf '\n⚠ Claude usage is at 90%%+. WIP snapshot saved to:\n  %s/handoff.md\nRun /wip-sync now to persist in-memory progress before the limit resets.\n' \
+      "$wip_dir" >&2
+  else
+    printf '\n⚠ Claude usage is at 90%%+. Git snapshot saved but context.md was not found at:\n  %s\nRun /wip-sync manually to persist in-memory progress.\n' \
+      "$wip_dir" >&2
+  fi
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Post-stop usage refresh: update the usage cache after each Claude turn,
+# rate-limited by TTL so we never hammer the API on rapid consecutive runs.
+# ---------------------------------------------------------------------------
+if [[ "$level" == "stop" ]]; then
+  FETCH_SCRIPT="${HOME}/.claude/claude-fetch-usage.sh"
+  if [[ -x "$FETCH_SCRIPT" ]]; then
+    "$FETCH_SCRIPT" --if-stale &>/dev/null &
+    disown 2>/dev/null || true
+  fi
+fi
 
 exit 0
