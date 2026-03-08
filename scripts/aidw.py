@@ -352,9 +352,11 @@ def _find_merge_base(repo: Path, branch: str) -> str | None:
 
 
 def _truncate_diff(text: str, limit: int = MAX_DIFF_BYTES) -> tuple[str, bool]:
-    if len(text) <= limit:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
         return text, False
-    return text[:limit], True
+    truncated = encoded[:limit].decode("utf-8", errors="ignore")
+    return truncated, True
 
 
 def review_bundle(repo: Path) -> dict[str, Any]:
@@ -428,7 +430,23 @@ ALLOWED_OLLAMA_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 def validate_ollama_endpoint(endpoint: str) -> None:
     """Reject non-local Ollama endpoints unless explicitly opted in."""
+    if "://" not in endpoint:
+        raise SystemExit(
+            f"Invalid Ollama endpoint '{endpoint}'.\n"
+            f"Please include a scheme, e.g. 'http://localhost:11434' or 'https://localhost:11434'."
+        )
     parsed = urlparse(endpoint)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise SystemExit(
+            f"Invalid Ollama endpoint scheme '{parsed.scheme}' in '{endpoint}'.\n"
+            f"Only http and https schemes are supported."
+        )
+    if parsed.path not in ("", "/"):
+        raise SystemExit(
+            f"Invalid Ollama endpoint '{endpoint}'.\n"
+            f"Please provide the base Ollama URL without a path, e.g. 'http://localhost:11434'."
+        )
     hostname = parsed.hostname or ""
     if hostname not in ALLOWED_OLLAMA_HOSTS:
         if os.environ.get("AIDW_OLLAMA_ALLOW_REMOTE", "").strip() in ("1", "true", "yes"):
@@ -523,10 +541,16 @@ def ollama_start_server(endpoint: str, timeout_sec: int = 30) -> "subprocess.Pop
         )
 
     print("Auto-starting Ollama server...", file=sys.stderr)
+    parsed = urlparse(endpoint)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 11434)
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = f"{host}:{port}"
     proc: subprocess.Popen[str] = subprocess.Popen(
         ["ollama", "serve"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
 
     deadline = time.monotonic() + timeout_sec
@@ -829,16 +853,21 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
     # Ollama check (informational)
     check("ollama: binary installed", ollama_is_installed(), warn=not ollama_is_installed())
     if ollama_is_installed():
-        running = ollama_is_running(DEFAULT_OLLAMA_ENDPOINT)
-        check("ollama: service running", running, warn=not running)
-        if running:
-            for role, model_name in [
-                ("fast", OLLAMA_MODEL_FAST),
-                ("review", OLLAMA_MODEL_REVIEW),
-                ("generate", OLLAMA_MODEL_GENERATE),
-            ]:
-                has_m = ollama_has_model(model_name, DEFAULT_OLLAMA_ENDPOINT)
-                check(f"ollama: {role} model {model_name}", has_m, warn=not has_m)
+        try:
+            validate_ollama_endpoint(DEFAULT_OLLAMA_ENDPOINT)
+        except SystemExit as exc:
+            check("ollama: endpoint configuration", False, str(exc), warn=True)
+        else:
+            running = ollama_is_running(DEFAULT_OLLAMA_ENDPOINT)
+            check("ollama: service running", running, warn=not running)
+            if running:
+                for role, model_name in [
+                    ("fast", OLLAMA_MODEL_FAST),
+                    ("review", OLLAMA_MODEL_REVIEW),
+                    ("generate", OLLAMA_MODEL_GENERATE),
+                ]:
+                    has_m = ollama_has_model(model_name, DEFAULT_OLLAMA_ENDPOINT)
+                    check(f"ollama: {role} model {model_name}", has_m, warn=not has_m)
 
     results["ok"] = results["failed"] == 0
     return results
@@ -1089,11 +1118,14 @@ def cmd_ollama_stop_all(args: argparse.Namespace) -> int:
             seen.add(m)
             unique.append(m)
     results: list[dict[str, Any]] = []
+    all_stopped = True
     for model_name in unique:
         success = stop_ollama_model(model_name, endpoint)
+        if not success:
+            all_stopped = False
         results.append({"model": model_name, "stopped": success})
     print(json.dumps(results, indent=2))
-    return 0
+    return 0 if all_stopped else 1
 
 
 def cmd_verify(args: argparse.Namespace) -> int:

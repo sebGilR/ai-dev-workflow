@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -107,13 +107,20 @@ class TestTruncateDiff:
     def test_far_over_limit_truncated(self):
         text = "x" * 200_000
         result, truncated = _aidw._truncate_diff(text, limit=50_000)
-        assert len(result) == 50_000
+        assert len(result.encode("utf-8")) == 50_000
         assert truncated is True
 
     def test_empty_string(self):
         result, truncated = _aidw._truncate_diff("", limit=100)
         assert result == ""
         assert truncated is False
+
+    def test_truncates_on_utf8_bytes_without_invalid_codepoint(self):
+        text = "é" * 60
+        result, truncated = _aidw._truncate_diff(text, limit=101)
+        assert truncated is True
+        assert len(result.encode("utf-8")) == 100
+        assert result == ("é" * 50)
 
     def test_default_limit_is_50kb(self):
         # Verify that the module-level constant matches expectations
@@ -166,6 +173,21 @@ class TestValidateOllamaEndpoint:
         monkeypatch.setenv("AIDW_OLLAMA_ALLOW_REMOTE", "0")
         with pytest.raises(SystemExit):
             _aidw.validate_ollama_endpoint("http://remote-server:11434")
+
+    def test_missing_scheme_rejected(self):
+        with pytest.raises(SystemExit) as exc_info:
+            _aidw.validate_ollama_endpoint("localhost:11434")
+        assert "include a scheme" in str(exc_info.value)
+
+    def test_non_http_scheme_rejected(self):
+        with pytest.raises(SystemExit) as exc_info:
+            _aidw.validate_ollama_endpoint("ftp://localhost:11434")
+        assert "Only http and https" in str(exc_info.value)
+
+    def test_path_component_rejected(self):
+        with pytest.raises(SystemExit) as exc_info:
+            _aidw.validate_ollama_endpoint("http://localhost:11434/api")
+        assert "without a path" in str(exc_info.value)
 
     def test_allowed_hosts_set(self):
         assert "localhost" in _aidw.ALLOWED_OLLAMA_HOSTS
@@ -542,6 +564,23 @@ class TestOllamaStartServer:
                         result = _aidw.ollama_start_server("http://localhost:11434")
         assert result is mock_proc
 
+    def test_passes_endpoint_host_to_ollama_serve(self):
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None
+
+        running_sequence = [False, True]
+
+        def _is_running(_endpoint):
+            return running_sequence.pop(0)
+
+        with patch.object(_aidw, "ollama_is_running", side_effect=_is_running):
+            with patch.object(_aidw, "ollama_is_installed", return_value=True):
+                with patch("subprocess.Popen", return_value=mock_proc) as popen_mock:
+                    with patch("time.sleep"):
+                        _aidw.ollama_start_server("http://127.0.0.1:23456")
+        assert popen_mock.call_args.kwargs["env"]["OLLAMA_HOST"] == "127.0.0.1:23456"
+
     def test_raises_if_process_exits_unexpectedly(self):
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -603,3 +642,27 @@ class TestOllamaStopServer:
 
         mock_proc.kill.assert_called_once()
 
+
+class TestOllamaStopAll:
+    def test_returns_nonzero_when_any_stop_fails(self, capsys):
+        args = _aidw.build_parser().parse_args(["ollama-stop-all"])
+        with patch.object(_aidw, "stop_ollama_model", side_effect=[True, False, True]):
+            rc = _aidw.cmd_ollama_stop_all(args)
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert any(not item["stopped"] for item in out)
+
+
+class TestVerify:
+    def test_warns_and_skips_network_when_default_endpoint_invalid(self, monkeypatch):
+        monkeypatch.setattr(_aidw, "DEFAULT_OLLAMA_ENDPOINT", "http://remote-server:11434")
+        with patch.object(_aidw, "ollama_is_installed", return_value=True):
+            with patch.object(_aidw, "ollama_is_running") as running_mock:
+                with patch.object(_aidw, "ollama_has_model") as has_model_mock:
+                    results = _aidw.verify()
+        assert any(
+            check["name"] == "ollama: endpoint configuration" and check["status"] == "warn"
+            for check in results["checks"]
+        )
+        running_mock.assert_not_called()
+        has_model_mock.assert_not_called()

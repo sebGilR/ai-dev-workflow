@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,14 @@ def merge_dict(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, 
     return out
 
 
+def backup_path_for(settings_path: Path) -> Path:
+    backup = settings_path.with_suffix(".json.bak")
+    if not backup.exists():
+        return backup
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return settings_path.with_suffix(f".json.{timestamp}.bak")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--settings", required=True)
@@ -47,7 +56,7 @@ def main() -> int:
         try:
             existing = json.loads(raw)
         except json.JSONDecodeError as exc:
-            backup = settings_path.with_suffix(".json.bak")
+            backup = backup_path_for(settings_path)
             settings_path.replace(backup)
             print(
                 f"WARNING: {settings_path} contains invalid JSON ({exc}). "

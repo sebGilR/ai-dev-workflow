@@ -313,8 +313,12 @@ This checks: Ollama installed, service running, model pulled. Returns JSON with 
 
 | Environment variable | Default | Purpose |
 |---------------------|---------|---------|
-| `AIDW_OLLAMA_MODEL` | `qwen2.5-coder:14b` | Model to use for review passes |
-| `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint || `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
+| `AIDW_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Fallback model when a task kind does not map to a per-role model |
+| `AIDW_OLLAMA_MODEL_FAST` | `phi3:mini` | Model used for docs/summaries/synthesis tasks |
+| `AIDW_OLLAMA_MODEL_REVIEW` | `qwen2.5-coder:7b` | Model used for review-oriented tasks |
+| `AIDW_OLLAMA_MODEL_GENERATE` | `deepseek-coder:6.7b` | Model used for code-generation tasks |
+| `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Base Ollama API endpoint |
+| `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
 
 ### Endpoint safety
 

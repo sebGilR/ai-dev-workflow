@@ -13,9 +13,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Load merge_settings module
@@ -160,6 +159,33 @@ class TestMain:
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert "invalid JSON" in captured.err
+
+    def test_corrupt_json_uses_unique_backup_when_default_exists(self, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        template = tmp_path / "template.json"
+        existing_backup = settings.with_suffix(".json.bak")
+
+        settings.write_text("{ not valid JSON !!!", encoding="utf-8")
+        existing_backup.write_text("older backup", encoding="utf-8")
+        template.write_text(json.dumps({"key": "from-template"}), encoding="utf-8")
+
+        class FrozenDateTime:
+            @staticmethod
+            def now(tz=None):
+                return datetime(2026, 3, 8, 3, 4, 5, tzinfo=tz or timezone.utc)
+
+        monkeypatch.setattr(_ms, "datetime", FrozenDateTime)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["merge_settings.py", "--settings", str(settings), "--template", str(template)],
+        )
+        ret = _ms.main()
+        assert ret == 0
+
+        timestamped_backup = settings.with_suffix(".json.20260308030405.bak")
+        assert existing_backup.read_text() == "older backup"
+        assert timestamped_backup.exists()
+        assert timestamped_backup.read_text() == "{ not valid JSON !!!"
 
     def test_missing_settings_file_created(self, tmp_path, monkeypatch):
         settings = tmp_path / "new" / "settings.json"
