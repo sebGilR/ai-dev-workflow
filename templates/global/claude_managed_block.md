@@ -26,4 +26,13 @@ Default expectations:
 - Use `/wip-review` before `/wip-pr` for any non-trivial change.
 - Keep updates concise and useful; do not spam `.wip` files with noise.
 
+## Repository Intelligence Tools
+
+Always prefer Serena for repository exploration and code navigation:
+- symbol lookup, dependency tracing, call chain analysis
+- file discovery, semantic code search, class/module relationships
+
+When working with external libraries, frameworks, or APIs, use Context7 to retrieve
+the latest documentation before generating code. This reduces outdated API usage.
+
 ## END AI-DEV-WORKFLOW MANAGED BLOCK

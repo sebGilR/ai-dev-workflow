@@ -221,10 +221,10 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def atomic_write(path: Path, content: str) -> None:
-    """Write content to path atomically using a temp file + rename."""
+    """Write content to path atomically using a temp file + replace."""
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
-    tmp.rename(path)
+    tmp.replace(path)
 
 
 def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]:
@@ -291,8 +291,8 @@ def set_stage(repo: Path, stage: str) -> dict[str, Any]:
     if (wip_dir / "context-summary.md").exists():
         try:
             write_context_summary(repo)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[aidw] Warning: failed to auto-regenerate context-summary.md: {exc}", file=sys.stderr)
     return status
 
 
@@ -842,8 +842,8 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     if (wip_dir / "context-summary.md").exists():
         try:
             write_context_summary(repo)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[aidw] Warning: failed to auto-regenerate context-summary.md: {exc}", file=sys.stderr)
 
     return {
         "review_path": str(review_path),
@@ -976,6 +976,33 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
                 ]:
                     has_m = ollama_has_model(model_name, DEFAULT_OLLAMA_ENDPOINT)
                     check(f"ollama: {role} model {model_name}", has_m, warn=not has_m)
+
+    # MCP / intelligence tools check (informational)
+    uvx_ok = shutil.which("uvx") is not None
+    npx_ok = shutil.which("npx") is not None
+    check("mcp: uvx installed (for Serena)", uvx_ok, warn=not uvx_ok)
+    check("mcp: npx installed (for Context7)", npx_ok, warn=not npx_ok)
+
+    mcp_config = claude_home / "mcp.json"
+    if mcp_config.exists():
+        try:
+            mcp_data = json.loads(mcp_config.read_text(encoding="utf-8"))
+            if not isinstance(mcp_data, dict):
+                check("mcp: mcp.json has expected object structure", False,
+                      "top-level JSON value must be an object", warn=True)
+            else:
+                servers = mcp_data.get("mcpServers")
+                if not isinstance(servers, dict):
+                    check("mcp: mcpServers has expected object structure", False,
+                          "mcpServers must be a JSON object", warn=True)
+                    servers = {}
+                check("mcp: serena configured", "serena" in servers, warn="serena" not in servers)
+                check("mcp: context7 configured", "context7" in servers, warn="context7" not in servers)
+        except json.JSONDecodeError:
+            check("mcp: mcp.json valid JSON", False, "parse error")
+    else:
+        check("mcp: mcp.json exists", False,
+              "run installer or create ~/.claude/mcp.json manually", warn=True)
 
     results["ok"] = results["failed"] == 0
     return results

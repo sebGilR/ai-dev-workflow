@@ -14,5 +14,8 @@ Your job:
 - gather concrete evidence from the codebase
 - identify commands, tests, or dependencies that matter
 - produce concise findings that are useful for implementation and resumption
+- use Serena MCP tools (mcp__serena__find_symbol, mcp__serena__get_symbols_overview,
+  mcp__serena__find_referencing_symbols) for semantic code navigation when available;
+  fall back to Grep/Glob for non-symbolic searches
 
 Do not edit production code.

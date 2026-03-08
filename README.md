@@ -384,6 +384,76 @@ If Ollama is not available, the review still works. Claude does the review entir
 
 ---
 
+## Repository intelligence tools
+
+Two MCP servers extend Claude's ability to understand your code and external libraries.
+
+### Serena — semantic code navigation
+
+Serena gives Claude semantic understanding of your repository. Instead of text search,
+Claude can look up symbol definitions, trace call chains, and discover relationships
+between files and modules.
+
+What it improves:
+- finding relevant files during research (faster, more precise than grep)
+- understanding class hierarchies and module dependencies
+- tracing which code calls a given function
+- discovering existing patterns before writing new code
+
+### Context7 — up-to-date library documentation
+
+Context7 retrieves current documentation for external libraries directly from source.
+This reduces hallucinated API usage — especially for fast-moving libraries.
+
+What it improves:
+- writing integration code against third-party APIs
+- configuring frameworks with current syntax
+- avoiding usage of deprecated methods
+
+### Requirements
+
+| Requirement | Notes |
+|-------------|-------|
+| uv / uvx | Required for Serena. Install: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Node.js / npx | Required for Context7. Install from https://nodejs.org |
+| Claude Code MCP support | Both servers run as MCP processes |
+
+### Configuration
+
+The installer configures both servers in `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena@v0.1.4", "serena", "start-mcp-server"]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@2.1.3"]
+    }
+  }
+}
+```
+
+Both servers are pinned to specific audited versions. To upgrade, update the version
+references in `scripts/merge_mcp_json.py` and re-run the installer.
+
+If `uvx` or `npx` is not installed, the installer prints instructions instead of
+writing the config. Re-run `install.sh` after installing the missing tools.
+
+### Verify
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw verify
+```
+
+Look for `mcp:` checks in the output. Warnings indicate missing `uvx`/`npx` or an
+unconfigured server.
+
+---
+
 ## Review bundle behavior
 
 Running `review-bundle` builds a JSON snapshot of the current branch state. It captures three diff sources:

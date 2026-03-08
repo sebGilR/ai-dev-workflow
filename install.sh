@@ -77,6 +77,28 @@ done
 "$PYTHON_BIN" "$SCRIPT_DIR/scripts/aidw.py" bootstrap-workspace "$WORKSPACE_ROOT"
 
 # ---------------------------------------------------------------------------
+# MCP server configuration (Serena, Context7)
+# ---------------------------------------------------------------------------
+
+_mcp_missing=()
+command -v uvx &>/dev/null || _mcp_missing+=("uvx (required for Serena; install via: curl -LsSf https://astral.sh/uv/install.sh | sh)")
+command -v npx &>/dev/null || _mcp_missing+=("npx (required for Context7; install Node.js from https://nodejs.org)")
+
+if [ "${#_mcp_missing[@]}" -eq 0 ]; then
+    echo "→ Configuring MCP servers (Serena, Context7)..."
+    "$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_mcp_json.py" || {
+        echo ""
+        echo "⚠  MCP server configuration failed. Check ~/.claude/mcp.json for issues."
+        echo "   Re-run the installer once resolved."
+    }
+else
+    echo ""
+    echo "⚠  MCP servers were not configured. Missing dependencies:"
+    for _dep in "${_mcp_missing[@]}"; do echo "   - $_dep"; done
+    echo "   Re-run the installer once resolved."
+fi
+
+# ---------------------------------------------------------------------------
 # Ollama environment setup
 # ---------------------------------------------------------------------------
 
@@ -200,3 +222,7 @@ echo "Ollama config:   aidw ollama-config"
 echo "Ollama check:    aidw ollama-check"
 echo
 echo "Suggested next step inside a repo: /wip-start"
+echo ""
+echo "Repository intelligence tools:"
+echo "  Serena   → semantic code navigation (symbol lookup, call chains, file discovery)"
+echo "  Context7 → up-to-date library documentation (API usage, framework examples)"
