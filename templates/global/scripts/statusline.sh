@@ -8,8 +8,7 @@ set -u
 CLAUDE_USAGE_CACHE="${CLAUDE_USAGE_CACHE:-$HOME/.claude/usage-status.json}"
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo "Claude usage: unavailable"
-  echo "Session: 0% | last 0/0 | total 0/0"
+  echo "Session: 0%"
   exit 0
 fi
 
@@ -21,6 +20,8 @@ json_get() {
 }
 
 used_pct_raw="$(json_get '.context_window.used_percentage')"
+total_in_raw="$(json_get '.context_window.total_input_tokens')"
+total_out_raw="$(json_get '.context_window.total_output_tokens')"
 
 format_session_pct() {
   local raw="$1"
@@ -135,37 +136,29 @@ usage_cache_get() {
 
 used_pct="$(format_session_pct "$used_pct_raw")"
 
+[[ "$total_in_raw"  =~ ^[0-9]+$ ]] || total_in_raw=0
+[[ "$total_out_raw" =~ ^[0-9]+$ ]] || total_out_raw=0
+total_tokens=$(( total_in_raw + total_out_raw ))
+
 # Check if cache file exists but is corrupted
 cache_corrupted=0
 if [[ -f "$CLAUDE_USAGE_CACHE" ]] && ! jq empty "$CLAUDE_USAGE_CACHE" 2>/dev/null; then
   cache_corrupted=1
 fi
 
-usage_pct="$(usage_cache_get '.usage_percentage')"
-used_tokens="$(usage_cache_get '.used_tokens')"
-limit_tokens="$(usage_cache_get '.limit_tokens')"
 source_label="$(usage_cache_get '.source')"
-daily_reset_at="$(usage_cache_get '.daily_reset_at')"
-weekly_reset_at="$(usage_cache_get '.weekly_reset_at')"
-seven_day_pct="$(usage_cache_get '.seven_day_pct')"
-usage_pct_display="$(format_usage_pct "$usage_pct")"
-seven_day_pct_display="$(format_usage_pct "$seven_day_pct")"
 
-usage_line="$(dim "Claude usage:") unavailable"
-if (( cache_corrupted )); then
-  usage_line="$(dim "Claude usage:") ${c_red}cache error${c_reset}"
-elif [[ -n "$usage_pct_display" ]]; then
-  if [[ -n "$used_tokens" && "$used_tokens" != "0" ]]; then
-    # Transcript-estimate path: show token counts
-    usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "$(human_tokens "$used_tokens")")"
-    if [[ -n "$limit_tokens" && "$limit_tokens" != "0" ]]; then
-      usage_line+="$(dim " / $(human_tokens "$limit_tokens") today")"
-    fi
-    usage_line+=" $(color_pct "$usage_pct" "${usage_pct_display}%")"
-  else
-    # OAuth path: percentage only
-    usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "${usage_pct_display}%")"
-  fi
+# Only show account-level usage when OAuth data is present (subscribers on macOS).
+# API-only users and non-macOS subscribers have no meaningful daily limit to display.
+if [[ "$source_label" == "oauth" ]]; then
+  usage_pct="$(usage_cache_get '.usage_percentage')"
+  daily_reset_at="$(usage_cache_get '.daily_reset_at')"
+  weekly_reset_at="$(usage_cache_get '.weekly_reset_at')"
+  seven_day_pct="$(usage_cache_get '.seven_day_pct')"
+  usage_pct_display="$(format_usage_pct "$usage_pct")"
+  seven_day_pct_display="$(format_usage_pct "$seven_day_pct")"
+
+  usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "${usage_pct_display}%")"
 
   if [[ -n "$seven_day_pct_display" ]]; then
     usage_line+=" $(dim "|") $(dim "7d") $(color_pct "$seven_day_pct" "${seven_day_pct_display}%")"
@@ -179,10 +172,14 @@ elif [[ -n "$usage_pct_display" ]]; then
     usage_line+=" $(dim "| 7d resets $(format_reset_time "$weekly_reset_at")")"
   fi
 
-  if [[ -n "$source_label" && "$source_label" != "oauth" ]]; then
-    usage_line+=" $(dim "| $source_label")"
-  fi
+  printf "%b\n" "$usage_line"
+elif (( cache_corrupted )); then
+  printf "%b\n" "$(dim "Claude usage:") ${c_red}cache error${c_reset}"
 fi
 
-printf "%b\n" "$usage_line"
-printf "%b\n" "$(dim "Session:") $(color_pct "$used_pct" "${used_pct}%")"
+# Session line: context window % + total tokens consumed this session
+session_line="$(dim "Session:") $(color_pct "$used_pct" "${used_pct}%")"
+if (( total_tokens > 0 )); then
+  session_line+=" $(dim "·") $(color_pct "$used_pct" "$(human_tokens "$total_tokens") tokens")"
+fi
+printf "%b\n" "$session_line"
