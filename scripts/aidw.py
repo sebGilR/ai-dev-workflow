@@ -76,6 +76,12 @@ OLLAMA_TIMEOUT_FAST = _parse_int_env("AIDW_OLLAMA_TIMEOUT_FAST", _DEFAULT_TIMEOU
 OLLAMA_TIMEOUT_REVIEW = _parse_int_env("AIDW_OLLAMA_TIMEOUT_REVIEW", _DEFAULT_TIMEOUT_REVIEW, 10, 3600)
 OLLAMA_TIMEOUT_GENERATE = _parse_int_env("AIDW_OLLAMA_TIMEOUT_GENERATE", _DEFAULT_TIMEOUT_GENERATE, 10, 3600)
 
+# Gemini adversarial review configuration
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+_DEFAULT_GEMINI_TIMEOUT = 120
+GEMINI_MODEL = os.environ.get("AIDW_GEMINI_MODEL", _DEFAULT_GEMINI_MODEL)
+GEMINI_TIMEOUT = _parse_int_env("AIDW_GEMINI_TIMEOUT", _DEFAULT_GEMINI_TIMEOUT, 10, 600)
+
 # Task kind → model bucket mapping
 _REVIEW_TASK_KINDS = frozenset({"bug-risk", "missing-tests", "regression-risk"})
 _FAST_TASK_KINDS = frozenset({"docs-needed", "summaries", "synthesis"})
@@ -945,6 +951,108 @@ def ollama_is_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
+def gemini_is_installed() -> bool:
+    return shutil.which("gemini") is not None
+
+
+def gemini_review(repo: Path, model: str = GEMINI_MODEL, timeout: int = GEMINI_TIMEOUT) -> dict[str, Any]:
+    """Run an adversarial Gemini review pass and write adversarial-review.md."""
+    repo = git_toplevel(repo)
+    state = ensure_branch_state(repo)
+    wip_dir = Path(state["wip_dir"])
+
+    bundle_path = wip_dir / "review-bundle.json"
+    if not bundle_path.exists():
+        raise SystemExit("[aidw] review-bundle.json not found. Run `aidw review-bundle .` first.")
+    bundle = read_json(bundle_path)
+    diff_text: str = bundle.get("branch_diff", "") or bundle.get("diff", "") or bundle.get("staged_diff", "")
+    changed_files: list[str] = bundle.get("changed_files", [])
+
+    if not diff_text.strip():
+        print("[aidw] No diff available for adversarial review.", file=sys.stderr)
+        return {"status": "skipped", "reason": "empty diff"}
+
+    file_list_str = "\n".join(f"  - {f}" for f in changed_files) if changed_files else "  (unknown)"
+    prompt = (
+        "You are an adversarial code reviewer. Your job is to find bugs, security issues, "
+        "logic errors, edge cases, and design weaknesses that a friendly reviewer might miss.\n\n"
+        "Be critical and direct. Focus on HIGH and CRITICAL issues only — skip nitpicks.\n\n"
+        "Changed files:\n"
+        f"{file_list_str}\n\n"
+        "The full diff is provided via stdin. Review it thoroughly and report your findings."
+    )
+
+    try:
+        result = subprocess.run(
+            ["gemini", "--prompt", prompt, "--model", model, "--output-format", "text"],
+            input=diff_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"[aidw] Gemini adversarial review timed out after {timeout}s.",
+            file=sys.stderr,
+        )
+        return {"status": "timeout", "model": model}
+    except FileNotFoundError:
+        print(
+            "[aidw] `gemini` binary not found. Install: npm install -g @google/gemini-cli",
+            file=sys.stderr,
+        )
+        return {"status": "not_installed"}
+
+    if result.returncode != 0:
+        print(
+            f"[aidw] Gemini adversarial review failed (exit {result.returncode}):\n{result.stderr}",
+            file=sys.stderr,
+        )
+        return {"status": "error", "returncode": result.returncode, "stderr": result.stderr}
+
+    output = result.stdout.strip()
+    if not output:
+        print("[aidw] Gemini returned empty output.", file=sys.stderr)
+        return {"status": "empty", "model": model}
+    adversarial_path = wip_dir / "adversarial-review.md"
+    atomic_write(adversarial_path, output + "\n")
+
+    status_path = wip_dir / "status.json"
+    if status_path.exists():
+        with _status_lock:
+            st = read_json(status_path)
+            rp = st.get("review_passes", [])
+            if "gemini-adversarial" not in rp:
+                rp.append("gemini-adversarial")
+            st["review_passes"] = rp
+            st["updated_at"] = now_iso()
+            write_json(status_path, st)
+
+    return {"status": "ok", "model": model}
+
+
+def cmd_gemini_review(args: argparse.Namespace) -> int:
+    """CLI wrapper for running an adversarial Gemini review pass."""
+    if not gemini_is_installed():
+        raise SystemExit(
+            "[aidw] `gemini` binary not found.\n"
+            "Install: npm install -g @google/gemini-cli\n"
+            "Auth:    gemini auth login  (or set GEMINI_API_KEY)"
+        )
+    model = getattr(args, "model", GEMINI_MODEL) or GEMINI_MODEL
+    timeout = getattr(args, "timeout", GEMINI_TIMEOUT) or GEMINI_TIMEOUT
+    result = gemini_review(Path(args.path), model=model, timeout=timeout)
+    status = result.get("status")
+    if status == "ok":
+        print("Gemini adversarial review complete.", file=sys.stderr)
+        return 0
+    if status in ("skipped", "empty"):
+        print(f"[aidw] Gemini adversarial review {status}: {result.get('reason', '')}", file=sys.stderr)
+        return 0
+    print(f"[aidw] Gemini adversarial review failed: {result}", file=sys.stderr)
+    return 1
+
+
 def ollama_is_running(endpoint: str) -> bool:
     try:
         req = urllib.request.Request(endpoint.rstrip("/") + "/api/tags", method="GET")
@@ -1281,6 +1389,7 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     existing_claude_content: str = ""
     existing_gap_analysis: str = ""
     existing_targeted_review: str = ""
+    existing_adversarial_review: str = ""
     placeholder = "<!-- Claude should add its own review findings here -->"
     
     if review_path.exists():
@@ -1323,6 +1432,18 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
             if targeted_section and targeted_section.strip():
                 existing_targeted_review = targeted_section
 
+        # Extract Adversarial Review section
+        adversarial_match = re.search(r"(?m)^## Adversarial Review\s*$", existing_text)
+        if adversarial_match is not None:
+            after_heading = existing_text[adversarial_match.end():].lstrip("\n")
+            next_heading = re.search(r"(?m)^## ", after_heading)
+            if next_heading:
+                adversarial_section = after_heading[:next_heading.start()].rstrip("\n")
+            else:
+                adversarial_section = after_heading.rstrip("\n")
+            if adversarial_section and adversarial_section.strip():
+                existing_adversarial_review = adversarial_section
+
     sections.append("## Gap Analysis\n")
     if existing_gap_analysis:
         sections.append(existing_gap_analysis + "\n")
@@ -1334,7 +1455,16 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
         sections.append(existing_targeted_review + "\n")
     else:
         sections.append("<!-- Run `aidw review-targeted . --files <files> --focus <focus>` for focused follow-up -->\n")
-    
+
+    adversarial_path = wip_dir / "adversarial-review.md"
+    if adversarial_path.exists():
+        sections.append("## Adversarial Review\n")
+        adv_content = adversarial_path.read_text(encoding="utf-8").strip()
+        sections.append(adv_content + "\n")
+    elif existing_adversarial_review:
+        sections.append("## Adversarial Review\n")
+        sections.append(existing_adversarial_review + "\n")
+
     sections.append("## Claude Review\n")
     if existing_claude_content:
         sections.append(existing_claude_content + "\n")
@@ -2403,6 +2533,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-auto-start", action="store_true", help="Don't auto-start Ollama server")
     p.add_argument("--no-stop", action="store_true", help="Don't stop models after review")
     p.set_defaults(func=cmd_review_targeted)
+
+    p = sub.add_parser("gemini-review", help="Run adversarial Gemini review pass")
+    p.add_argument("path")
+    p.add_argument("--model", default=GEMINI_MODEL, help="Gemini model to use")
+    p.add_argument("--timeout", type=int, default=GEMINI_TIMEOUT, help="Timeout in seconds")
+    p.set_defaults(func=cmd_gemini_review)
 
     p = sub.add_parser("summarize-context", help="Generate context-summary.md from all WIP files")
     p.add_argument("path")
