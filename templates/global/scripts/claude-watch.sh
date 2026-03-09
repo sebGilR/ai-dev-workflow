@@ -5,7 +5,7 @@
 
 set -u
 
-LIMIT=200000
+LIMIT="${CLAUDE_TOKEN_LIMIT:-200000}"
 INTERVAL=20
 PROJECTS_DIR="${HOME}/.claude/projects"
 SNAPSHOT_SCRIPT="${HOME}/.claude/save-wip-snapshot.sh"
@@ -15,6 +15,7 @@ FETCH_SCRIPT="${HOME}/.claude/claude-fetch-usage.sh"
 warn75_sent=0
 warn85_sent=0
 warn90_sent=0
+warn_day=""   # track date to reset flags at midnight
 EMERGENCY_FLAG="${HOME}/.claude/.wip-emergency-save"
 
 tokens_today() {
@@ -125,6 +126,15 @@ fi
 mkdir -p "$(dirname "$USAGE_CACHE_FILE")" 2>/dev/null || true
 
 while true; do
+  # Reset per-day threshold flags when the calendar date changes.
+  today="$(date '+%Y-%m-%d')"
+  if [[ "$today" != "$warn_day" ]]; then
+    warn75_sent=0
+    warn85_sent=0
+    warn90_sent=0
+    warn_day="$today"
+  fi
+
   oauth_used=0
 
   if [[ -x "$FETCH_SCRIPT" ]]; then

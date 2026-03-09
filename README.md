@@ -38,7 +38,8 @@ The installer creates or updates:
 | `~/.claude/CLAUDE.md` | Managed workflow block (non-destructive merge) |
 | `~/.claude/ai-dev-workflow` | Symlink pointing to this repo |
 | `~/.claude/statusline.sh` | Claude statusline renderer (usage summary + session token summary) |
-| `~/.claude/claude-watch.sh` | Daily token watcher (20s loop, threshold warnings at 75/85/92%) |
+| `~/.claude/claude-watch.sh` | Daily token watcher (20s loop, threshold warnings at 75/85/90%) |
+| `~/.claude/start-claude-watch.sh` | SessionStart hook — launches watcher and tracks per-session reference count |
 | `~/.claude/claude-fetch-usage.sh` | OAuth usage poller — fetches real utilization % from Anthropic API (macOS) |
 | `~/.claude/save-wip-snapshot.sh` | Snapshot helper used by watcher and Claude hooks |
 
@@ -142,33 +143,33 @@ Defaults:
 - Daily limit: `200000` tokens
 - Warn at `75%`
 - Autosave snapshot at `85%` (`warn`)
-- Final autosave snapshot at `92%` (`critical`)
+- Final autosave snapshot at `90%` (`critical`)
 
 What this currently powers:
 
 - `~/.claude/claude-fetch-usage.sh` (macOS) calls the Anthropic OAuth API and writes `~/.claude/usage-status.json` with real utilization %
-- `~/.claude/claude-watch.sh` delegates to the fetcher, falls back to transcript-based estimate on non-macOS or auth failure, and fires threshold warnings at 75/85/92%
+- `~/.claude/claude-watch.sh` delegates to the fetcher, falls back to transcript-based estimate on non-macOS or auth failure, and fires threshold warnings at 75/85/90%
 - `~/.claude/statusline.sh` reads the cache and shows Claude account usage plus session token percentage
 
 Statusline shape when OAuth data is available (macOS):
 
 ```text
 Claude usage: 17% | 7d 72% | resets 2026-03-09T02:00:00+00:00
-Session: 38% | last 1240/311 | total 18240/5290
+Session: 38%
 ```
 
 Statusline shape when falling back to transcript estimate:
 
 ```text
 Claude usage: 142k / 200k today | 71% | source transcript-estimate
-Session: 38% | last 1240/311 | total 18240/5290
+Session: 38%
 ```
 
 If the watcher is not running or the cache file is missing, the statusline falls back to:
 
 ```text
 Claude usage: unavailable
-Session: 38% | last 1240/311 | total 18240/5290
+Session: 38%
 ```
 
 Note: the OAuth endpoint used by `claude-fetch-usage.sh` is unofficial and undocumented. It relies on the macOS Keychain for the OAuth token and may change without notice.
@@ -768,6 +769,14 @@ export AIDW_OLLAMA_TIMEOUT_FAST=180     # 3 minutes for fast tasks
 ---
 
 ## Known limitations and future improvements
+
+### Concurrent multi-repo sessions and `.active-repo`
+
+`save-wip-snapshot.sh` uses `~/.claude/.active-repo` as a fallback when `git rev-parse` fails to detect the current repo from the hook's working directory. This file is a single global pointer written on every session start and updated on every successful git resolution.
+
+With two concurrent Claude sessions open in **different repositories**, the pointer races continuously — whichever session most recently triggered a hook owns the file. An emergency autosave fired from session A may read session B's repo path and append the warning to the wrong `context.md`. A stderr warning is emitted whenever the fallback fires.
+
+**For single-session use (the common case) this works correctly.** If you routinely work with multiple concurrent Claude sessions in different repos, avoid relying on the emergency autosave and prefer explicit `/wip-sync` before context resets.
 
 ### Streaming support
 Review passes currently wait for Ollama to return the full response before writing results. Adding `stream: true` to the `/api/chat` request would let passes succeed incrementally, reducing sensitivity to timeouts on slow models or large diffs. This requires parsing the NDJSON response stream and reassembling the structured output.

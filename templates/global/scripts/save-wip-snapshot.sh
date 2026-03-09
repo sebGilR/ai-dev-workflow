@@ -32,6 +32,7 @@ if [[ -z "$repo_root" ]]; then
   if [[ -n "$_fallback" ]] && git -C "$_fallback" rev-parse --show-toplevel >/dev/null 2>&1; then
     repo_root="$_fallback"
     branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    echo "warn: save-wip-snapshot using .active-repo fallback ($repo_root) — concurrent multi-repo sessions may target the wrong context.md" >&2
   fi
 fi
 
@@ -48,8 +49,29 @@ if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
   branch="detached-head"
 fi
 
-wip_dir="$repo_root/.wip/$branch"
-legacy_wip_dir="$repo_root/wip/$branch"
+# Sanitize branch name to match aidw.py's safe_slug(): replace non-[A-Za-z0-9_.-]
+# chars with '-', strip leading/trailing '-', append 8-char sha256 suffix when slug
+# differs from original (prevents collisions, e.g. "feature/foo" vs "feature-foo").
+_branch_slug() {
+  local name="$1"
+  local slug
+  slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^-*//; s/-*$//')"
+  [[ -n "$slug" ]] || slug="unknown-branch"
+  if [[ "$slug" != "$name" ]]; then
+    local hash=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      hash="$(printf '%s' "$name" | sha256sum | cut -c1-8 2>/dev/null || true)"
+    elif command -v shasum >/dev/null 2>&1; then
+      hash="$(printf '%s' "$name" | shasum -a 256 | cut -c1-8 2>/dev/null || true)"
+    fi
+    [[ -n "$hash" ]] && slug="${slug}-${hash}"
+  fi
+  printf '%s' "$slug"
+}
+branch_slug="$(_branch_slug "$branch")"
+
+wip_dir="$repo_root/.wip/$branch_slug"
+legacy_wip_dir="$repo_root/wip/$branch_slug"
 handoff_file="$wip_dir/handoff.md"
 progress_file="$wip_dir/progress.log"
 research_file="$wip_dir/research.md"

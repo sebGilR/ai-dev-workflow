@@ -21,15 +21,6 @@ json_get() {
 }
 
 used_pct_raw="$(json_get '.context_window.used_percentage')"
-last_in="$(json_get '.context_window.current_usage.input_tokens')"
-last_out="$(json_get '.context_window.current_usage.output_tokens')"
-total_in="$(json_get '.context_window.total_input_tokens')"
-total_out="$(json_get '.context_window.total_output_tokens')"
-
-[[ -n "$last_in" ]] || last_in="0"
-[[ -n "$last_out" ]] || last_out="0"
-[[ -n "$total_in" ]] || total_in="0"
-[[ -n "$total_out" ]] || total_out="0"
 
 format_session_pct() {
   local raw="$1"
@@ -40,8 +31,9 @@ format_session_pct() {
       exit
     }
 
-    # Accept both decimal (0.5) and integer (50) format. If value is a fraction (<=1), convert to percent.
-    if ((raw ~ /^[0-9]+$/ || raw ~ /^[0-9]*\.[0-9]+$/) && value <= 1) {
+    # Only treat value as a fraction when it is explicitly decimal-formatted (e.g. 0.5).
+    # Integer 1 means 1%, not 100%, so the float pattern check is intentionally strict.
+    if (raw ~ /^[0-9]*\.[0-9]+$/ && value <= 1) {
       value = value * 100
     }
 
@@ -115,12 +107,23 @@ format_reset_time() {
   # Strip fractional seconds (.085098) and normalize timezone colon (+00:00 → +0000)
   local normalized
   normalized="$(printf '%s' "$raw" | sed -E 's/\.[0-9]+([+-])/\1/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')"
-  date -j -f "%Y-%m-%dT%H:%M:%S%z" "$normalized" "+%a %H:%M" 2>/dev/null || printf '%s' "$raw"
+  # Try macOS/BSD date first; fall back to GNU date; print raw on both failures.
+  if date -j -f "%Y-%m-%dT%H:%M:%S%z" "$normalized" "+%a %H:%M" 2>/dev/null; then
+    return
+  fi
+  if date -d "$normalized" "+%a %H:%M" 2>/dev/null; then
+    return
+  fi
+  printf '%s' "$raw"
 }
 
 usage_cache_get() {
   local key="$1"
   if [[ ! -f "$CLAUDE_USAGE_CACHE" ]]; then
+    return 1
+  fi
+  # Skip re-validation if the file is already known to be corrupted.
+  if [[ "${cache_corrupted:-0}" -eq 1 ]]; then
     return 1
   fi
   # Validate JSON before extracting values. If parse fails, return 1 (error).
