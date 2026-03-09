@@ -50,6 +50,35 @@ safe_link() {
 # Keep a stable link back to this repo so skills can reference scripts reliably.
 safe_link "$SCRIPT_DIR" "$CLAUDE_HOME/ai-dev-workflow"
 
+install_managed_script() {
+  local rel_src="$1"
+  local dest_name="$2"
+  local src="$SCRIPT_DIR/$rel_src"
+  local dest="$CLAUDE_HOME/$dest_name"
+
+  if [ ! -f "$src" ]; then
+    echo "WARNING: managed script template missing: $src" >&2
+    return 0
+  fi
+
+  chmod +x "$src" 2>/dev/null || true
+
+  if safe_link "$src" "$dest"; then
+    chmod +x "$dest" 2>/dev/null || true
+    return 0
+  fi
+
+  echo "WARNING: could not install managed script at $dest (existing unmanaged file)." >&2
+  echo "         Move/remove it and re-run install.sh if you want ai-dev-workflow to manage it." >&2
+  return 0
+}
+
+install_managed_script "templates/global/scripts/statusline.sh" "statusline.sh"
+install_managed_script "templates/global/scripts/claude-watch.sh" "claude-watch.sh"
+install_managed_script "templates/global/scripts/save-wip-snapshot.sh" "save-wip-snapshot.sh"
+install_managed_script "templates/global/scripts/claude-fetch-usage.sh" "claude-fetch-usage.sh"
+install_managed_script "templates/global/scripts/start-claude-watch.sh" "start-claude-watch.sh"
+
 mkdir -p "$CLAUDE_HOME/skills" "$CLAUDE_HOME/agents"
 
 for skill_dir in "$SCRIPT_DIR"/claude/skills/*; do
@@ -71,6 +100,148 @@ done
 "$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_settings.py" \
   --settings "$CLAUDE_HOME/settings.json" \
   --template "$SCRIPT_DIR/templates/global/settings.template.json"
+
+normalize_managed_settings_paths() {
+  "$PYTHON_BIN" - "$CLAUDE_HOME/settings.json" "$CLAUDE_HOME" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+claude_home = Path(sys.argv[2])
+
+if not settings_path.exists():
+  raise SystemExit(0)
+
+data = json.loads(settings_path.read_text(encoding="utf-8"))
+
+status_cmd = str(claude_home / "statusline.sh")
+snapshot_script = str(claude_home / "save-wip-snapshot.sh")
+
+# Verify managed scripts are actually symlinks (installed successfully).
+# Only write paths if the scripts are managed symlinks; skip if unmanaged local files exist.
+if not Path(status_cmd).is_symlink() or not Path(snapshot_script).is_symlink():
+  raise SystemExit(0)
+
+# Normalize statusLine only when missing or already pointing at a statusline helper.
+status_line = data.get("statusLine")
+if not isinstance(status_line, dict):
+  data["statusLine"] = {"type": "command", "command": status_cmd}
+else:
+  current_cmd = str(status_line.get("command", ""))
+  if (not current_cmd) or current_cmd.endswith("statusline.sh"):
+    status_line["type"] = "command"
+    status_line["command"] = status_cmd
+
+hooks = data.get("hooks")
+if not isinstance(hooks, dict):
+  hooks = {}
+  data["hooks"] = hooks
+
+managed_kinds = {
+  "Stop": "stop",
+  "PreCompact": "precompact",
+  "SessionEnd": "sessionend",
+}
+
+for hook_name, arg in managed_kinds.items():
+  canonical = {
+    "matcher": "*",
+    "hooks": [
+      {
+        "type": "command",
+        "command": f"{snapshot_script} {arg}",
+      }
+    ],
+  }
+
+  existing = hooks.get(hook_name, [])
+  if not isinstance(existing, list):
+    existing = []
+
+  normalized = []
+  found_managed = False
+
+  for item in existing:
+    if not isinstance(item, dict):
+      normalized.append(item)
+      continue
+
+    item_hooks = item.get("hooks", [])
+    if not isinstance(item_hooks, list):
+      normalized.append(item)
+      continue
+
+    is_managed_variant = False
+    non_managed_entries = []
+    for entry in item_hooks:
+      if not isinstance(entry, dict):
+        non_managed_entries.append(entry)
+        continue
+      cmd = str(entry.get("command", "")).strip()
+      # Check if this is a managed variant: save-wip-snapshot.sh with the matching argument
+      # Use split() for robust parsing instead of endswith() to handle spacing/comments
+      parts = cmd.split()
+      if len(parts) >= 2 and Path(parts[0]).name == "save-wip-snapshot.sh" and parts[1] == arg:
+        is_managed_variant = True
+      else:
+        non_managed_entries.append(entry)
+
+    if is_managed_variant:
+      if not found_managed:
+        normalized.append(canonical)
+        found_managed = True
+      # Preserve any non-managed hooks that were co-located with the managed entry
+      if non_managed_entries:
+        new_item = dict(item)
+        new_item["hooks"] = non_managed_entries
+        normalized.append(new_item)
+    else:
+      normalized.append(item)
+
+  if not found_managed:
+    normalized.append(canonical)
+
+  hooks[hook_name] = normalized
+
+# Normalize SessionStart → start-claude-watch.sh (different script, same pattern)
+start_script = str(claude_home / "start-claude-watch.sh")
+start_canonical = {
+  "matcher": "*",
+  "hooks": [{"type": "command", "command": start_script}],
+}
+existing_start = hooks.get("SessionStart", [])
+if not isinstance(existing_start, list):
+  existing_start = []
+normalized_start = []
+found_managed_start = False
+for item in existing_start:
+  if not isinstance(item, dict):
+    normalized_start.append(item)
+    continue
+  is_managed = False
+  for e in item.get("hooks", []):
+    if not isinstance(e, dict):
+      continue
+    parts = str(e.get("command", "")).strip().split()
+    if parts and Path(parts[0]).name == "start-claude-watch.sh":
+      is_managed = True
+      break
+  if is_managed:
+    if not found_managed_start:
+      normalized_start.append(start_canonical)
+      found_managed_start = True
+  else:
+    normalized_start.append(item)
+if not found_managed_start:
+  normalized_start.append(start_canonical)
+hooks["SessionStart"] = normalized_start
+
+settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+normalize_managed_settings_paths
 
 "$PYTHON_BIN" "$SCRIPT_DIR/scripts/update_global_gitignore.py"
 
