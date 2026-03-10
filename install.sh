@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
@@ -307,6 +307,13 @@ export AIDW_OLLAMA_TIMEOUT="180"
 export AIDW_OLLAMA_TIMEOUT_FAST="120"
 export AIDW_OLLAMA_TIMEOUT_REVIEW="300"
 export AIDW_OLLAMA_TIMEOUT_GENERATE="240"
+
+
+# Gemini adversarial review (optional, requires `npm install -g @google/gemini-cli` + auth)
+# Set AIDW_GEMINI_REVIEW=1 to enable; requires GEMINI_API_KEY or prior `gemini auth login`
+export AIDW_GEMINI_REVIEW="0"
+export AIDW_GEMINI_MODEL="gemini-2.5-pro"
+export AIDW_GEMINI_TIMEOUT="120"
 ENVEOF
     echo "Created Ollama env file:  $env_file"
   else
@@ -317,7 +324,10 @@ ENVEOF
       'export AIDW_OLLAMA_TIMEOUT="180"' \
       'export AIDW_OLLAMA_TIMEOUT_FAST="120"' \
       'export AIDW_OLLAMA_TIMEOUT_REVIEW="300"' \
-      'export AIDW_OLLAMA_TIMEOUT_GENERATE="240"'
+      'export AIDW_OLLAMA_TIMEOUT_GENERATE="240"' \
+      'export AIDW_GEMINI_REVIEW="0"' \
+      'export AIDW_GEMINI_MODEL="gemini-2.5-pro"' \
+      'export AIDW_GEMINI_TIMEOUT="120"'
     do
       local _var_name
       _var_name=$(echo "$_var_line" | sed 's/export \([^=]*\)=.*/\1/')
@@ -379,8 +389,64 @@ patch_shell_profile() {
   echo "Reload with:  source $profile"
 }
 
+configure_gemini_review() {
+  local env_file="$CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
+
+  # Skip if env file missing or not interactive
+  [ -f "$env_file" ] || return 0
+  [ -t 0 ] || return 0
+
+  # Skip if already explicitly enabled
+  if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
+    echo "Gemini adversarial review: already enabled in $env_file"
+    return 0
+  fi
+
+  echo ""
+  if command -v gemini &>/dev/null; then
+    echo "Gemini CLI detected: $(command -v gemini)"
+  else
+    echo "Gemini CLI not found (can be installed later: npm install -g @google/gemini-cli)"
+  fi
+  printf "Enable Gemini adversarial review? [y/N] "
+  read -r _gemini_response </dev/tty || _gemini_response=""
+  echo ""
+
+  if [[ "${_gemini_response:-}" =~ ^[Yy]$ ]]; then
+    "$PYTHON_BIN" - "$env_file" <<'PY'
+import sys, re
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+text = env_file.read_text(encoding="utf-8")
+
+# Uncomment or update any existing AIDW_GEMINI_REVIEW line to "1"
+updated = re.sub(
+    r'^#*\s*export AIDW_GEMINI_REVIEW=.*$',
+    'export AIDW_GEMINI_REVIEW="1"',
+    text,
+    flags=re.MULTILINE,
+)
+if updated == text:
+    # Line not present at all — append it
+    updated = text.rstrip("\n") + '\nexport AIDW_GEMINI_REVIEW="1"\n'
+
+env_file.write_text(updated, encoding="utf-8")
+print("Gemini adversarial review enabled.")
+PY
+    if ! command -v gemini &>/dev/null; then
+      echo "  Install:       npm install -g @google/gemini-cli"
+      echo "  Authenticate:  gemini auth login"
+    fi
+  else
+    echo "Gemini adversarial review skipped. To enable later:"
+    echo "  Set AIDW_GEMINI_REVIEW=1 in $env_file"
+  fi
+}
+
 write_ollama_env
 patch_shell_profile
+configure_gemini_review
 
 # ---------------------------------------------------------------------------
 # Optional: pull recommended Ollama models

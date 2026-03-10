@@ -42,7 +42,24 @@ If gaps are identified that need focused follow-up, optionally run targeted revi
 
 Where `<files>` is a comma-separated list of file paths and `<focus>` is a specific concern (e.g., "error-handling", "performance", "concurrency").
 
-5. Synthesize the review scaffold (writes Ollama findings + gap analysis + targeted review + `## Claude Review` placeholder into `review.md`):
+4.5. Optionally run adversarial Gemini review (only if `AIDW_GEMINI_REVIEW=1`):
+
+Before proceeding to synthesis, decide whether this change warrants adversarial review. Run it if ANY of the following apply:
+- The diff touches more than 3 files
+- Any Ollama finding has severity `HIGH` or `CRITICAL`
+- The change modifies public API surface, authentication/authorization logic, data model/schema, or concurrent code
+
+Skip if the change is a small refactor, rename/formatting, docs-only update, or trivially small diff.
+
+If warranted:
+
+```bash
+~/.claude/ai-dev-workflow/bin/aidw gemini-review .
+```
+
+If the command fails because Gemini CLI is not installed or auth is not configured, continue to step 5 without adversarial results. The `## Adversarial Review` section will be omitted from the synthesized review.
+
+5. Synthesize the review scaffold (writes Ollama findings + gap analysis + targeted review + adversarial review (if present) + `## Claude Review` placeholder into `review.md`):
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
