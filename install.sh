@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
@@ -409,7 +409,7 @@ configure_gemini_review() {
     echo "Gemini CLI not found (can be installed later: npm install -g @google/gemini-cli)"
   fi
   printf "Enable Gemini adversarial review? [y/N] "
-  read -r _gemini_response </dev/tty
+  read -r _gemini_response </dev/tty || _gemini_response=""
   echo ""
 
   if [[ "${_gemini_response:-}" =~ ^[Yy]$ ]]; then

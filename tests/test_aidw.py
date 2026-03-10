@@ -1566,3 +1566,62 @@ class TestEnvFileTimeoutContent:
         # The append logic must check per-var with grep
         assert "AIDW_OLLAMA_TIMEOUT" in content
         assert "grep -q" in content or "grep -qF" in content or 'grep -q "^export' in content
+
+
+# ===========================================================================
+# Gemini adversarial review
+# ===========================================================================
+
+
+class TestGeminiReview:
+    def test_gemini_review_registered(self):
+        args = _aidw.build_parser().parse_args(["gemini-review", "."])
+        assert args.func == _aidw.cmd_gemini_review
+
+    def test_synthesize_review_includes_adversarial_section(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        (wip_dir / "adversarial-review.md").write_text(
+            "### Critical\n- Found a bug in auth flow\n", encoding="utf-8"
+        )
+        _aidw.synthesize_review(repo)
+        content = (wip_dir / "review.md").read_text(encoding="utf-8")
+        assert "## Adversarial Review" in content
+        assert "Found a bug in auth flow" in content
+
+    def test_synthesize_review_omits_adversarial_when_absent(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        _aidw.synthesize_review(repo)
+        content = (wip_dir / "review.md").read_text(encoding="utf-8")
+        assert "## Adversarial Review" not in content
+
+    def test_gemini_review_skipped_clears_stale_output(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        # Create a stale adversarial-review.md
+        adv_path = wip_dir / "adversarial-review.md"
+        adv_path.write_text("stale content\n", encoding="utf-8")
+
+        # Create an empty review bundle so gemini_review skips
+        bundle = {"branch_diff": "", "diff": "", "staged_diff": "", "changed_files": []}
+        _aidw.write_json(wip_dir / "review-bundle.json", bundle)
+
+        result = _aidw.gemini_review(repo)
+        assert result["status"] == "skipped"
+        assert not adv_path.exists()
+
+    def test_cmd_gemini_review_skipped_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("AIDW_GEMINI_REVIEW", "0")
+        args = _aidw.build_parser().parse_args(["gemini-review", "."])
+        assert _aidw.cmd_gemini_review(args) == 0
+
+    def test_cmd_gemini_review_timeout_clamped(self):
+        args = _aidw.build_parser().parse_args(["gemini-review", ".", "--timeout", "0"])
+        # timeout=0 should be clamped to 10 by cmd_gemini_review, not crash

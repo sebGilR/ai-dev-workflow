@@ -968,8 +968,13 @@ def gemini_review(repo: Path, model: str = GEMINI_MODEL, timeout: int = GEMINI_T
     diff_text: str = bundle.get("branch_diff", "") or bundle.get("diff", "") or bundle.get("staged_diff", "")
     changed_files: list[str] = bundle.get("changed_files", [])
 
+    adversarial_path = wip_dir / "adversarial-review.md"
+
     if not diff_text.strip():
         print("[aidw] No diff available for adversarial review.", file=sys.stderr)
+        # Remove stale output so synthesize_review doesn't include old findings
+        if adversarial_path.exists():
+            adversarial_path.unlink()
         return {"status": "skipped", "reason": "empty diff"}
 
     file_list_str = "\n".join(f"  - {f}" for f in changed_files) if changed_files else "  (unknown)"
@@ -1013,8 +1018,10 @@ def gemini_review(repo: Path, model: str = GEMINI_MODEL, timeout: int = GEMINI_T
     output = result.stdout.strip()
     if not output:
         print("[aidw] Gemini returned empty output.", file=sys.stderr)
+        # Remove stale output so synthesize_review doesn't include old findings
+        if adversarial_path.exists():
+            adversarial_path.unlink()
         return {"status": "empty", "model": model}
-    adversarial_path = wip_dir / "adversarial-review.md"
     atomic_write(adversarial_path, output + "\n")
 
     status_path = wip_dir / "status.json"
@@ -1033,6 +1040,9 @@ def gemini_review(repo: Path, model: str = GEMINI_MODEL, timeout: int = GEMINI_T
 
 def cmd_gemini_review(args: argparse.Namespace) -> int:
     """CLI wrapper for running an adversarial Gemini review pass."""
+    if os.environ.get("AIDW_GEMINI_REVIEW", "0") != "1":
+        print("[aidw] Gemini adversarial review disabled (AIDW_GEMINI_REVIEW != 1).", file=sys.stderr)
+        return 0
     if not gemini_is_installed():
         raise SystemExit(
             "[aidw] `gemini` binary not found.\n"
@@ -1041,6 +1051,7 @@ def cmd_gemini_review(args: argparse.Namespace) -> int:
         )
     model = getattr(args, "model", GEMINI_MODEL) or GEMINI_MODEL
     timeout = getattr(args, "timeout", GEMINI_TIMEOUT) or GEMINI_TIMEOUT
+    timeout = max(10, min(timeout, 600))
     result = gemini_review(Path(args.path), model=model, timeout=timeout)
     status = result.get("status")
     if status == "ok":
