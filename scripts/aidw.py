@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "gotchas.md"]
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
+COPILOT_SKILLS = [
+    "wip-start",
+    "wip-plan",
+    "wip-research",
+    "wip-implement",
+    "wip-review",
+    "wip-fix-review",
+    "wip-resume",
+    "wip-pr",
+    "wip-install",
+]
+COPILOT_AGENTS = ["wip-planner", "wip-researcher", "wip-reviewer", "wip-tester"]
 
 
 def _parse_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -163,6 +175,66 @@ def infer_repo_notes(repo: Path) -> dict[str, str]:
     return notes
 
 
+def _strip_permission_mode_frontmatter(content: str) -> str:
+    """Remove Claude-only permissionMode from YAML frontmatter if present.
+    
+    Handles indented keys like '  permissionMode: ...' which are valid YAML.
+    """
+    lines = content.splitlines()
+    if len(lines) < 3 or lines[0].strip() != "---":
+        return content
+
+    closing_idx = None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            closing_idx = idx
+            break
+
+    if closing_idx is None:
+        return content
+
+    frontmatter = [ln for ln in lines[1:closing_idx] if not ln.strip().startswith("permissionMode:")]
+    rebuilt = ["---", *frontmatter, "---", *lines[closing_idx + 1 :]]
+    return "\n".join(rebuilt).rstrip("\n") + "\n"
+
+
+def ensure_copilot_assets(repo: Path) -> dict[str, Any]:
+    """Seed minimal repo-level Copilot assets non-destructively."""
+    github_dir = repo / ".github"
+    github_dir.mkdir(parents=True, exist_ok=True)
+
+    instructions_template = template_root() / "github" / "copilot-instructions.md"
+    seed_file_if_missing(
+        github_dir / "copilot-instructions.md",
+        instructions_template.read_text(encoding="utf-8"),
+    )
+
+    skills_seeded = 0
+    for skill in COPILOT_SKILLS:
+        src = script_root() / "claude" / "skills" / skill / "SKILL.md"
+        dst = github_dir / "skills" / skill / "SKILL.md"
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            skills_seeded += 1
+
+    agents_seeded = 0
+    for agent in COPILOT_AGENTS:
+        src = script_root() / "claude" / "agents" / f"{agent}.md"
+        dst = github_dir / "agents" / f"{agent}.md"
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            raw = src.read_text(encoding="utf-8")
+            dst.write_text(_strip_permission_mode_frontmatter(raw), encoding="utf-8")
+            agents_seeded += 1
+
+    return {
+        "github_dir": str(github_dir),
+        "copilot_skills_seeded": skills_seeded,
+        "copilot_agents_seeded": agents_seeded,
+    }
+
+
 def ensure_repo(repo: Path) -> dict[str, Any]:
     repo = repo.resolve()
     if not is_git_repo(repo):
@@ -179,11 +251,13 @@ def ensure_repo(repo: Path) -> dict[str, Any]:
 
     (repo / ".wip").mkdir(parents=True, exist_ok=True)
     merge_vscode_tasks(repo)
+    copilot_info = ensure_copilot_assets(repo)
 
     return {
         "repo": str(repo),
         "docs_dir": str(docs_dir),
         "wip_dir": str(repo / ".wip"),
+        "github_dir": copilot_info["github_dir"],
     }
 
 
@@ -765,17 +839,18 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
     check("source: templates/global/settings.template.json", (root / "templates" / "global" / "settings.template.json").exists())
     check("source: templates/global/claude_managed_block.md", (root / "templates" / "global" / "claude_managed_block.md").exists())
     check("source: templates/vscode/tasks.template.json", (root / "templates" / "vscode" / "tasks.template.json").exists())
+    check("source: templates/github/copilot-instructions.md", (root / "templates" / "github" / "copilot-instructions.md").exists())
+    check("source: .github/copilot-instructions.md", (root / ".github" / "copilot-instructions.md").exists())
 
     for doc in REPO_DOCS:
         check(f"source: templates/repo-docs/{doc}", (root / "templates" / "repo-docs" / doc).exists())
 
-    skill_names = ["wip-start", "wip-plan", "wip-research", "wip-implement", "wip-review",
-                    "wip-fix-review", "wip-resume", "wip-pr", "wip-install"]
+    skill_names = COPILOT_SKILLS
     for skill in skill_names:
         skill_path = root / "claude" / "skills" / skill / "SKILL.md"
         check(f"source: skill {skill}", skill_path.exists())
 
-    agent_names = ["wip-planner", "wip-researcher", "wip-reviewer", "wip-tester"]
+    agent_names = COPILOT_AGENTS
     for agent in agent_names:
         agent_path = root / "claude" / "agents" / f"{agent}.md"
         check(f"source: agent {agent}", agent_path.exists())
@@ -839,8 +914,26 @@ def verify(check_workspace: Path | None = None) -> dict[str, Any]:
             for repo in repos:
                 has_wip = (repo / ".wip").exists()
                 has_docs = (repo / ".claude" / "repo-docs").exists()
+                has_copilot_instructions = (repo / ".github" / "copilot-instructions.md").exists()
+                has_copilot_skill = (repo / ".github" / "skills" / "wip-start" / "SKILL.md").exists()
+                has_copilot_agent = (repo / ".github" / "agents" / "wip-planner.md").exists()
                 check(f"workspace: {repo.name} .wip/", has_wip, warn=not has_wip)
                 check(f"workspace: {repo.name} .claude/repo-docs/", has_docs, warn=not has_docs)
+                check(
+                    f"workspace: {repo.name} .github/copilot-instructions.md",
+                    has_copilot_instructions,
+                    warn=not has_copilot_instructions,
+                )
+                check(
+                    f"workspace: {repo.name} .github/skills/wip-start/SKILL.md",
+                    has_copilot_skill,
+                    warn=not has_copilot_skill,
+                )
+                check(
+                    f"workspace: {repo.name} .github/agents/wip-planner.md",
+                    has_copilot_agent,
+                    warn=not has_copilot_agent,
+                )
         else:
             check("workspace: path exists", False, str(ws))
 

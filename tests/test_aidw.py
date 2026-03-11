@@ -438,3 +438,74 @@ class TestGeminiReview:
     def test_cmd_gemini_review_timeout_clamped(self):
         args = _aidw.build_parser().parse_args(["gemini-review", ".", "--timeout", "0"])
         # timeout=0 should be clamped to 10 by cmd_gemini_review, not crash
+
+
+class TestCopilotBootstrap:
+    def test_ensure_repo_seeds_copilot_assets(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+
+        info = _aidw.ensure_repo(repo)
+
+        assert Path(info["github_dir"]).exists()
+        assert (repo / ".github" / "copilot-instructions.md").exists()
+        assert (repo / ".github" / "skills" / "wip-start" / "SKILL.md").exists()
+        assert (repo / ".github" / "agents" / "wip-planner.md").exists()
+
+    def test_ensure_repo_does_not_overwrite_existing_copilot_instructions(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        custom = "# custom instructions\n"
+        target = repo / ".github" / "copilot-instructions.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(custom, encoding="utf-8")
+
+        _aidw.ensure_repo(repo)
+
+        assert target.read_text(encoding="utf-8") == custom
+
+    def test_seeded_agent_removes_permission_mode(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+
+        _aidw.ensure_repo(repo)
+
+        agent = (repo / ".github" / "agents" / "wip-planner.md").read_text(encoding="utf-8")
+        assert "permissionMode:" not in agent
+
+    def test_strip_permission_mode_handles_indentation(self):
+        """Test that _strip_permission_mode_frontmatter handles indented YAML keys."""
+        content_with_indented = """---
+name: test-agent
+  permissionMode: plan
+description: A test
+---
+Body content
+"""
+        result = _aidw._strip_permission_mode_frontmatter(content_with_indented)
+        assert "permissionMode" not in result
+        assert "test-agent" in result
+        assert "Body content" in result
+
+    def test_strip_permission_mode_handles_no_indentation(self):
+        """Test that _strip_permission_mode_frontmatter handles non-indented keys."""
+        content_no_indent = """---
+name: test-agent
+permissionMode: plan
+description: A test
+---
+Body content
+"""
+        result = _aidw._strip_permission_mode_frontmatter(content_no_indent)
+        assert "permissionMode" not in result
+        assert "test-agent" in result
+        assert "Body content" in result
+
+    def test_verify_reports_missing_workspace_copilot_assets(self, tmp_path):
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        repo = _make_git_repo(workspace / "sample")
+
+        results = _aidw.verify(workspace)
+        checks = {c["name"]: c["status"] for c in results["checks"]}
+
+        assert checks[f"workspace: {repo.name} .github/copilot-instructions.md"] == "warn"
+        assert checks[f"workspace: {repo.name} .github/skills/wip-start/SKILL.md"] == "warn"
+        assert checks[f"workspace: {repo.name} .github/agents/wip-planner.md"] == "warn"
