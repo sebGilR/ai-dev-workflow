@@ -263,9 +263,8 @@ def ensure_repo(repo: Path) -> dict[str, Any]:
     }
 
 
-def branch_wip_dir(repo: Path, branch: str | None = None) -> Path:
-    branch_name = safe_slug(branch or current_branch(repo))
-    return repo / ".wip" / branch_name
+def _branch_wip_dir(repo: Path, branch_name: str, date_prefix: str) -> Path:
+    return repo / ".wip" / f"{date_prefix}-{branch_name}"
 
 
 def initial_status(repo: Path, branch: str) -> dict[str, Any]:
@@ -319,7 +318,34 @@ def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]
     repo = git_toplevel(repo)
     ensure_repo(repo)
     branch_name = safe_slug(branch or current_branch(repo))
-    wip_dir = branch_wip_dir(repo, branch_name)
+
+    wip_base = repo / ".wip"
+    wip_base.mkdir(parents=True, exist_ok=True)
+    # Phase 1: find existing dated dir (YYYYMMDD-<branch_name>); pick the newest
+    date_dir_pattern = re.compile(rf"^(\d{{8}})-{re.escape(branch_name)}$")
+    candidates: list[Path] = []
+    for p in wip_base.glob(f"????????-{branch_name}"):
+        if not p.is_dir():
+            continue
+        m = date_dir_pattern.match(p.name)
+        if not m:
+            continue
+        try:
+            datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            continue
+        candidates.append(p)
+    candidates.sort()
+    existing = candidates[-1] if candidates else None
+    # Phase 2: legacy unprefixed dir
+    if existing is None:
+        legacy = wip_base / branch_name
+        if legacy.is_dir():
+            existing = legacy
+    # Phase 3: create new dated dir
+    if existing is None:
+        existing = _branch_wip_dir(repo, branch_name, datetime.now().strftime("%Y%m%d"))
+    wip_dir = existing
     wip_dir.mkdir(parents=True, exist_ok=True)
 
     for filename in WIP_FILES:

@@ -556,7 +556,9 @@ Skills are loaded at session start. If you install while a session is running, r
 The installer sets `core.excludesfile` in your global git config. If you use a non-standard gitignore path, verify with `git config --global core.excludesfile`.
 
 ### Branch directory naming
-`.wip/` subdirectory names are derived from the branch name. Characters outside `a-z0-9-` are replaced with `-`, and a short SHA-256 hash suffix is appended when the slugified name would differ from the original (e.g. `feature/foo` → `feature-foo-<hash>`). This prevents collisions between branches that would otherwise resolve to the same slug.
+`.wip/` subdirectory names follow the format `YYYYMMDD-<slug>`, where the date is the day the directory was first created and the slug is derived from the branch name. Alphanumeric characters (including uppercase), `-`, `_`, and `.` are preserved; all other characters are replaced with `-`. A short SHA-256 hash suffix is appended when the slugified name would differ from the original (e.g. `feature/foo` → `20260311-feature-foo-<hash>`). This prevents collisions between branches that would otherwise resolve to the same slug, and allows `ls .wip/` to show branches in chronological creation order.
+
+When resolving the WIP directory for a branch, `aidw` uses a three-phase lookup: (1) find an existing `YYYYMMDD-<slug>` directory, (2) fall back to a legacy unprefixed `<slug>` directory, (3) create a new `YYYYMMDD-<slug>` directory using today's date. This means existing unprefixed directories continue to work without any migration.
 
 ---
 
