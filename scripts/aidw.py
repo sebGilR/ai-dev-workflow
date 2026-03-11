@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "gotchas.md"]
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
+CLAUDE_REVIEW_PLACEHOLDER = "<!-- Claude should add its own review findings here -->"
+
 COPILOT_SKILLS = [
     "wip-start",
     "wip-plan",
@@ -755,7 +757,7 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     review_path = wip_dir / "review.md"
     existing_claude_content: str = ""
     existing_adversarial_review: str = ""
-    placeholder = "<!-- Claude should add its own review findings here -->"
+    placeholder = CLAUDE_REVIEW_PLACEHOLDER
     
     if review_path.exists():
         existing_text = review_path.read_text(encoding="utf-8")

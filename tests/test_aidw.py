@@ -444,7 +444,7 @@ class TestGeminiReview:
 
         assert "Real Claude analysis here." in second_content, "Claude content must be preserved"
         assert "Adversarial finding" in second_content, "Adversarial content must be present"
-        assert "<!-- Claude: fill in this section -->" not in second_content, "Placeholder must not replace real content"
+        assert _aidw.CLAUDE_REVIEW_PLACEHOLDER not in second_content, "Placeholder must not replace real content"
         claude_pos = second_content.index("## Claude Review")
         adversarial_pos = second_content.index("## Adversarial Review")
         assert claude_pos < adversarial_pos, "## Claude Review must still appear before ## Adversarial Review"
