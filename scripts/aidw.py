@@ -33,6 +33,8 @@ COPILOT_SKILLS = [
     "wip-resume",
     "wip-pr",
     "wip-install",
+    "wip-cleanup",
+    "wip-clear",
 ]
 COPILOT_AGENTS = ["wip-planner", "wip-researcher", "wip-reviewer", "wip-tester"]
 
@@ -1156,11 +1158,15 @@ def clear_wip(repo: Path) -> dict[str, Any]:
             continue
         m = dated_pattern.match(entry.name)
         if m:
-            dated.append((m.group(1), entry))
+            try:
+                datetime.strptime(m.group(1), "%Y%m%d")
+                dated.append((m.group(1), entry))
+            except ValueError:
+                others.append(entry)
         else:
             others.append(entry)
 
-    dated.sort(key=lambda x: x[0])  # ascending; last = newest
+    dated.sort(key=lambda x: (x[0], x[1].name))  # ascending; last = newest
     keep: Path | None = dated[-1][1] if dated else None
 
     deleted: list[str] = []

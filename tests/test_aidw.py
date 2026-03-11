@@ -709,3 +709,28 @@ class TestClearWip:
         out = json.loads(capsys.readouterr().out)
         assert "kept" in out
         assert "deleted" in out
+
+    def test_invalid_date_dir_is_deleted(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        wip_base = repo / ".wip"
+        wip_base.mkdir(exist_ok=True)
+        invalid = wip_base / "20261340-bad-date-abc12345"  # month 13 is invalid
+        valid = wip_base / "20260311-good-date-abc12345"
+        invalid.mkdir()
+        valid.mkdir()
+        _aidw.clear_wip(repo)
+        assert valid.exists()
+        assert not invalid.exists()
+
+    def test_same_date_prefix_kept_dir_is_deterministic(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        wip_base = repo / ".wip"
+        wip_base.mkdir(exist_ok=True)
+        alpha = wip_base / "20260311-aaa-branch-abc12345"
+        beta = wip_base / "20260311-zzz-branch-def67890"
+        alpha.mkdir()
+        beta.mkdir()
+        result = _aidw.clear_wip(repo)
+        assert result["kept"] == beta.name  # zzz sorts last alphabetically
+        assert not alpha.exists()
+        assert beta.exists()
