@@ -625,3 +625,87 @@ class TestEnsureBranchStateDatedDir:
         repo = tmp_path
         path = _aidw._branch_wip_dir(repo, "feat-foo-abc12345", "20260311")
         assert path == repo / ".wip" / "20260311-feat-foo-abc12345"
+
+
+# ===========================================================================
+# TestCleanupBranch — cleanup-branch command
+# ===========================================================================
+
+
+class TestCleanupBranch:
+    def test_deletes_non_essential_files(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        assert (wip_dir / "research.md").exists()
+        args = _aidw.build_parser().parse_args(["cleanup-branch", str(repo)])
+        rc = _aidw.cmd_cleanup_branch(args)
+        assert rc == 0
+        assert (wip_dir / "context.md").exists()
+        assert (wip_dir / "pr.md").exists()
+        assert not (wip_dir / "research.md").exists()
+        assert not (wip_dir / "plan.md").exists()
+
+    def test_parser_registration(self):
+        args = _aidw.build_parser().parse_args(["cleanup-branch", "."])
+        assert args.func == _aidw.cmd_cleanup_branch
+
+    def test_json_output(self, tmp_path, capsys):
+        repo = _make_git_repo(tmp_path)
+        _aidw.ensure_branch_state(repo)
+        args = _aidw.build_parser().parse_args(["cleanup-branch", str(repo)])
+        _aidw.cmd_cleanup_branch(args)
+        out = json.loads(capsys.readouterr().out)
+        assert "deleted" in out
+        assert "kept" in out
+        assert "context.md" in out["kept"]
+        assert "pr.md" in out["kept"]
+
+
+# ===========================================================================
+# TestClearWip — clear-wip command
+# ===========================================================================
+
+
+class TestClearWip:
+    def test_keeps_newest_dated_dir(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        wip_base = repo / ".wip"
+        wip_base.mkdir(exist_ok=True)
+        old_dir = wip_base / "20260101-old-branch-abc12345"
+        new_dir = wip_base / "20260311-new-branch-def67890"
+        old_dir.mkdir()
+        new_dir.mkdir()
+        args = _aidw.build_parser().parse_args(["clear-wip", str(repo)])
+        rc = _aidw.cmd_clear_wip(args)
+        assert rc == 0
+        assert new_dir.exists()
+        assert not old_dir.exists()
+
+    def test_deletes_legacy_undated_dirs(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        wip_base = repo / ".wip"
+        wip_base.mkdir(exist_ok=True)
+        legacy = wip_base / "old-branch-abc12345"
+        dated = wip_base / "20260311-current-abc12345"
+        legacy.mkdir()
+        dated.mkdir()
+        args = _aidw.build_parser().parse_args(["clear-wip", str(repo)])
+        _aidw.cmd_clear_wip(args)
+        assert not legacy.exists()
+        assert dated.exists()
+
+    def test_parser_registration(self):
+        args = _aidw.build_parser().parse_args(["clear-wip", "."])
+        assert args.func == _aidw.cmd_clear_wip
+
+    def test_json_output(self, tmp_path, capsys):
+        repo = _make_git_repo(tmp_path)
+        wip_base = repo / ".wip"
+        wip_base.mkdir(exist_ok=True)
+        (wip_base / "20260311-branch-abc12345").mkdir()
+        args = _aidw.build_parser().parse_args(["clear-wip", str(repo)])
+        _aidw.cmd_clear_wip(args)
+        out = json.loads(capsys.readouterr().out)
+        assert "kept" in out
+        assert "deleted" in out

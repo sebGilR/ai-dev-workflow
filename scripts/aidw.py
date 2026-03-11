@@ -21,6 +21,7 @@ REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "got
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
 CLAUDE_REVIEW_PLACEHOLDER = "<!-- Claude should add its own review findings here -->"
+KEEP_ON_CLEANUP = {"context.md", "pr.md"}
 
 COPILOT_SKILLS = [
     "wip-start",
@@ -1120,6 +1121,67 @@ def cmd_synthesize_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def cleanup_branch(repo: Path, branch: str | None = None) -> dict[str, Any]:
+    state = ensure_branch_state(repo, branch)
+    wip_dir = Path(state["wip_dir"])
+    deleted: list[str] = []
+    for entry in wip_dir.iterdir():
+        if entry.name not in KEEP_ON_CLEANUP:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            deleted.append(entry.name)
+    return {"wip_dir": str(wip_dir), "kept": sorted(KEEP_ON_CLEANUP), "deleted": sorted(deleted)}
+
+
+def cmd_cleanup_branch(args: argparse.Namespace) -> int:
+    result = cleanup_branch(Path(args.path))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def clear_wip(repo: Path) -> dict[str, Any]:
+    repo = git_toplevel(repo)
+    wip_base = repo / ".wip"
+    if not wip_base.is_dir():
+        return {"kept": None, "deleted": []}
+
+    dated_pattern = re.compile(r"^(\d{8})-(.+)$")
+    dated: list[tuple[str, Path]] = []
+    others: list[Path] = []
+
+    for entry in wip_base.iterdir():
+        if not entry.is_dir():
+            continue
+        m = dated_pattern.match(entry.name)
+        if m:
+            dated.append((m.group(1), entry))
+        else:
+            others.append(entry)
+
+    dated.sort(key=lambda x: x[0])  # ascending; last = newest
+    keep: Path | None = dated[-1][1] if dated else None
+
+    deleted: list[str] = []
+    for _, p in dated[:-1]:
+        shutil.rmtree(p)
+        deleted.append(p.name)
+    for p in others:
+        shutil.rmtree(p)
+        deleted.append(p.name)
+
+    return {
+        "kept": keep.name if keep else None,
+        "deleted": sorted(deleted),
+    }
+
+
+def cmd_clear_wip(args: argparse.Namespace) -> int:
+    result = clear_wip(Path(args.path))
+    print(json.dumps(result, indent=2))
+    return 0
+
 
 def cmd_verify(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace) if args.workspace else None
@@ -1200,6 +1262,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="Verify installation and configuration")
     p.add_argument("--workspace", help="Optional workspace path to also check repos")
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("cleanup-branch", help="Remove all files in the current branch .wip dir except context.md and pr.md")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_cleanup_branch)
+
+    p = sub.add_parser("clear-wip", help="Delete all .wip branch dirs except the most recently dated one")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_clear_wip)
 
     return parser
 
