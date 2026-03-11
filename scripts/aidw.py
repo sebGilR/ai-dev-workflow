@@ -322,7 +322,20 @@ def ensure_branch_state(repo: Path, branch: str | None = None) -> dict[str, Any]
     wip_base = repo / ".wip"
     wip_base.mkdir(parents=True, exist_ok=True)
     # Phase 1: find existing dated dir (YYYYMMDD-<branch_name>); pick the newest
-    candidates = sorted(p for p in wip_base.glob(f"????????-{branch_name}") if p.is_dir())
+    date_dir_pattern = re.compile(rf"^(\d{{8}})-{re.escape(branch_name)}$")
+    candidates: list[Path] = []
+    for p in wip_base.glob(f"????????-{branch_name}"):
+        if not p.is_dir():
+            continue
+        m = date_dir_pattern.match(p.name)
+        if not m:
+            continue
+        try:
+            datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            continue
+        candidates.append(p)
+    candidates.sort()
     existing = candidates[-1] if candidates else None
     # Phase 2: legacy unprefixed dir
     if existing is None:

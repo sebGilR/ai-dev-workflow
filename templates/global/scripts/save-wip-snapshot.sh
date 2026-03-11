@@ -74,7 +74,7 @@ branch_slug="$(_branch_slug "$branch")"
 # Must match aidw.py ensure_branch_state resolution order.
 # Uses find+sort rather than a glob loop so selection is deterministic across
 # all filesystems (glob expansion order is not guaranteed to be lexicographic).
-wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -type d -name "????????-$branch_slug" 2>/dev/null | sort | tail -1)"
+wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -E '/[0-9]{8}-'"$branch_slug"'$' | sort | tail -1)"
 # Phase 2: legacy unprefixed dir
 if [[ -z "$wip_dir" && -d "$repo_root/.wip/$branch_slug" ]]; then
   wip_dir="$repo_root/.wip/$branch_slug"
