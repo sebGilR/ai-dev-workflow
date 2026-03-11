@@ -33,18 +33,17 @@ The reviewer should:
 - Note missing tests and regression risks
 - Include a final verdict
 
-5. Optionally run adversarial Gemini review (only if `AIDW_GEMINI_REVIEW=1`):
+5. Adversarial Gemini review:
 
-Before proceeding, decide whether this change warrants adversarial review. Run it if ANY of the following apply:
-- The diff touches more than 3 files
-- The change modifies public API surface, authentication/authorization logic, data model/schema, or concurrent code
+Check the `AIDW_GEMINI_REVIEW` environment variable:
+- If `AIDW_GEMINI_REVIEW=0`: skip this step entirely (CI opt-out).
+- If `AIDW_GEMINI_REVIEW=1`: run without prompting (CI opt-in).
+- Otherwise (not set): ask the user: **"Run Gemini adversarial review? [y/N]"** — proceed only if they answer yes.
 
-Skip if the change is a small refactor, rename/formatting, docs-only update, or trivially small diff.
-
-If warranted:
+If running:
 
 ```bash
-~/.claude/ai-dev-workflow/bin/aidw gemini-review .
+AIDW_GEMINI_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
 ```
 
 Then re-run synthesize-review to merge adversarial findings into `review.md`:
