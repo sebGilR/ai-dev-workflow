@@ -785,6 +785,12 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
             if adversarial_section and adversarial_section.strip():
                 existing_adversarial_review = adversarial_section
 
+    sections.append("## Claude Review\n")
+    if existing_claude_content:
+        sections.append(existing_claude_content + "\n")
+    else:
+        sections.append(placeholder + "\n")
+
     adversarial_path = wip_dir / "adversarial-review.md"
     if adversarial_path.exists():
         sections.append("## Adversarial Review\n")
@@ -793,12 +799,6 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     elif existing_adversarial_review:
         sections.append("## Adversarial Review\n")
         sections.append(existing_adversarial_review + "\n")
-
-    sections.append("## Claude Review\n")
-    if existing_claude_content:
-        sections.append(existing_claude_content + "\n")
-    else:
-        sections.append(placeholder + "\n")
 
     atomic_write(review_path, "\n".join(sections) + "\n")
 

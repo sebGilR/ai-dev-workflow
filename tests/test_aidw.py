@@ -405,6 +405,50 @@ class TestGeminiReview:
         assert "## Adversarial Review" in content
         assert "Found a bug in auth flow" in content
 
+    def test_synthesize_review_claude_section_before_adversarial(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        (wip_dir / "adversarial-review.md").write_text(
+            "### Critical\n- Security issue found\n", encoding="utf-8"
+        )
+        _aidw.synthesize_review(repo)
+        content = (wip_dir / "review.md").read_text(encoding="utf-8")
+        claude_pos = content.index("## Claude Review")
+        adversarial_pos = content.index("## Adversarial Review")
+        assert claude_pos < adversarial_pos, "## Claude Review must appear before ## Adversarial Review"
+
+    def test_synthesize_review_preserves_claude_content_on_second_call(self, tmp_path):
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+
+        # First call: scaffold written with placeholder
+        _aidw.synthesize_review(repo)
+        review_path = wip_dir / "review.md"
+        first_content = review_path.read_text(encoding="utf-8")
+        # Simulate Claude filling in its review
+        filled_content = first_content.replace(
+            "<!-- Claude should add its own review findings here -->",
+            "Real Claude analysis here.\n\n### Verdict\nApprove.",
+        )
+        review_path.write_text(filled_content, encoding="utf-8")
+
+        # Second call: Gemini adversarial review is now present
+        (wip_dir / "adversarial-review.md").write_text(
+            "### Critical\n- Adversarial finding\n", encoding="utf-8"
+        )
+        _aidw.synthesize_review(repo)
+        second_content = review_path.read_text(encoding="utf-8")
+
+        assert "Real Claude analysis here." in second_content, "Claude content must be preserved"
+        assert "Adversarial finding" in second_content, "Adversarial content must be present"
+        assert "<!-- Claude: fill in this section -->" not in second_content, "Placeholder must not replace real content"
+        claude_pos = second_content.index("## Claude Review")
+        adversarial_pos = second_content.index("## Adversarial Review")
+        assert claude_pos < adversarial_pos, "## Claude Review must still appear before ## Adversarial Review"
+
     def test_synthesize_review_omits_adversarial_when_absent(self, tmp_path):
         repo = _make_git_repo(tmp_path)
         state = _aidw.ensure_branch_state(repo)
