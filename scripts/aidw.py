@@ -714,7 +714,9 @@ def cmd_gemini_review(args: argparse.Namespace) -> int:
             "Auth:    gemini auth login  (or set GEMINI_API_KEY)"
         )
     model = getattr(args, "model", GEMINI_MODEL) or GEMINI_MODEL
-    timeout = getattr(args, "timeout", GEMINI_TIMEOUT) or GEMINI_TIMEOUT
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = GEMINI_TIMEOUT
     timeout = max(10, min(timeout, 600))
     result = gemini_review(Path(args.path), model=model, timeout=timeout)
     status = result.get("status")

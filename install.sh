@@ -86,7 +86,9 @@ for skill_dir in "$SCRIPT_DIR"/claude/skills/*; do
   [ -d "$skill_dir" ] || continue
   skill_name="$(basename "$skill_dir")"
   safe_link "$skill_dir" "$CLAUDE_HOME/skills/$skill_name"
-  safe_link "$skill_dir" "$COPILOT_HOME/skills/$skill_name"
+  if ! safe_link "$skill_dir" "$COPILOT_HOME/skills/$skill_name"; then
+    echo "WARNING: Skipping Copilot skill '$skill_name' because '$COPILOT_HOME/skills/$skill_name' already exists and is not a managed symlink." >&2
+  fi
 done
 
 for agent_file in "$SCRIPT_DIR"/claude/agents/*; do

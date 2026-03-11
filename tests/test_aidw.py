@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -438,6 +439,14 @@ class TestGeminiReview:
     def test_cmd_gemini_review_timeout_clamped(self):
         args = _aidw.build_parser().parse_args(["gemini-review", ".", "--timeout", "0"])
         # timeout=0 should be clamped to 10 by cmd_gemini_review, not crash
+        with patch.dict(os.environ, {"AIDW_GEMINI_REVIEW": "1"}, clear=False):
+            with patch.object(_aidw, "gemini_is_installed", return_value=True):
+                with patch.object(_aidw, "gemini_review", return_value={"status": "ok"}) as mock_review:
+                    rc = _aidw.cmd_gemini_review(args)
+
+        assert rc == 0
+        _, kwargs = mock_review.call_args
+        assert kwargs["timeout"] == 10
 
 
 class TestCopilotBootstrap:
