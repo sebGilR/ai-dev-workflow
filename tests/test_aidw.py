@@ -562,3 +562,66 @@ Body content
         assert checks[f"workspace: {repo.name} .github/copilot-instructions.md"] == "warn"
         assert checks[f"workspace: {repo.name} .github/skills/wip-start/SKILL.md"] == "warn"
         assert checks[f"workspace: {repo.name} .github/agents/wip-planner.md"] == "warn"
+
+
+# ===========================================================================
+# TestEnsureBranchStateDatedDir — YYYYMMDD- prefix for new WIP directories
+# ===========================================================================
+
+
+class TestEnsureBranchStateDatedDir:
+    def test_new_dir_has_date_prefix(self, tmp_path):
+        """ensure_branch_state creates a YYYYMMDD-<slug> directory on first call."""
+        from datetime import datetime
+        repo = _make_git_repo(tmp_path)
+        state = _aidw.ensure_branch_state(repo)
+        wip_dir = Path(state["wip_dir"])
+        # Validate the prefix is a real calendar date, not just any 8 digits
+        datetime.strptime(wip_dir.name[:8], "%Y%m%d")
+        assert wip_dir.name[8] == "-", f"Expected YYYYMMDD- prefix, got: {wip_dir.name!r}"
+
+    def test_second_call_reuses_same_dir(self, tmp_path):
+        """A second call returns the same prefixed dir, not a new one."""
+        repo = _make_git_repo(tmp_path)
+        state1 = _aidw.ensure_branch_state(repo)
+        state2 = _aidw.ensure_branch_state(repo)
+        assert state1["wip_dir"] == state2["wip_dir"]
+        wip_base = tmp_path / ".wip"
+        dated_dirs = [p for p in wip_base.iterdir() if p.is_dir()]
+        assert len(dated_dirs) == 1, f"Expected one WIP dir, found: {dated_dirs}"
+
+    def test_legacy_unprefixed_dir_is_reused(self, tmp_path):
+        """An existing unprefixed dir is reused without creating a new dated dir."""
+        repo = _make_git_repo(tmp_path)
+        branch_name = _aidw.safe_slug(_aidw.current_branch(repo))
+        legacy = tmp_path / ".wip" / branch_name
+        legacy.mkdir(parents=True)
+
+        state = _aidw.ensure_branch_state(repo)
+        assert Path(state["wip_dir"]) == legacy
+
+        wip_base = tmp_path / ".wip"
+        dirs = [p for p in wip_base.iterdir() if p.is_dir()]
+        assert len(dirs) == 1, f"Expected only legacy dir, found: {dirs}"
+
+    def test_multiple_dated_dirs_picks_newest(self, tmp_path):
+        """When multiple dated dirs exist for the same branch, the newest is used."""
+        repo = _make_git_repo(tmp_path)
+        branch_name = _aidw.safe_slug(_aidw.current_branch(repo))
+        wip_base = tmp_path / ".wip"
+        wip_base.mkdir(parents=True)
+        old_dir = wip_base / f"20260101-{branch_name}"
+        new_dir = wip_base / f"20260311-{branch_name}"
+        old_dir.mkdir()
+        new_dir.mkdir()
+
+        state = _aidw.ensure_branch_state(repo)
+        assert Path(state["wip_dir"]) == new_dir, (
+            f"Expected newest dir {new_dir}, got {state['wip_dir']}"
+        )
+
+    def test_branch_wip_dir_returns_dated_path(self, tmp_path):
+        """_branch_wip_dir with explicit prefix returns the correct path."""
+        repo = tmp_path
+        path = _aidw._branch_wip_dir(repo, "feat-foo-abc12345", "20260311")
+        assert path == repo / ".wip" / "20260311-feat-foo-abc12345"
