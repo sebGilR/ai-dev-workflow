@@ -1,16 +1,17 @@
 # ai-dev-workflow
 
-A portable Claude Code workflow kit for VS Code workspaces.
+A portable Claude + GitHub Copilot workflow kit for VS Code workspaces.
 
-This repo installs a native Claude Code workflow into `~/.claude`, keeps your personal working state in a gitignored `.wip/<branch>/` folder inside each repo, and bootstraps every repo it finds in the current VS Code workspace.
+This repo installs a native Claude Code workflow into `~/.claude`, links shared skills into `~/.copilot/skills`, keeps your personal working state in a gitignored `.wip/<branch>/` folder inside each repo, and bootstraps every repo it finds in the current VS Code workspace.
 
-It preserves your conventions:
+It preserves your conventions across Claude and Copilot:
 
 - `.wip/<branch>/...`
 - `/wip-*` skill names
 - `plan.md`, `review.md`, `research.md`, `context.md`
 - `execution.md`, `pr.md`, `status.json`
 - global `CLAUDE.md` workflow guidance
+- repo-level `.github/copilot-instructions.md`, `.github/skills/`, `.github/agents/`
 - global gitignore for personal workflow files
 
 It also adds:
@@ -48,15 +49,28 @@ Because skills and agents are symlinks (not copies), any edit you make to files 
 
 Managed scripts such as `~/.claude/statusline.sh` and `~/.claude/claude-watch.sh` follow the same rule only when they are installed as symlinks. If one of those files already exists as an unmanaged local file, the installer will not overwrite it; move or rename it and re-run `install.sh` if you want the repo version to take over.
 
+### In `~/.copilot`
+
+The installer creates or updates:
+
+| Path | Purpose |
+|------|---------|
+| `~/.copilot/skills/wip-*` | Personal Copilot skill links (shared from this repo) |
+
+Repo-level Copilot agents and instructions are managed in each workspace repo under `.github/` (see below).
+
 ### In each repo detected in the workspace
 
 | Path | Purpose |
 |------|---------|
 | `.wip/` | Branch-scoped workflow state (gitignored globally) |
 | `.claude/repo-docs/` | Lightweight project knowledge files (gitignored globally) |
+| `.github/copilot-instructions.md` | Repo-level Copilot coding instructions |
+| `.github/skills/` | Repo-level Copilot skill definitions |
+| `.github/agents/` | Repo-level Copilot custom agents |
 | `.vscode/tasks.json` | Convenience tasks merged in |
 
-The repo docs are seeded from templates when missing. Existing files are never overwritten.
+Repo docs and Copilot assets are seeded from templates/sources when missing. Existing files are never overwritten.
 
 ### In global gitignore
 

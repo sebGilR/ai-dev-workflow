@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # Parse arguments — positional arg is workspace root.
@@ -16,6 +17,7 @@ done
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-$PWD}"
 
 mkdir -p "$CLAUDE_HOME"
+mkdir -p "$COPILOT_HOME"
 
 # Safe, idempotent symlink helper.
 # - If dest already points to src, do nothing.
@@ -78,11 +80,15 @@ install_managed_script "templates/global/scripts/claude-fetch-usage.sh" "claude-
 install_managed_script "templates/global/scripts/start-claude-watch.sh" "start-claude-watch.sh"
 
 mkdir -p "$CLAUDE_HOME/skills" "$CLAUDE_HOME/agents"
+mkdir -p "$COPILOT_HOME/skills"
 
 for skill_dir in "$SCRIPT_DIR"/claude/skills/*; do
   [ -d "$skill_dir" ] || continue
   skill_name="$(basename "$skill_dir")"
   safe_link "$skill_dir" "$CLAUDE_HOME/skills/$skill_name"
+  if ! safe_link "$skill_dir" "$COPILOT_HOME/skills/$skill_name"; then
+    echo "WARNING: Skipping Copilot skill '$skill_name' because '$COPILOT_HOME/skills/$skill_name' already exists and is not a managed symlink." >&2
+  fi
 done
 
 for agent_file in "$SCRIPT_DIR"/claude/agents/*; do
