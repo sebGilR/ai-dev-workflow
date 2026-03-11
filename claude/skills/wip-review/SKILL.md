@@ -27,7 +27,7 @@ If warranted:
 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
 ```
 
-If the command fails because Gemini CLI is not installed or auth is not configured, continue to step 5 without adversarial results. The `## Adversarial Review` section will be omitted from the synthesized review.
+If the command fails because Gemini CLI is not installed or auth is not configured, continue to step 4 without adversarial results. The `## Adversarial Review` section will be omitted from the synthesized review.
 
 4. Synthesize the review scaffold (writes adversarial review (if present) + `## Claude Review` placeholder into `review.md`):
 

@@ -513,7 +513,7 @@ When `/wip-resume` is invoked, Claude checks for `context-summary.md` first. If 
 - Tune `~/.claude/settings.json` permission rules for your environment
 - Fill in repo docs with real project knowledge
 - Decide whether review findings should be fixed or deferred
-- Edit `~/.claude/ai-dev-workflow/aidw.env.sh` to override model defaults
+- Edit `~/.claude/ai-dev-workflow/aidw.env.sh` to override settings defaults (e.g. Gemini settings)
 - Adjust VS Code tasks if you have a complex existing `.vscode/tasks.json`
 
 ---

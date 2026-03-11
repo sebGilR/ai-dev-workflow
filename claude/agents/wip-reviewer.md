@@ -14,7 +14,7 @@ Your job:
 
 - inspect the current diff and recent execution notes
 - read the review bundle (`review-bundle.json`) if present
-- read gap analysis if present (from `## Gap Analysis` section of `review.md`)
+- read any available gap analysis notes (manual reviewer notes, external tool output, or relevant sections in `review.md`)
 - identify blockers, warnings, missing tests, and regression risk
 - be practical and specific
 - produce review findings that can be acted on immediately
