@@ -93,43 +93,6 @@ def safe_slug(value: str) -> str:
     return slug
 
 
-def parse_files_arg(repo: Path, files_str: str) -> list[Path]:
-    """Parse comma-separated file list and validate files exist in repo.
-
-    Args:
-        repo: Repository root path
-        files_str: Comma-separated file paths (relative to repo root)
-
-    Returns:
-        List of validated Path objects
-
-    Raises:
-        SystemExit: If any file is invalid, outside the repo, or the list is empty
-    """
-    repo_root = git_toplevel(repo).resolve()
-    files = [f.strip() for f in files_str.split(",") if f.strip()]
-    if not files:
-        raise SystemExit("[aidw] No files specified.")
-    validated: list[Path] = []
-
-    for file_str in files:
-        raw_path = Path(file_str)
-        if raw_path.is_absolute():
-            raise SystemExit(f"[aidw] Absolute paths are not allowed: {file_str}")
-        file_path = (repo_root / raw_path).resolve()
-        try:
-            file_path.relative_to(repo_root)
-        except ValueError:
-            raise SystemExit(f"[aidw] File is outside the repository: {file_str}")
-        if not file_path.exists():
-            raise SystemExit(f"[aidw] File not found: {file_str}")
-        if not file_path.is_file():
-            raise SystemExit(f"[aidw] Not a file: {file_str}")
-        validated.append(file_path)
-
-    return validated
-
-
 def detect_repos(workspace_root: Path) -> list[Path]:
     repos: list[Path] = []
     seen: set[str] = set()

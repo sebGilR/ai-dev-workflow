@@ -5,12 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-# Parse arguments — positional arg is workspace root; flags are --option style.
+# Parse arguments — positional arg is workspace root.
 WORKSPACE_ROOT=""
-PULL_OLLAMA_MODELS=0
 for _arg in "$@"; do
   case "$_arg" in
-    --pull-ollama-models) PULL_OLLAMA_MODELS=1 ;;
     --*) echo "Unknown flag: $_arg" >&2; exit 1 ;;
     *) WORKSPACE_ROOT="$_arg" ;;
   esac
@@ -270,44 +268,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Ollama environment setup
+# Shell profile and env file setup
 # ---------------------------------------------------------------------------
 
-write_ollama_env() {
+write_env_file() {
   local env_file="$CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
   if [ ! -f "$env_file" ]; then
     cat > "$env_file" << 'ENVEOF'
-# ai-dev-workflow managed Ollama model configuration
-# Edit this file to customise your models. It is NOT committed to git.
+# ai-dev-workflow configuration
+# Edit this file to customise your settings. It is NOT committed to git.
 # Sourced automatically by your shell profile after install.
-#
-# Task routing (16 GB Mac defaults):
-#   fast  (docs-needed, summaries, synthesis)         -> phi3:mini
-#   review (bug-risk, missing-tests, regression-risk) -> qwen2.5-coder:7b
-#   generate (generate-code, debug-patch, patch-draft) -> deepseek-coder:6.7b
-#
-# Parallelism defaults (stability-first on 16 GB machines):
-#   - Keep research/review sequential by default.
-#   - Raise AIDW_RESEARCH_PARALLEL or AIDW_REVIEW_PARALLEL to 2 only after stable runs.
-#
-# Timeout defaults (seconds, tuned for 16 GB Mac):
-#   AIDW_OLLAMA_TIMEOUT         - generic fallback (180s)
-#   AIDW_OLLAMA_TIMEOUT_FAST    - fast tasks like docs-needed (120s)
-#   AIDW_OLLAMA_TIMEOUT_REVIEW  - review passes on larger diffs (300s)
-#   AIDW_OLLAMA_TIMEOUT_GENERATE - code generation tasks (240s)
-export AIDW_OLLAMA_MODEL_FAST="phi3:mini"
-export AIDW_OLLAMA_MODEL_REVIEW="qwen2.5-coder:7b"
-export AIDW_OLLAMA_MODEL_GENERATE="deepseek-coder:6.7b"
-export AIDW_OLLAMA_MODEL="${AIDW_OLLAMA_MODEL_REVIEW}"
-export AIDW_OLLAMA_ENDPOINT="http://localhost:11434"
-export AIDW_OLLAMA_MAX_PARALLEL="2"
-export AIDW_RESEARCH_PARALLEL="1"
-export AIDW_REVIEW_PARALLEL="1"
-export AIDW_OLLAMA_TIMEOUT="180"
-export AIDW_OLLAMA_TIMEOUT_FAST="120"
-export AIDW_OLLAMA_TIMEOUT_REVIEW="300"
-export AIDW_OLLAMA_TIMEOUT_GENERATE="240"
-
 
 # Gemini adversarial review (optional, requires `npm install -g @google/gemini-cli` + auth)
 # Set AIDW_GEMINI_REVIEW=1 to enable; requires GEMINI_API_KEY or prior `gemini auth login`
@@ -315,16 +285,11 @@ export AIDW_GEMINI_REVIEW="0"
 export AIDW_GEMINI_MODEL="gemini-2.5-pro"
 export AIDW_GEMINI_TIMEOUT="120"
 ENVEOF
-    echo "Created Ollama env file:  $env_file"
+    echo "Created env file:  $env_file"
   else
-    echo "Ollama env file already exists: $env_file (appending missing vars if needed)"
-    # Append any timeout vars that are missing from an existing env file
+    echo "Env file already exists: $env_file (appending missing vars if needed)"
     local _added=0
     for _var_line in \
-      'export AIDW_OLLAMA_TIMEOUT="180"' \
-      'export AIDW_OLLAMA_TIMEOUT_FAST="120"' \
-      'export AIDW_OLLAMA_TIMEOUT_REVIEW="300"' \
-      'export AIDW_OLLAMA_TIMEOUT_GENERATE="240"' \
       'export AIDW_GEMINI_REVIEW="0"' \
       'export AIDW_GEMINI_MODEL="gemini-2.5-pro"' \
       'export AIDW_GEMINI_TIMEOUT="120"'
@@ -337,7 +302,7 @@ ENVEOF
       fi
     done
     if [ "$_added" -gt 0 ]; then
-      echo "  Added $_added missing timeout var(s) to $env_file"
+      echo "  Added $_added missing var(s) to $env_file"
     fi
   fi
 }
@@ -357,7 +322,7 @@ patch_shell_profile() {
   if [ -z "$profile" ]; then
     echo ""
     echo "NOTE: Could not detect a shell profile (~/.zshrc, ~/.bashrc, ~/.bash_profile)."
-    echo "To load Ollama model settings automatically, add this line to your shell profile:"
+    echo "To load ai-dev-workflow env settings automatically, add this line to your shell profile:"
     echo ""
     echo "  $source_line"
     echo ""
@@ -372,7 +337,7 @@ patch_shell_profile() {
   {
     printf '\n'
     printf '# BEGIN ai-dev-workflow managed block\n'
-    printf '# Ollama model configuration -- managed by ai-dev-workflow install.sh\n'
+    printf '# ai-dev-workflow env configuration -- managed by ai-dev-workflow install.sh\n'
     printf '# Do not manually remove these markers; re-run install.sh to update.\n'
     printf '%s\n' "$source_line"
     printf '# END ai-dev-workflow managed block\n'
@@ -385,7 +350,7 @@ patch_shell_profile() {
     echo ""
     return 0
   }
-  echo "Added Ollama env source line to: $profile"
+  echo "Added aidw env source line to: $profile"
   echo "Reload with:  source $profile"
 }
 
@@ -444,54 +409,14 @@ PY
   fi
 }
 
-write_ollama_env
+write_env_file
 patch_shell_profile
 configure_gemini_review
-
-# ---------------------------------------------------------------------------
-# Optional: pull recommended Ollama models
-# ---------------------------------------------------------------------------
-
-if [ "$PULL_OLLAMA_MODELS" = "1" ]; then
-  echo ""
-  echo "Pulling recommended Ollama models..."
-  if command -v ollama >/dev/null 2>&1; then
-    ollama pull phi3:mini
-    ollama pull qwen2.5-coder:7b
-    ollama pull deepseek-coder:6.7b
-    echo "Done pulling models."
-  else
-    echo "Ollama binary not found. Install Ollama first:"
-    echo "  macOS: brew install ollama"
-    echo "  Linux: curl -fsSL https://ollama.com/install.sh | sh"
-    echo "Then re-run: ./install.sh --pull-ollama-models"
-  fi
-elif command -v ollama >/dev/null 2>&1; then
-  echo ""
-  echo "Ollama detected. Checking recommended model status..."
-  _missing=()
-  for _model in "phi3:mini" "qwen2.5-coder:7b" "deepseek-coder:6.7b"; do
-    if ! ollama list 2>/dev/null | grep -qF "$_model"; then
-      _missing+=("$_model")
-    fi
-  done
-  if [ "${#_missing[@]}" -gt 0 ]; then
-    echo "Missing recommended model(s):"
-    for _m in "${_missing[@]}"; do echo "  - $_m"; done
-    echo "Pull individually, or re-run:  ./install.sh --pull-ollama-models"
-  else
-    echo "All recommended Ollama models are available."
-  fi
-fi
 
 echo
 echo "ai-dev-workflow installed."
 echo "Workspace bootstrapped: $WORKSPACE_ROOT"
 echo "Claude home: $CLAUDE_HOME"
-echo
-echo "Ollama env file: $CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
-echo "Ollama config:   aidw ollama-config"
-echo "Ollama check:    aidw ollama-check"
 echo
 echo "Suggested next step inside a repo: /wip-start"
 echo ""

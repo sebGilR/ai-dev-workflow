@@ -17,7 +17,6 @@ Workflow conventions:
 - Keep `.wip` files updated as work progresses.
 - Use the specialized `wip-planner`, `wip-researcher`, `wip-reviewer`, and `wip-tester` subagents when the task fits.
 - Treat Claude as the final decision maker and final editor.
-- Treat local Ollama review helpers as secondary review passes, not the primary coder.
 
 Default expectations:
 
