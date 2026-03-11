@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 REPO_DOCS = ["architecture.md", "patterns.md", "commands.md", "testing.md", "gotchas.md"]
 WIP_FILES = ["plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"]
 STAGES = {"started", "planned", "researched", "implementing", "reviewed", "review-fixed", "pr-prep"}
+CLAUDE_REVIEW_PLACEHOLDER = "<!-- Claude should add its own review findings here -->"
+
 COPILOT_SKILLS = [
     "wip-start",
     "wip-plan",
@@ -755,7 +757,7 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     review_path = wip_dir / "review.md"
     existing_claude_content: str = ""
     existing_adversarial_review: str = ""
-    placeholder = "<!-- Claude should add its own review findings here -->"
+    placeholder = CLAUDE_REVIEW_PLACEHOLDER
     
     if review_path.exists():
         existing_text = review_path.read_text(encoding="utf-8")
@@ -785,6 +787,12 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
             if adversarial_section and adversarial_section.strip():
                 existing_adversarial_review = adversarial_section
 
+    sections.append("## Claude Review\n")
+    if existing_claude_content:
+        sections.append(existing_claude_content + "\n")
+    else:
+        sections.append(placeholder + "\n")
+
     adversarial_path = wip_dir / "adversarial-review.md"
     if adversarial_path.exists():
         sections.append("## Adversarial Review\n")
@@ -793,12 +801,6 @@ def synthesize_review(repo: Path) -> dict[str, Any]:
     elif existing_adversarial_review:
         sections.append("## Adversarial Review\n")
         sections.append(existing_adversarial_review + "\n")
-
-    sections.append("## Claude Review\n")
-    if existing_claude_content:
-        sections.append(existing_claude_content + "\n")
-    else:
-        sections.append(placeholder + "\n")
 
     atomic_write(review_path, "\n".join(sections) + "\n")
 

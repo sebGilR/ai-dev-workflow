@@ -13,9 +13,29 @@ When this skill is used:
 ~/.claude/ai-dev-workflow/bin/aidw review-bundle .
 ```
 
-3. Optionally run adversarial Gemini review (only if `AIDW_GEMINI_REVIEW=1`):
+3. Synthesize the review scaffold (writes `## Claude Review` placeholder into `review.md`):
 
-Before proceeding to synthesis, decide whether this change warrants adversarial review. Run it if ANY of the following apply:
+```bash
+~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
+```
+
+4. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
+
+The reviewer should:
+- Read the existing `review.md`
+- Read the review bundle (`review-bundle.json`) for additional context
+- **Perform an independent analysis of the git diff directly**
+- Focus on: architecture fit, maintainability, edge cases, API design, cross-file dependencies
+- Write a prioritized Claude analysis into the `## Claude Review` section:
+  - High priority (blockers)
+  - Medium priority (should fix)
+  - Low priority (suggestions)
+- Note missing tests and regression risks
+- Include a final verdict
+
+5. Optionally run adversarial Gemini review (only if `AIDW_GEMINI_REVIEW=1`):
+
+Before proceeding, decide whether this change warrants adversarial review. Run it if ANY of the following apply:
 - The diff touches more than 3 files
 - The change modifies public API surface, authentication/authorization logic, data model/schema, or concurrent code
 
@@ -27,29 +47,13 @@ If warranted:
 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
 ```
 
-If the command fails because Gemini CLI is not installed or auth is not configured, continue to step 4 without adversarial results. The `## Adversarial Review` section will be omitted from the synthesized review.
-
-4. Synthesize the review scaffold (writes adversarial review (if present) + `## Claude Review` placeholder into `review.md`):
+Then re-run synthesize-review to merge adversarial findings into `review.md`:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
-5. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
-
-The reviewer should:
-- Read the existing `review.md`
-- Read the review bundle (`review-bundle.json`) for additional context
-- **Perform an independent analysis of the git diff directly**
-- Use any prior review findings as supplementary information, not the primary source
-- Identify issues prior passes may have missed
-- Focus on: architecture fit, maintainability, edge cases, API design, cross-file dependencies
-- Write a prioritized Claude analysis into the `## Claude Review` section:
-  - High priority (blockers)
-  - Medium priority (should fix)
-  - Low priority (suggestions)
-- Note missing tests and regression risks
-- Include a final verdict
+If the command fails because Gemini CLI is not installed or auth is not configured, skip this step entirely. The `## Adversarial Review` section will be omitted from `review.md`.
 
 6. Verify the review.md write succeeded:
 
