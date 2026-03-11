@@ -19,7 +19,6 @@ It also adds:
 - a portable installer that symlinks skills and agents into `~/.claude`
 - workspace scanning and per-repo bootstrapping
 - starter permission rules in `~/.claude/settings.json`
-- optional local Ollama review passes with structured JSON output
 - a CLI (`aidw`) for automation and verification
 
 ---
@@ -215,7 +214,7 @@ Snapshots are written in the active repo under `.wip/<branch>/` and include:
 | `/wip-plan` | Use `wip-planner` subagent to create/refresh `plan.md` |
 | `/wip-research` | Use `wip-researcher` subagent to populate `research.md` and `context.md` |
 | `/wip-implement` | Implement next chunk, update `execution.md` |
-| `/wip-review` | Build review bundle, run Ollama passes if available, consolidate into `review.md` |
+| `/wip-review` | Build review bundle and consolidate findings into `review.md` |
 | `/wip-fix-review` | Fix review issues, update `execution.md` |
 | `/wip-resume` | Summarize current state and continue from the right stage |
 | `/wip-pr` | Draft PR content into `pr.md` |
@@ -322,115 +321,15 @@ Tune these for your stack and risk tolerance. The merge is additive; existing ru
 
 ---
 
-## Ollama integration
+## WIP file persistence and verification
 
-Ollama provides optional local review passes. When available, `/wip-review` automatically runs structured review passes against your current diff using a local model.
+WIP markdown files are the source of truth for stage transitions. The CLI verifies required files before advancing workflow stages and uses atomic writes for generated artifacts.
 
-### Setup
-
-#### 1. Install Ollama
-
-| Platform | Command |
-|----------|---------|
-| macOS | `brew install ollama` or download from [ollama.com/download](https://ollama.com/download) |
-| Linux | `curl -fsSL https://ollama.com/install.sh \| sh` |
-| Windows | Download from [ollama.com/download](https://ollama.com/download) |
-
-#### 2. Start the service
+### Verification commands
 
 ```bash
-ollama serve
-```
-
-On macOS, the Ollama app starts the service automatically.
-
-#### 3. Pull recommended models
-
-Default routing uses three models (16 GB-safe baseline):
-
-```bash
-ollama pull phi3:mini
-ollama pull qwen2.5-coder:7b
-ollama pull deepseek-coder:6.7b
-```
-
-Alternative models that work well for code review:
-
-| Model | Size | Notes |
-|-------|------|-------|
-| `qwen2.5-coder:14b` | ~9 GB | Optional heavier review model on larger-memory machines. |
-| `qwen2.5-coder:7b` | ~4.7 GB | Lighter, faster, still good for review. |
-| `codellama:13b` | ~7.4 GB | Meta's code model. |
-| `deepseek-coder-v2:16b` | ~8.9 GB | Strong at code analysis. |
-
-#### 4. Verify readiness
-
-```bash
-~/.claude/ai-dev-workflow/bin/aidw ollama-check
-```
-
-This checks: Ollama installed, service running, model pulled. Returns JSON with actionable guidance if anything is missing.
-
-### Configuration
-
-| Environment variable | Default | Purpose |
-|---------------------|---------|---------|
-| `AIDW_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Fallback model when a task kind does not map to a per-role model |
-| `AIDW_OLLAMA_MODEL_FAST` | `phi3:mini` | Model used for docs/summaries/synthesis tasks |
-| `AIDW_OLLAMA_MODEL_REVIEW` | `qwen2.5-coder:7b` | Model used for review-oriented tasks |
-| `AIDW_OLLAMA_MODEL_GENERATE` | `deepseek-coder:6.7b` | Model used for code-generation tasks |
-| `AIDW_OLLAMA_ENDPOINT` | `http://localhost:11434` | Base Ollama API endpoint |
-| `AIDW_OLLAMA_MAX_PARALLEL` | `2` | Global hard limit for parallel Ollama work |
-| `AIDW_RESEARCH_PARALLEL` | `1` | Research lane concurrency request (kept sequential by default) |
-| `AIDW_REVIEW_PARALLEL` | `1` | Review pass concurrency request (sequential default, max 2) |
-| `AIDW_OLLAMA_ALLOW_REMOTE` | unset | Set to `1` to allow non-localhost endpoints |
-| `AIDW_OLLAMA_TIMEOUT` | `180` | Generic HTTP timeout fallback (seconds) |
-| `AIDW_OLLAMA_TIMEOUT_FAST` | `120` | Timeout for fast tasks (docs-needed, summaries, synthesis) |
-| `AIDW_OLLAMA_TIMEOUT_REVIEW` | `300` | Timeout for review passes (bug-risk, missing-tests, regression-risk) |
-| `AIDW_OLLAMA_TIMEOUT_GENERATE` | `240` | Timeout for code-generation tasks |
-
-### 16 GB tuning guidance
-
-Use these defaults first and only raise to `2` after confirming stable local runs:
-
-```bash
-export AIDW_OLLAMA_MAX_PARALLEL=2
-export AIDW_RESEARCH_PARALLEL=1
-export AIDW_REVIEW_PARALLEL=1
-```
-
-If you increase research/review parallelism to `2`, keep `AIDW_OLLAMA_MAX_PARALLEL=2` to avoid overcommitting memory.
-
-### Staged v2 research flow
-
-v2 adds an index-first narrowing workflow to reduce prompt size and improve file targeting:
-
-```bash
-# Build/rebuild repo structure index
-~/.claude/ai-dev-workflow/bin/aidw build-index .
-
-# Produce branch-local narrowed research map
-~/.claude/ai-dev-workflow/bin/aidw research-scan . --goal "your implementation goal"
-```
-
-Artifacts:
-- `.wip/repo-index.json` (repo-level index)
-- `.wip/<branch>/research-scan.json` (branch-local narrowed relevance map)
-
-### WIP file persistence and verification
-
-WIP markdown files are treated as the source of truth for stage transitions. The CLI now verifies required files before advancing workflow stages and uses atomic writes for generated artifacts.
-
-Verification commands:
-
-```bash
-# Verify branch plan exists and has content
 ~/.claude/ai-dev-workflow/bin/aidw verify-plan .
-
-# Verify branch research exists and has content
 ~/.claude/ai-dev-workflow/bin/aidw verify-research .
-
-# Verify branch review exists and has content
 ~/.claude/ai-dev-workflow/bin/aidw verify-review .
 ```
 
@@ -444,112 +343,6 @@ Atomic write guarantees:
 - generated markdown/json artifacts are written via temp file + replace
 - partial writes are avoided on interruptions
 - `.tmp` files are replaced in-place and should not remain after successful command completion
-
-### Multi-pass review pipeline
-
-The review pipeline is now split into four passes so Claude performs an independent code review instead of only summarizing model output.
-
-Passes:
-- Pass A: Ollama broad review (`bug-risk`, `missing-tests`, `regression-risk`, `docs-needed`)
-- Pass B: Claude gap analysis via `review-gaps`
-- Pass C: Optional targeted Ollama follow-up via `review-targeted`
-- Pass D: Claude independent final review over the actual diff
-
-Artifacts:
-- `review-bundle.json`
-- `ollama-review-<kind>.json`
-- `review-gaps.json`
-- `ollama-review-targeted.json` (when targeted pass runs)
-
-### Endpoint safety
-
-By default, only local endpoints (`localhost`, `127.0.0.1`, `::1`) are accepted. Attempts to use a remote endpoint will fail with a clear error:
-
-```
-Ollama endpoint 'http://remote-host:11434' is not a local address.
-Only localhost, 127.0.0.1, and ::1 are allowed by default.
-Set AIDW_OLLAMA_ALLOW_REMOTE=1 to allow remote endpoints.
-```
-
-To allow a remote endpoint, set the env var explicitly:
-
-```bash
-AIDW_OLLAMA_ALLOW_REMOTE=1 ~/.claude/ai-dev-workflow/bin/aidw ollama-check --endpoint http://remote-host:11434
-```
-Override per-command:
-
-```bash
-~/.claude/ai-dev-workflow/bin/aidw ollama-review . --kind bug-risk --model qwen2.5-coder:7b
-```
-
-### Review passes
-
-Four structured review passes are available:
-
-| Kind | What it checks |
-|------|---------------|
-| `bug-risk` | Correctness issues, hidden bugs, risky assumptions |
-| `missing-tests` | Missing tests, validation coverage gaps |
-| `regression-risk` | Regressions, affected nearby code paths, brittle changes |
-| `docs-needed` | Documentation, runbooks, or notes that should be updated |
-
-### CLI commands
-
-```bash
-# Check Ollama readiness
-~/.claude/ai-dev-workflow/bin/aidw ollama-check
-
-# Run a single review pass
-~/.claude/ai-dev-workflow/bin/aidw ollama-review . --kind bug-risk
-
-# Run all four review passes (sequential by default)
-~/.claude/ai-dev-workflow/bin/aidw review-all .
-
-# Optional bounded parallel review (max 2)
-~/.claude/ai-dev-workflow/bin/aidw review-all . --parallel 2
-
-# Analyze review coverage gaps to guide Claude follow-up
-~/.claude/ai-dev-workflow/bin/aidw review-gaps .
-
-# Run targeted follow-up review on specific files/focus area
-~/.claude/ai-dev-workflow/bin/aidw review-targeted . --files scripts/aidw.py,tests/test_aidw.py --focus error-handling
-
-# Verify branch WIP files before stage transitions
-~/.claude/ai-dev-workflow/bin/aidw verify-plan .
-~/.claude/ai-dev-workflow/bin/aidw verify-research .
-~/.claude/ai-dev-workflow/bin/aidw verify-review .
-
-# Merge all review sources into review.md
-~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
-```
-
-Each review pass outputs structured JSON and saves results to `.wip/<branch>/ollama-review-<kind>.json`. In parallel mode, failures in a batch trigger automatic fallback to sequential execution for the remaining passes.
-
-If a review pass times out, a structured result is written to the artifact file instead of crashing the run:
-
-```json
-{
-  "kind": "bug-risk",
-  "status": "timeout",
-  "timeout_seconds": 300,
-  "summary": "The bug-risk review pass timed out after 300s.",
-  "findings": []
-}
-```
-
-On the next run, if a completed (non-timeout) artifact already exists for a pass, that artifact is reused and the HTTP call is skipped. This prevents re-running work that Ollama already completed. A `status: "timeout"` artifact is never reused — the pass is always retried.
-
-### How /wip-review uses Ollama
-
-When you run `/wip-review`:
-
-1. It builds a review bundle (diff + changed files).
-2. It checks if Ollama is available locally.
-3. If available, it runs all four review passes.
-4. The `wip-reviewer` subagent reads both the diff and the Ollama results.
-5. It consolidates everything into a prioritized `review.md`.
-
-If Ollama is not available, the review still works. Claude does the review entirely on its own.
 
 ---
 
@@ -669,15 +462,11 @@ The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underl
 | `status <path>` | Show current branch status |
 | `set-stage <path> <stage>` | Update the workflow stage |
 | `review-bundle <path>` | Build a review bundle from the current diff |
-| `build-index <path>` | Build/update `.wip/repo-index.json` with lightweight file structure pointers |
-| `research-scan <path> --goal TEXT` | Generate `.wip/<branch>/research-scan.json` from index-first relevance scoring |
-| `ollama-config [--endpoint E]` | Print resolved Ollama endpoint and model configuration |
-| `ollama-check [--endpoint E]` | Check Ollama installation and all configured models |
-| `ollama-review <path> --kind KIND [--model M] [--endpoint E] [--no-stop]` | Run a single Ollama pass (model auto-routed by kind) |
-| `review-all <path> [--endpoint E] [--parallel {1,2}] [--no-stop]` | Run all review passes with bounded optional parallelism and fallback safeguards |
-| `ollama-stop --model M [--endpoint E]` | Unload a specific model to free RAM |
-| `ollama-stop-all [--endpoint E]` | Unload all configured models to free RAM |
+| `gemini-review <path>` | Run adversarial Gemini review pass (requires `AIDW_GEMINI_REVIEW=1`) |
 | `synthesize-review <path>` | Merge review sources into `review.md` |
+| `verify-plan <path>` | Verify `plan.md` exists and has content |
+| `verify-research <path>` | Verify `research.md` exists and has content |
+| `verify-review <path>` | Verify `review.md` exists and has content |
 | `summarize-context <path>` | Generate `context-summary.md` from all WIP files |
 | `context-summary <path>` | Print `context-summary.md` to stdout |
 | `verify [--workspace PATH]` | Verify installation and configuration |
@@ -724,8 +513,7 @@ When `/wip-resume` is invoked, Claude checks for `context-summary.md` first. If 
 - Tune `~/.claude/settings.json` permission rules for your environment
 - Fill in repo docs with real project knowledge
 - Decide whether review findings should be fixed or deferred
-- Pull Ollama models if not done during install: `ollama pull phi3:mini && ollama pull qwen2.5-coder:7b && ollama pull deepseek-coder:6.7b`
-- Edit `~/.claude/ai-dev-workflow/aidw.env.sh` to override model defaults
+- Edit `~/.claude/ai-dev-workflow/aidw.env.sh` to override settings defaults (e.g. Gemini settings)
 - Adjust VS Code tasks if you have a complex existing `.vscode/tasks.json`
 
 ---
@@ -753,16 +541,6 @@ Skills are loaded at session start. If you install while a session is running, r
 ### Global gitignore not working
 The installer sets `core.excludesfile` in your global git config. If you use a non-standard gitignore path, verify with `git config --global core.excludesfile`.
 
-### Ollama review timeout
-Review passes use per-task-kind timeouts (default: 300s for review passes, 120s for fast tasks). Large diffs may take longer — all diff sources are truncated to 50 KB each to mitigate this. The `branch_diff` field in the bundle always covers the full committed branch diff since the merge-base, not just working-tree changes.
-
-If a pass times out, the run continues with the remaining passes. A structured `status: "timeout"` artifact is written so the result is recorded cleanly. You can increase timeouts via environment variables:
-
-```bash
-export AIDW_OLLAMA_TIMEOUT_REVIEW=600   # 10 minutes for review passes on large diffs
-export AIDW_OLLAMA_TIMEOUT_FAST=180     # 3 minutes for fast tasks
-```
-
 ### Branch directory naming
 `.wip/` subdirectory names are derived from the branch name. Characters outside `a-z0-9-` are replaced with `-`, and a short SHA-256 hash suffix is appended when the slugified name would differ from the original (e.g. `feature/foo` → `feature-foo-<hash>`). This prevents collisions between branches that would otherwise resolve to the same slug.
 
@@ -778,11 +556,8 @@ With two concurrent Claude sessions open in **different repositories**, the poin
 
 **For single-session use (the common case) this works correctly.** If you routinely work with multiple concurrent Claude sessions in different repos, avoid relying on the emergency autosave and prefer explicit `/wip-sync` before context resets.
 
-### Streaming support
-Review passes currently wait for Ollama to return the full response before writing results. Adding `stream: true` to the `/api/chat` request would let passes succeed incrementally, reducing sensitivity to timeouts on slow models or large diffs. This requires parsing the NDJSON response stream and reassembling the structured output.
-
 ### Review chunking for large diffs
-All diff sources are already truncated to 50 KB each, but very large changes may still stress a single review pass. A future improvement would split the diff into segments and run passes on each chunk, then merge and deduplicate findings. This is complementary to streaming and would further reduce timeout exposure on large PRs.
+All diff sources are already truncated to 50 KB each, but very large changes may still stress a single review pass. A future improvement would split the diff into segments and run passes on each chunk, then merge and deduplicate findings.
 
 ---
 
