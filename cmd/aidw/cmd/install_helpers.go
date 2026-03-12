@@ -15,10 +15,11 @@ func init() {
 	Root.AddCommand(mergeMCPJSONCmd)
 	Root.AddCommand(updateGlobalGitignoreCmd)
 
-	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
+	mergeCLAUDEMdCmd.Flags().String("claude-md", "", "Path to CLAUDE.md")
 	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file")
 	mergeSettingsCmd.Flags().String("settings", "", "Path to settings.json")
 	mergeSettingsCmd.Flags().String("template", "", "Path to template JSON")
+	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
 }
 
 var mergeCLAUDEMdCmd = &cobra.Command{

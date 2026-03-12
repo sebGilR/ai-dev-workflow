@@ -96,6 +96,20 @@ for agent_file in "$SCRIPT_DIR"/claude/agents/*; do
   safe_link "$agent_file" "$CLAUDE_HOME/agents/$agent_name"
 done
 
+# Build the Go binary if needed (required by merge-* commands below).
+if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/null 2>&1; then
+  echo "→ Building aidw Go binary..."
+  if command -v go &>/dev/null; then
+    (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
+      echo "ERROR: 'go build' failed. Install Go from https://go.dev/dl/ and retry." >&2
+      exit 1
+    }
+  else
+    echo "ERROR: Go toolchain not found. Install from https://go.dev/dl/ and retry." >&2
+    exit 1
+  fi
+fi
+
 "$SCRIPT_DIR/bin/aidw" merge-claude-md \
   --claude-md "$CLAUDE_HOME/CLAUDE.md" \
   --snippet "$SCRIPT_DIR/templates/global/claude_managed_block.md"
@@ -107,20 +121,8 @@ done
 
 "$SCRIPT_DIR/bin/aidw" update-global-gitignore
 
-# Build the Go binary if needed, then bootstrap the workspace.
+# Bootstrap the workspace if WORKSPACE_ROOT is set.
 if [ -n "$WORKSPACE_ROOT" ]; then
-  if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/null 2>&1; then
-    echo "→ Building aidw Go binary..."
-    if command -v go &>/dev/null; then
-      (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
-        echo "ERROR: 'go build' failed. Install Go from https://go.dev/dl/ and retry." >&2
-        exit 1
-      }
-    else
-      echo "ERROR: Go toolchain not found. Install from https://go.dev/dl/ and retry." >&2
-      exit 1
-    fi
-  fi
   "$SCRIPT_DIR/bin/aidw" bootstrap-workspace "$WORKSPACE_ROOT"
 fi
 
@@ -331,8 +333,9 @@ configure_repo_gitignore() {
       echo "Added to $exclude_file (local, no .gitignore file changes)."
       ;;
     2)
-      if ! "$SCRIPT_DIR/bin/aidw" update-global-gitignore \
-          $(printf -- '--add %s ' "${_GI_PATHS[@]}"); then
+      local _gi_args=()
+      for _p in "${_GI_PATHS[@]}"; do _gi_args+=("--add" "$_p"); done
+      if ! "$SCRIPT_DIR/bin/aidw" update-global-gitignore "${_gi_args[@]}"; then
         echo "Warning: failed to update global gitignore; please add entries manually." >&2
       fi
       ;;
