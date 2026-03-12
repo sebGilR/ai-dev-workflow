@@ -416,12 +416,9 @@ PY
 }
 
 configure_repo_gitignore() {
-  # Skip if workspace root is not a git repo or not running interactively
-  [ -d "$WORKSPACE_ROOT/.git" ] || return 0
   [ -t 0 ] || return 0
 
-  local exclude_file="$WORKSPACE_ROOT/.git/info/exclude"
-  local _global_gi _gi_choice _p
+  local _global_gi _gi_choice _p _repo _excl
   local _GI_PATHS=(
     ".github/copilot-instructions.md"
     ".github/skills/"
@@ -430,23 +427,41 @@ configure_repo_gitignore() {
     ".claude/settings.local.json"
   )
 
-  # Idempotency: skip if all seeded entries are already present in either location
-  local _all_local=1 _all_global=1
-  for _p in "${_GI_PATHS[@]}"; do
-    grep -qF "$_p" "$exclude_file" 2>/dev/null || _all_local=0
+  # Mirror detect_repos(): workspace root (if git) + immediate git-repo children
+  local _repos=()
+  [ -d "$WORKSPACE_ROOT/.git" ] && _repos+=("$WORKSPACE_ROOT")
+  for _repo in "$WORKSPACE_ROOT"/*/; do
+    [ -d "${_repo}.git" ] && _repos+=("${_repo%/}")
   done
-  if [ "$_all_local" -eq 1 ]; then return 0; fi
+  [ "${#_repos[@]}" -eq 0 ] && return 0
 
+  # Idempotency: skip if all entries are already in the global gitignore
   _global_gi=$(git config --global core.excludesfile 2>/dev/null || true)
   if [ -n "$_global_gi" ]; then
+    local _all_global=1
     for _p in "${_GI_PATHS[@]}"; do
-      grep -qF "$_p" "$_global_gi" 2>/dev/null || _all_global=0
+      grep -qF "$_p" "$_global_gi" 2>/dev/null || { _all_global=0; break; }
     done
-    if [ "$_all_global" -eq 1 ]; then return 0; fi
+    [ "$_all_global" -eq 1 ] && return 0
   fi
 
+  # Idempotency: skip if all entries are in every repo's local exclude
+  local _all_local=1
+  for _repo in "${_repos[@]}"; do
+    _excl="$_repo/.git/info/exclude"
+    for _p in "${_GI_PATHS[@]}"; do
+      grep -qF "$_p" "$_excl" 2>/dev/null || { _all_local=0; break 2; }
+    done
+  done
+  [ "$_all_local" -eq 1 ] && return 0
+
   echo ""
-  echo "Bootstrap seeded these files into $WORKSPACE_ROOT:"
+  if [ "${#_repos[@]}" -eq 1 ]; then
+    echo "Bootstrap seeded files into ${_repos[0]}:"
+  else
+    echo "Bootstrap seeded files into these repos:"
+    for _repo in "${_repos[@]}"; do echo "  $_repo"; done
+  fi
   echo "  .github/copilot-instructions.md"
   echo "  .github/skills/   (skill definitions)"
   echo "  .github/agents/   (agent definitions)"
@@ -454,21 +469,22 @@ configure_repo_gitignore() {
   echo "  .claude/settings.local.json   (local Claude settings override)"
   echo ""
   echo "How should these be gitignored?"
-  echo "  1) Locally   — add to .git/info/exclude  (this repo only, no committed changes)"
-  echo "  2) Globally  — add to global gitignore   (applies across all your repos)"
-  echo "  3) Not at all — skip                     (commit them, e.g. for GitHub Copilot)"
+  echo "  1) Locally   — add to each repo's .git/info/exclude"
+  echo "  2) Globally  — add to global gitignore (applies across all your repos)"
+  echo "  3) Not at all — skip (commit them, e.g. for GitHub Copilot)"
   printf "Choose [1/2/3] (default: 1): "
   read -r _gi_choice </dev/tty || _gi_choice=""
   echo ""
 
   case "${_gi_choice:-1}" in
     1)
-      for _p in "${_GI_PATHS[@]}"; do
-        if ! grep -qF "$_p" "$exclude_file" 2>/dev/null; then
-          printf '%s\n' "$_p" >> "$exclude_file"
-        fi
+      for _repo in "${_repos[@]}"; do
+        _excl="$_repo/.git/info/exclude"
+        for _p in "${_GI_PATHS[@]}"; do
+          grep -qF "$_p" "$_excl" 2>/dev/null || printf '%s\n' "$_p" >> "$_excl"
+        done
+        echo "Added to $_excl"
       done
-      echo "Added to $exclude_file (local, no .gitignore file changes)."
       ;;
     2)
       if ! "$PYTHON_BIN" "$SCRIPT_DIR/scripts/update_global_gitignore.py" \
@@ -477,12 +493,11 @@ configure_repo_gitignore() {
       fi
       ;;
     3)
-      local _hint_global="${_global_gi:-~/.gitignore_global}"
       echo "Skipped. To configure later, re-run install.sh and choose 1 or 2, or add manually:"
       for _p in "${_GI_PATHS[@]}"; do
-        echo "  echo '$_p' >> $WORKSPACE_ROOT/.git/info/exclude"
+        echo "  echo '$_p' >> <repo>/.git/info/exclude"
       done
-      echo "  # or: update_global_gitignore.py --add ${_GI_PATHS[*]}"
+      echo "  # or globally: $(basename "$PYTHON_BIN") $SCRIPT_DIR/scripts/update_global_gitignore.py --add ${_GI_PATHS[*]}"
       ;;
     *)
       echo "Unrecognized choice; skipping gitignore configuration."
