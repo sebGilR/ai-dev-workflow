@@ -85,6 +85,8 @@ CLAUDE.local.md
 
 This keeps the workflow personal and portable without editing tracked repo `.gitignore` files.
 
+During installation you'll also be prompted how to handle the files seeded per-repo — `.github/copilot-instructions.md`, `.github/skills/`, `.github/agents/`, `.claude/repo-docs/`, and `.claude/settings.local.json` — add them to the local `.git/info/exclude` (default), to your global gitignore, or skip (if you want to commit them for GitHub Copilot or shared team context).
+
 ---
 
 ## Quick start

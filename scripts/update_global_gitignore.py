@@ -5,8 +5,6 @@ from pathlib import Path
 
 MANAGED_LINES = [
     ".wip/",
-    ".claude/repo-docs/",
-    ".claude/settings.local.json",
     "CLAUDE.local.md",
 ]
 
@@ -28,23 +26,41 @@ def get_global_excludes() -> Path:
     return Path(path).expanduser()
 
 
-def main() -> int:
-    gitignore = get_global_excludes()
-    if gitignore.exists():
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-    else:
-        lines = []
+def add_entries(entries: list[str], gitignore: Path) -> list[str]:
+    """Append *entries* to *gitignore* that are not already present.
 
+    Returns the list of entries that were actually added.
+    Creates the file (and parent dirs) if it does not exist.
+    """
+    lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
     existing = set(lines)
-    changed = False
-    for line in MANAGED_LINES:
-        if line not in existing:
-            lines.append(line)
-            changed = True
-
-    if changed or not gitignore.exists():
+    added = [e for e in entries if e not in existing]
+    if added:
+        lines.extend(added)
         gitignore.parent.mkdir(parents=True, exist_ok=True)
         gitignore.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return added
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--add",
+        nargs="+",
+        metavar="ENTRY",
+        help="Extra entries to add to the global gitignore (in addition to managed lines)",
+    )
+    args = parser.parse_args()
+
+    gitignore = get_global_excludes()
+    entries = MANAGED_LINES + (args.add or [])
+    added = add_entries(entries, gitignore)
+    if added:
+        print(f"Added to global gitignore ({gitignore}):")
+        for e in added:
+            print(f"  {e}")
     return 0
 
 
