@@ -48,12 +48,17 @@ def main() -> int:
         return 1
 
     added = []
+    updated = []
     for name, config in MCP_SERVERS.items():
         if name not in servers:
             servers[name] = config
             added.append(name)
+        elif servers[name].get("command") != config["command"] or servers[name].get("args") != config["args"]:
+            # Overwrite stale/broken entries (e.g. wrong command or args)
+            servers[name] = config
+            updated.append(name)
 
-    if not added:
+    if not added and not updated:
         print("MCP servers already configured (no changes made).")
         return 0
 
@@ -63,7 +68,10 @@ def main() -> int:
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(mcp_path)
 
-    print(f"MCP servers added: {', '.join(added)}")
+    if updated:
+        print(f"MCP servers updated (config corrected): {', '.join(updated)}")
+    if added:
+        print(f"MCP servers added: {', '.join(added)}")
     return 0
 
 
