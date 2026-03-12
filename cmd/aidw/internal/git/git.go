@@ -33,8 +33,16 @@ func Toplevel(dir string) (string, error) {
 }
 
 // CurrentBranch returns the name of the current branch.
+// Returns "detached-head" when HEAD is not on a branch (matches Python behaviour).
 func CurrentBranch(dir string) (string, error) {
-	return run(dir, "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := run(dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if out == "HEAD" {
+		return "detached-head", nil
+	}
+	return out, nil
 }
 
 // HeadSHA returns the full SHA of HEAD.

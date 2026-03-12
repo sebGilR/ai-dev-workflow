@@ -395,6 +395,7 @@ What it improves:
 | uv / uvx | Required for Serena. Install: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Node.js / npx | Required for Context7. Install from https://nodejs.org |
 | Claude Code MCP support | Both servers run as MCP processes |
+| Go 1.21+ | Required to build the `aidw` binary on Linux or non-arm64 macOS. Pre-built `darwin-arm64` binary included. Install from https://go.dev/dl/ |
 
 ### Configuration
 

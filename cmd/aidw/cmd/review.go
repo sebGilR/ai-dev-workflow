@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"aidw/cmd/aidw/internal/config"
 	"aidw/cmd/aidw/internal/review"
 	"aidw/cmd/aidw/internal/util"
 )
@@ -41,8 +42,8 @@ var geminiReviewCmd = &cobra.Command{
 	Short: "Run adversarial Gemini review pass",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
-		geminiReview := os.Getenv("AIDW_GEMINI_REVIEW")
-		if geminiReview != "1" {
+		cfg := config.Load()
+		if !cfg.GeminiReview {
 			fmt.Fprintln(os.Stderr, "[aidw] Gemini adversarial review disabled (AIDW_GEMINI_REVIEW != 1).")
 			os.Exit(0)
 		}
@@ -68,8 +69,9 @@ var geminiReviewCmd = &cobra.Command{
 }
 
 func init() {
-	geminiReviewCmd.Flags().String("model", "gemini-2.5-pro", "Gemini model to use")
-	geminiReviewCmd.Flags().Int("timeout", 120, "Timeout in seconds")
+	cfg := config.Load()
+	geminiReviewCmd.Flags().String("model", cfg.GeminiModel, "Gemini model to use (env: AIDW_GEMINI_MODEL)")
+	geminiReviewCmd.Flags().Int("timeout", cfg.GeminiTimeout, "Timeout in seconds (env: AIDW_GEMINI_TIMEOUT)")
 	Root.AddCommand(reviewBundleCmd)
 	Root.AddCommand(synthesizeReviewCmd)
 	Root.AddCommand(geminiReviewCmd)
