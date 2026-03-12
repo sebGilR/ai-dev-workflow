@@ -415,9 +415,85 @@ PY
   fi
 }
 
+configure_repo_gitignore() {
+  # Skip if workspace root is not a git repo or not running interactively
+  [ -d "$WORKSPACE_ROOT/.git" ] || return 0
+  [ -t 0 ] || return 0
+
+  local exclude_file="$WORKSPACE_ROOT/.git/info/exclude"
+  local _global_gi _gi_choice _p
+  local _GI_PATHS=(
+    ".github/copilot-instructions.md"
+    ".github/skills/"
+    ".github/agents/"
+    ".claude/repo-docs/"
+    ".claude/settings.local.json"
+  )
+
+  # Idempotency: skip if all seeded entries are already present in either location
+  local _all_local=1 _all_global=1
+  for _p in "${_GI_PATHS[@]}"; do
+    grep -qF "$_p" "$exclude_file" 2>/dev/null || _all_local=0
+  done
+  if [ "$_all_local" -eq 1 ]; then return 0; fi
+
+  _global_gi=$(git config --global core.excludesfile 2>/dev/null || true)
+  if [ -n "$_global_gi" ]; then
+    for _p in "${_GI_PATHS[@]}"; do
+      grep -qF "$_p" "$_global_gi" 2>/dev/null || _all_global=0
+    done
+    if [ "$_all_global" -eq 1 ]; then return 0; fi
+  fi
+
+  echo ""
+  echo "Bootstrap seeded these files into $WORKSPACE_ROOT:"
+  echo "  .github/copilot-instructions.md"
+  echo "  .github/skills/   (skill definitions)"
+  echo "  .github/agents/   (agent definitions)"
+  echo "  .claude/repo-docs/            (local repo context docs)"
+  echo "  .claude/settings.local.json   (local Claude settings override)"
+  echo ""
+  echo "How should these be gitignored?"
+  echo "  1) Locally   — add to .git/info/exclude  (this repo only, no committed changes)"
+  echo "  2) Globally  — add to global gitignore   (applies across all your repos)"
+  echo "  3) Not at all — skip                     (commit them, e.g. for GitHub Copilot)"
+  printf "Choose [1/2/3] (default: 1): "
+  read -r _gi_choice </dev/tty || _gi_choice=""
+  echo ""
+
+  case "${_gi_choice:-1}" in
+    1)
+      for _p in "${_GI_PATHS[@]}"; do
+        if ! grep -qF "$_p" "$exclude_file" 2>/dev/null; then
+          printf '%s\n' "$_p" >> "$exclude_file"
+        fi
+      done
+      echo "Added to $exclude_file (local, no .gitignore file changes)."
+      ;;
+    2)
+      if ! "$PYTHON_BIN" "$SCRIPT_DIR/scripts/update_global_gitignore.py" \
+          --add "${_GI_PATHS[@]}"; then
+        echo "Warning: failed to update global gitignore; please add entries manually." >&2
+      fi
+      ;;
+    3)
+      local _hint_global="${_global_gi:-~/.gitignore_global}"
+      echo "Skipped. To configure later, re-run install.sh and choose 1 or 2, or add manually:"
+      for _p in "${_GI_PATHS[@]}"; do
+        echo "  echo '$_p' >> $WORKSPACE_ROOT/.git/info/exclude"
+      done
+      echo "  # or: update_global_gitignore.py --add ${_GI_PATHS[*]}"
+      ;;
+    *)
+      echo "Unrecognized choice; skipping gitignore configuration."
+      ;;
+  esac
+}
+
 write_env_file
 patch_shell_profile
 configure_gemini_review
+configure_repo_gitignore
 
 echo
 echo "ai-dev-workflow installed."
