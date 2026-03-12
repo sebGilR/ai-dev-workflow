@@ -44,8 +44,10 @@ func mergeMCPJSONToPath(mcpPath string) error {
 		if jerr := json.Unmarshal(raw, &data); jerr != nil {
 			return fmt.Errorf("invalid JSON in %s: %w", mcpPath, jerr)
 		}
-	} else {
+	} else if os.IsNotExist(err) {
 		data = map[string]any{}
+	} else {
+		return fmt.Errorf("read %s: %w", mcpPath, err)
 	}
 
 	servers, _ := data["mcpServers"].(map[string]any)
@@ -63,8 +65,16 @@ func mergeMCPJSONToPath(mcpPath string) error {
 			continue
 		}
 		existingMap, _ := existing.(map[string]any)
-		if existingMap == nil || isStale(existingMap, cfg) {
+		if existingMap == nil {
+			// Non-map entry (corrupted config) — replace entirely.
 			servers[name] = cfg
+			updated = append(updated, name)
+			continue
+		}
+		if isStale(existingMap, cfg) {
+			// Preserve user-added fields; only update managed keys.
+			existingMap["command"] = cfg["command"]
+			existingMap["args"] = cfg["args"]
 			updated = append(updated, name)
 		}
 	}

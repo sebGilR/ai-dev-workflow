@@ -28,9 +28,16 @@ func Load() Config {
 		model = DefaultGeminiModel
 	}
 
+	timeout := util.ParseIntEnv("AIDW_GEMINI_TIMEOUT", DefaultGeminiTimeout)
+	if timeout < 10 {
+		timeout = 10
+	} else if timeout > 600 {
+		timeout = 600
+	}
+
 	return Config{
 		GeminiModel:   model,
-		GeminiTimeout: util.ParseIntEnv("AIDW_GEMINI_TIMEOUT", DefaultGeminiTimeout),
+		GeminiTimeout: timeout,
 		GeminiReview:  reviewRaw == "1",
 		GeminiSet:     reviewSet,
 	}

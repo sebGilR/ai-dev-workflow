@@ -32,6 +32,8 @@ func updateGitignoreToPath(giPath string, entries []string) error {
 	var lines []string
 	if data, err := os.ReadFile(giPath); err == nil {
 		lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", giPath, err)
 	}
 
 	existing := make(map[string]bool, len(lines))

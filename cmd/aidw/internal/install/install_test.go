@@ -239,6 +239,60 @@ func TestMergeMCPJSON_NoopIfAlreadyConfigured(t *testing.T) {
 	}
 }
 
+func TestMergeMCPJSON_InvalidJSONReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".claude", "mcp.json")
+	os.MkdirAll(filepath.Dir(mcpPath), 0o755)
+	os.WriteFile(mcpPath, []byte("{not valid json}"), 0o644)
+
+	fi1, _ := os.Stat(mcpPath)
+	err := mergeMCPJSONToPath(mcpPath)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+	fi2, _ := os.Stat(mcpPath)
+	if !fi1.ModTime().Equal(fi2.ModTime()) {
+		t.Error("file should not be modified when JSON is invalid")
+	}
+}
+
+func TestMergeMCPJSON_PreservesUserFields(t *testing.T) {
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".claude", "mcp.json")
+	os.MkdirAll(filepath.Dir(mcpPath), 0o755)
+
+	// Write stale serena (old args) with a user-added field
+	stale := map[string]any{
+		"mcpServers": map[string]any{
+			"serena": map[string]any{
+				"command": "uvx",
+				"args":    []any{"serena@old-version"},
+				"env":     map[string]any{"MY_KEY": "my_value"},
+			},
+		},
+	}
+	raw, _ := json.Marshal(stale)
+	os.WriteFile(mcpPath, raw, 0o644)
+
+	if err := mergeMCPJSONToPath(mcpPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	data, _ := os.ReadFile(mcpPath)
+	json.Unmarshal(data, &result)
+
+	servers := result["mcpServers"].(map[string]any)
+	serena := servers["serena"].(map[string]any)
+	if serena["env"] == nil {
+		t.Error("user-added env field should be preserved after stale update")
+	}
+	args := serena["args"].([]any)
+	if len(args) == 0 || args[0] == "serena@old-version" {
+		t.Error("args should be updated to current canonical version")
+	}
+}
+
 // --- UpdateGlobalGitignore ---
 
 func TestUpdateGlobalGitignore_AddsLines(t *testing.T) {

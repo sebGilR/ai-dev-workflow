@@ -42,8 +42,10 @@ func MergeSettings(settingsPath, templatePath string) error {
 				settingsPath, jerr, backup)
 			existing = map[string]any{}
 		}
-	} else {
+	} else if os.IsNotExist(err) {
 		existing = map[string]any{}
+	} else {
+		return fmt.Errorf("read settings: %w", err)
 	}
 
 	merged := mergeDict(existing, tmpl)
