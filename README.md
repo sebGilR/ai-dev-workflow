@@ -395,6 +395,7 @@ What it improves:
 | uv / uvx | Required for Serena. Install: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Node.js / npx | Required for Context7. Install from https://nodejs.org |
 | Claude Code MCP support | Both servers run as MCP processes |
+| Go 1.21+ | Required to build the `aidw` binary on Linux or non-arm64 macOS. Pre-built `darwin-arm64` binary included. Install from https://go.dev/dl/ |
 
 ### Configuration
 
@@ -416,7 +417,7 @@ The installer configures both servers in `~/.claude/mcp.json`:
 ```
 
 Both servers are pinned to specific audited versions. To upgrade, update the version
-references in `scripts/merge_mcp_json.py` and re-run the installer.
+references in `cmd/aidw/internal/install/merge_mcp_json.go` and re-run the installer.
 
 If `uvx` or `npx` is not installed, the installer prints instructions instead of
 writing the config. Re-run `install.sh` after installing the missing tools.
@@ -468,7 +469,7 @@ These are convenience shortcuts. The real workflow lives in skills and scripts.
 
 ## CLI reference
 
-The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underlying script is `~/.claude/ai-dev-workflow/scripts/aidw.py`.
+The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The source is in `cmd/aidw/`.
 
 | Command | Purpose |
 |---------|---------|

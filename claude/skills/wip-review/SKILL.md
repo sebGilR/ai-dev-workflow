@@ -1,6 +1,7 @@
 ---
 name: wip-review
 description: Prepare a review bundle and consolidate review notes.
+model: claude-opus-4.6
 ---
 
 When this skill is used:
@@ -25,6 +26,7 @@ The reviewer should:
 - Read the existing `review.md`
 - Read the review bundle (`review-bundle.json`) for additional context
 - **Perform an independent analysis of the git diff directly**
+- **Ultrathink about each finding before flagging it** — only surface issues that genuinely matter
 - Focus on: architecture fit, maintainability, edge cases, API design, cross-file dependencies
 - Write a prioritized Claude analysis into the `## Claude Review` section:
   - High priority (blockers)
