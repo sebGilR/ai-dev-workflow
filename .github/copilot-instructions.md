@@ -8,7 +8,7 @@ This repository uses the `ai-dev-workflow` model with branch-scoped WIP files.
 - Prefer the committed skills in `.github/skills/` for lifecycle actions.
 - Prefer the committed agents in `.github/agents/` for delegated planning, research, review, and testing.
 - Keep edits minimal, non-destructive, and aligned with existing repository conventions.
-- Keep bootstrap surfaces synchronized (`README.md`, `install.sh`, `scripts/aidw.py`).
+- Keep bootstrap surfaces synchronized (`README.md`, `install.sh`, `cmd/aidw/`).
 
 ## WIP Rules
 

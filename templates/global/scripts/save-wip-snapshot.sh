@@ -49,7 +49,7 @@ if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
   branch="detached-head"
 fi
 
-# Sanitize branch name to match aidw.py's safe_slug(): replace non-[A-Za-z0-9_.-]
+# Sanitize branch name to match safe_slug() in cmd/aidw/internal/slug/: replace non-[A-Za-z0-9_.-]
 # chars with '-', strip leading/trailing '-', append 8-char sha256 suffix when slug
 # differs from original (prevents collisions, e.g. "feature/foo" vs "feature-foo").
 _branch_slug() {
@@ -71,7 +71,7 @@ _branch_slug() {
 branch_slug="$(_branch_slug "$branch")"
 
 # Phase 1: find existing dated dir (YYYYMMDD-<branch_slug>); pick the newest.
-# Must match aidw.py ensure_branch_state resolution order.
+# Must match ensure_branch_state resolution order in cmd/aidw/internal/wip/.
 # Uses find+sort rather than a glob loop so selection is deterministic across
 # all filesystems (glob expansion order is not guaranteed to be lexicographic).
 wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -E '/[0-9]{8}-'"$branch_slug"'$' | sort | tail -1)"

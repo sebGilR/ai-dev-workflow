@@ -1,5 +1,25 @@
 #!/usr/bin/env bash
+# bin/aidw — wrapper that delegates to the compiled Go binary.
+# During development the binary lives at bin/aidw-<os>-<arch> in the repo root.
+# After install, AIDW_BIN can override the resolved path.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-exec "$PYTHON_BIN" "$SCRIPT_DIR/scripts/aidw.py" "$@"
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+_arch="$(uname -m)"
+
+# Normalise arch: x86_64 → amd64, aarch64 → arm64
+case "$_arch" in
+  x86_64) _arch="amd64" ;;
+  arm64|aarch64) _arch="arm64" ;;
+esac
+
+_bin="${AIDW_BIN:-$_dir/aidw-${_os}-${_arch}}"
+
+if [ ! -x "$_bin" ]; then
+  echo "aidw: binary not found at $_bin" >&2
+  echo "Run 'make build' in the ai-dev-workflow repo to build it." >&2
+  exit 1
+fi
+
+exec "$_bin" "$@"

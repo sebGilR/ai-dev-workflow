@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # Parse arguments — positional arg is workspace root.
 WORKSPACE_ROOT=""
@@ -97,159 +96,33 @@ for agent_file in "$SCRIPT_DIR"/claude/agents/*; do
   safe_link "$agent_file" "$CLAUDE_HOME/agents/$agent_name"
 done
 
-"$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_claude_md.py" \
+"$SCRIPT_DIR/bin/aidw" merge-claude-md \
   --claude-md "$CLAUDE_HOME/CLAUDE.md" \
   --snippet "$SCRIPT_DIR/templates/global/claude_managed_block.md"
 
-"$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_settings.py" \
+"$SCRIPT_DIR/bin/aidw" merge-settings \
   --settings "$CLAUDE_HOME/settings.json" \
   --template "$SCRIPT_DIR/templates/global/settings.template.json"
 
-normalize_managed_settings_paths() {
-  "$PYTHON_BIN" - "$CLAUDE_HOME/settings.json" "$CLAUDE_HOME" <<'PY'
-import json
-import sys
-from pathlib import Path
 
-settings_path = Path(sys.argv[1])
-claude_home = Path(sys.argv[2])
+"$SCRIPT_DIR/bin/aidw" update-global-gitignore
 
-if not settings_path.exists():
-  raise SystemExit(0)
-
-data = json.loads(settings_path.read_text(encoding="utf-8"))
-
-status_cmd = str(claude_home / "statusline.sh")
-snapshot_script = str(claude_home / "save-wip-snapshot.sh")
-
-# Verify managed scripts are actually symlinks (installed successfully).
-# Only write paths if the scripts are managed symlinks; skip if unmanaged local files exist.
-if not Path(status_cmd).is_symlink() or not Path(snapshot_script).is_symlink():
-  raise SystemExit(0)
-
-# Normalize statusLine only when missing or already pointing at a statusline helper.
-status_line = data.get("statusLine")
-if not isinstance(status_line, dict):
-  data["statusLine"] = {"type": "command", "command": status_cmd}
-else:
-  current_cmd = str(status_line.get("command", ""))
-  if (not current_cmd) or current_cmd.endswith("statusline.sh"):
-    status_line["type"] = "command"
-    status_line["command"] = status_cmd
-
-hooks = data.get("hooks")
-if not isinstance(hooks, dict):
-  hooks = {}
-  data["hooks"] = hooks
-
-managed_kinds = {
-  "Stop": "stop",
-  "PreCompact": "precompact",
-  "SessionEnd": "sessionend",
-}
-
-for hook_name, arg in managed_kinds.items():
-  canonical = {
-    "matcher": "*",
-    "hooks": [
-      {
-        "type": "command",
-        "command": f"{snapshot_script} {arg}",
+# Build the Go binary if needed, then bootstrap the workspace.
+if [ -n "$WORKSPACE_ROOT" ]; then
+  if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/null 2>&1; then
+    echo "→ Building aidw Go binary..."
+    if command -v go &>/dev/null; then
+      (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
+        echo "ERROR: 'go build' failed. Install Go from https://go.dev/dl/ and retry." >&2
+        exit 1
       }
-    ],
-  }
-
-  existing = hooks.get(hook_name, [])
-  if not isinstance(existing, list):
-    existing = []
-
-  normalized = []
-  found_managed = False
-
-  for item in existing:
-    if not isinstance(item, dict):
-      normalized.append(item)
-      continue
-
-    item_hooks = item.get("hooks", [])
-    if not isinstance(item_hooks, list):
-      normalized.append(item)
-      continue
-
-    is_managed_variant = False
-    non_managed_entries = []
-    for entry in item_hooks:
-      if not isinstance(entry, dict):
-        non_managed_entries.append(entry)
-        continue
-      cmd = str(entry.get("command", "")).strip()
-      # Check if this is a managed variant: save-wip-snapshot.sh with the matching argument
-      # Use split() for robust parsing instead of endswith() to handle spacing/comments
-      parts = cmd.split()
-      if len(parts) >= 2 and Path(parts[0]).name == "save-wip-snapshot.sh" and parts[1] == arg:
-        is_managed_variant = True
-      else:
-        non_managed_entries.append(entry)
-
-    if is_managed_variant:
-      if not found_managed:
-        normalized.append(canonical)
-        found_managed = True
-      # Preserve any non-managed hooks that were co-located with the managed entry
-      if non_managed_entries:
-        new_item = dict(item)
-        new_item["hooks"] = non_managed_entries
-        normalized.append(new_item)
-    else:
-      normalized.append(item)
-
-  if not found_managed:
-    normalized.append(canonical)
-
-  hooks[hook_name] = normalized
-
-# Normalize SessionStart → start-claude-watch.sh (different script, same pattern)
-start_script = str(claude_home / "start-claude-watch.sh")
-start_canonical = {
-  "matcher": "*",
-  "hooks": [{"type": "command", "command": start_script}],
-}
-existing_start = hooks.get("SessionStart", [])
-if not isinstance(existing_start, list):
-  existing_start = []
-normalized_start = []
-found_managed_start = False
-for item in existing_start:
-  if not isinstance(item, dict):
-    normalized_start.append(item)
-    continue
-  is_managed = False
-  for e in item.get("hooks", []):
-    if not isinstance(e, dict):
-      continue
-    parts = str(e.get("command", "")).strip().split()
-    if parts and Path(parts[0]).name == "start-claude-watch.sh":
-      is_managed = True
-      break
-  if is_managed:
-    if not found_managed_start:
-      normalized_start.append(start_canonical)
-      found_managed_start = True
-  else:
-    normalized_start.append(item)
-if not found_managed_start:
-  normalized_start.append(start_canonical)
-hooks["SessionStart"] = normalized_start
-
-settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-PY
-}
-
-normalize_managed_settings_paths
-
-"$PYTHON_BIN" "$SCRIPT_DIR/scripts/update_global_gitignore.py"
-
-"$PYTHON_BIN" "$SCRIPT_DIR/scripts/aidw.py" bootstrap-workspace "$WORKSPACE_ROOT"
+    else
+      echo "ERROR: Go toolchain not found. Install from https://go.dev/dl/ and retry." >&2
+      exit 1
+    fi
+  fi
+  "$SCRIPT_DIR/bin/aidw" bootstrap-workspace "$WORKSPACE_ROOT"
+fi
 
 # ---------------------------------------------------------------------------
 # MCP server configuration (Serena, Context7)
@@ -261,7 +134,7 @@ command -v npx &>/dev/null || _mcp_missing+=("npx (required for Context7; instal
 
 if [ "${#_mcp_missing[@]}" -eq 0 ]; then
     echo "→ Configuring MCP servers (Serena, Context7)..."
-    "$PYTHON_BIN" "$SCRIPT_DIR/scripts/merge_mcp_json.py" || {
+    "$SCRIPT_DIR/bin/aidw" merge-mcp-json || {
         echo ""
         echo "⚠  MCP server configuration failed. Check ~/.claude/mcp.json for issues."
         echo "   Re-run the installer once resolved."
@@ -384,27 +257,14 @@ configure_gemini_review() {
   echo ""
 
   if [[ "${_gemini_response:-}" =~ ^[Yy]$ ]]; then
-    "$PYTHON_BIN" - "$env_file" <<'PY'
-import sys, re
-from pathlib import Path
-
-env_file = Path(sys.argv[1])
-text = env_file.read_text(encoding="utf-8")
-
-# Uncomment or update any existing AIDW_GEMINI_REVIEW line to "1"
-updated = re.sub(
-    r'^#*\s*export AIDW_GEMINI_REVIEW=.*$',
-    'export AIDW_GEMINI_REVIEW="1"',
-    text,
-    flags=re.MULTILINE,
-)
-if updated == text:
-    # Line not present at all — append it
-    updated = text.rstrip("\n") + '\nexport AIDW_GEMINI_REVIEW="1"\n'
-
-env_file.write_text(updated, encoding="utf-8")
-print("Gemini adversarial review enabled.")
-PY
+    # Uncomment or update AIDW_GEMINI_REVIEW in env_file
+    if grep -qE '^#*[[:space:]]*export AIDW_GEMINI_REVIEW=' "$env_file" 2>/dev/null; then
+      awk '{if (/^#*[[:space:]]*export AIDW_GEMINI_REVIEW=/) {print "export AIDW_GEMINI_REVIEW=\"1\""} else {print}}' \
+        "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+    else
+      printf '\nexport AIDW_GEMINI_REVIEW="1"\n' >> "$env_file"
+    fi
+    echo "Gemini adversarial review enabled."
     if ! command -v gemini &>/dev/null; then
       echo "  Install:       npm install -g @google/gemini-cli"
       echo "  Authenticate:  gemini auth login"
@@ -471,8 +331,8 @@ configure_repo_gitignore() {
       echo "Added to $exclude_file (local, no .gitignore file changes)."
       ;;
     2)
-      if ! "$PYTHON_BIN" "$SCRIPT_DIR/scripts/update_global_gitignore.py" \
-          --add "${_GI_PATHS[@]}"; then
+      if ! "$SCRIPT_DIR/bin/aidw" update-global-gitignore \
+          $(printf -- '--add %s ' "${_GI_PATHS[@]}"); then
         echo "Warning: failed to update global gitignore; please add entries manually." >&2
       fi
       ;;
@@ -482,7 +342,7 @@ configure_repo_gitignore() {
       for _p in "${_GI_PATHS[@]}"; do
         echo "  echo '$_p' >> $WORKSPACE_ROOT/.git/info/exclude"
       done
-      echo "  # or: update_global_gitignore.py --add ${_GI_PATHS[*]}"
+      echo "  # or: bin/aidw update-global-gitignore --add ${_GI_PATHS[*]}"
       ;;
     *)
       echo "Unrecognized choice; skipping gitignore configuration."

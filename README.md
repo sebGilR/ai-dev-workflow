@@ -416,7 +416,7 @@ The installer configures both servers in `~/.claude/mcp.json`:
 ```
 
 Both servers are pinned to specific audited versions. To upgrade, update the version
-references in `scripts/merge_mcp_json.py` and re-run the installer.
+references in `cmd/aidw/internal/install/merge_mcp_json.go` and re-run the installer.
 
 If `uvx` or `npx` is not installed, the installer prints instructions instead of
 writing the config. Re-run `install.sh` after installing the missing tools.
@@ -468,7 +468,7 @@ These are convenience shortcuts. The real workflow lives in skills and scripts.
 
 ## CLI reference
 
-The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The underlying script is `~/.claude/ai-dev-workflow/scripts/aidw.py`.
+The `aidw` CLI is available via `~/.claude/ai-dev-workflow/bin/aidw`. The source is in `cmd/aidw/`.
 
 | Command | Purpose |
 |---------|---------|

@@ -1,6 +1,10 @@
 ---
 name: wip-implement
 description: Implement the next planned chunk of work and update execution notes.
+hooks:
+  Stop:
+    - type: command
+      command: ~/.claude/ai-dev-workflow/bin/aidw summarize-context .
 ---
 
 When this skill is used:
