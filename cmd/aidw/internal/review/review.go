@@ -210,12 +210,11 @@ func SynthesizeReview(repoPath string) (*SynthesizeResult, error) {
 
 // AdversarialReviewResult is returned by AdversarialReview.
 type AdversarialReviewResult struct {
-	Status     string `json:"status"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
-	ReturnCode int    `json:"returncode,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Status   string `json:"status"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // GeminiReviewResult is an alias for AdversarialReviewResult for backward compatibility.
@@ -377,7 +376,7 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 	if providerName == "" {
 		providerName = "gemini"
 	}
-	if model == "" {
+	if model == "" && providerName == "gemini" {
 		model = defaultGeminiModel
 	}
 	if timeoutSecs <= 0 {

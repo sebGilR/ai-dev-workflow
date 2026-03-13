@@ -267,8 +267,16 @@ ENVEOF
   else
     echo "Env file already exists: $env_file (appending missing vars if needed)"
     local _added=0
+    # Migrate AIDW_ADVERSARIAL_REVIEW: preserve legacy enablement if AIDW_GEMINI_REVIEW="1".
+    if ! grep -q '^export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
+      if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
+        echo 'export AIDW_ADVERSARIAL_REVIEW="1"' >> "$env_file"
+      else
+        echo 'export AIDW_ADVERSARIAL_REVIEW="0"' >> "$env_file"
+      fi
+      _added=$((_added + 1))
+    fi
     for _var_line in \
-      'export AIDW_ADVERSARIAL_REVIEW="0"' \
       'export AIDW_ADVERSARIAL_PROVIDER="gemini"' \
       'export AIDW_ADVERSARIAL_MODEL="gemini-2.5-pro"' \
       'export AIDW_ADVERSARIAL_TIMEOUT="120"'
@@ -362,7 +370,7 @@ configure_adversarial_review() {
   fi
 
   if [ ${#_available[@]} -eq 0 ]; then
-    echo "Adversarial review: no supported providers detected (gemini, gh-copilot, codex)."
+    echo "Adversarial review: no supported providers detected (gemini, copilot, codex)."
     echo "  To enable later, install a provider and set AIDW_ADVERSARIAL_REVIEW=1 in $env_file"
     return 0
   fi
@@ -397,6 +405,13 @@ configure_adversarial_review() {
         "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
     else
       printf 'export AIDW_ADVERSARIAL_PROVIDER="%s"\n' "$_chosen" >> "$env_file"
+    fi
+    # For non-gemini providers, clear AIDW_ADVERSARIAL_MODEL so the provider uses its own default.
+    if [ "$_chosen" != "gemini" ]; then
+      if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=' "$env_file" 2>/dev/null; then
+        awk '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=/) {print "export AIDW_ADVERSARIAL_MODEL=\"\""} else {print}}' \
+          "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+      fi
     fi
     echo "Adversarial review enabled with provider: $_chosen"
     case "$_chosen" in

@@ -80,13 +80,10 @@ func Load() Config {
 		adversarialSet = false // set via legacy var only
 	}
 
-	// Resolve model: new var > legacy gemini model (when provider is gemini) > default.
-	if advModel == "" {
-		if advProvider == "gemini" {
-			advModel = geminiModel
-		} else {
-			advModel = DefaultAdversarialModel
-		}
+	// Resolve model: new var > legacy gemini model (when provider is gemini).
+	// Non-gemini providers leave model empty so their CLI uses its own default.
+	if advModel == "" && advProvider == "gemini" {
+		advModel = geminiModel
 	}
 
 	// Resolve timeout: new var > legacy gemini timeout > default.
