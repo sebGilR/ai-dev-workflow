@@ -35,17 +35,19 @@ The reviewer should:
 - Note missing tests and regression risks
 - Include a final verdict
 
-5. Adversarial Gemini review:
+5. Adversarial review:
 
-Check the `AIDW_GEMINI_REVIEW` environment variable:
-- If `AIDW_GEMINI_REVIEW=0`: skip this step entirely (CI opt-out).
-- If `AIDW_GEMINI_REVIEW=1`: run without prompting (CI opt-in).
-- Otherwise (not set): ask the user: **"Run Gemini adversarial review? [y/N]"** — proceed only if they answer yes.
+Check the `AIDW_ADVERSARIAL_REVIEW` environment variable first; fall back to `AIDW_GEMINI_REVIEW` for legacy users:
+- If the effective value is `0`: skip this step entirely (CI opt-out).
+- If the effective value is `1`: run without prompting (CI opt-in).
+- Otherwise (not set): ask the user: **"Run adversarial review? [y/N]"** — proceed only if they answer yes.
+
+The provider is controlled by `AIDW_ADVERSARIAL_PROVIDER` (default: `gemini`). Valid values: `gemini`, `copilot`, `codex`.
 
 If running:
 
 ```bash
-AIDW_GEMINI_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
+AIDW_ADVERSARIAL_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw adversarial-review .
 ```
 
 Then re-run synthesize-review to merge adversarial findings into `review.md`:
@@ -54,7 +56,12 @@ Then re-run synthesize-review to merge adversarial findings into `review.md`:
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
-If the command fails because Gemini CLI is not installed or auth is not configured, skip this step entirely. The `## Adversarial Review` section will be omitted from `review.md`.
+If the command fails because the provider CLI is not installed or auth is not configured, skip this step entirely. The `## Adversarial Review` section will be omitted from `review.md`.
+
+Legacy users with `AIDW_GEMINI_REVIEW=1` can also use:
+```bash
+AIDW_GEMINI_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
+```
 
 6. Verify the review.md write succeeded:
 

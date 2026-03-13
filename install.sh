@@ -252,20 +252,34 @@ write_env_file() {
 # Edit this file to customise your settings. It is NOT committed to git.
 # Sourced automatically by your shell profile after install.
 
-# Gemini adversarial review (optional, requires `npm install -g @google/gemini-cli` + auth)
-# Set AIDW_GEMINI_REVIEW=1 to enable; requires GEMINI_API_KEY or prior `gemini auth login`
-export AIDW_GEMINI_REVIEW="0"
-export AIDW_GEMINI_MODEL="gemini-2.5-pro"
-export AIDW_GEMINI_TIMEOUT="120"
+# Adversarial review (optional) — choose a provider: gemini, copilot, codex
+# Set AIDW_ADVERSARIAL_REVIEW=1 to enable
+export AIDW_ADVERSARIAL_REVIEW="0"
+export AIDW_ADVERSARIAL_PROVIDER="gemini"
+export AIDW_ADVERSARIAL_MODEL="gemini-2.5-pro"
+export AIDW_ADVERSARIAL_TIMEOUT="120"
+# Legacy aliases (deprecated — kept for backward compatibility):
+# export AIDW_GEMINI_REVIEW="0"
+# export AIDW_GEMINI_MODEL="gemini-2.5-pro"
+# export AIDW_GEMINI_TIMEOUT="120"
 ENVEOF
     echo "Created env file:  $env_file"
   else
     echo "Env file already exists: $env_file (appending missing vars if needed)"
     local _added=0
+    # Migrate AIDW_ADVERSARIAL_REVIEW: preserve legacy enablement if AIDW_GEMINI_REVIEW="1".
+    if ! grep -q '^export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
+      if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
+        echo 'export AIDW_ADVERSARIAL_REVIEW="1"' >> "$env_file"
+      else
+        echo 'export AIDW_ADVERSARIAL_REVIEW="0"' >> "$env_file"
+      fi
+      _added=$((_added + 1))
+    fi
     for _var_line in \
-      'export AIDW_GEMINI_REVIEW="0"' \
-      'export AIDW_GEMINI_MODEL="gemini-2.5-pro"' \
-      'export AIDW_GEMINI_TIMEOUT="120"'
+      'export AIDW_ADVERSARIAL_PROVIDER="gemini"' \
+      'export AIDW_ADVERSARIAL_MODEL="gemini-2.5-pro"' \
+      'export AIDW_ADVERSARIAL_TIMEOUT="120"'
     do
       local _var_name
       _var_name=$(echo "$_var_line" | sed 's/export \([^=]*\)=.*/\1/')
@@ -327,45 +341,99 @@ patch_shell_profile() {
   echo "Reload with:  source $profile"
 }
 
-configure_gemini_review() {
+configure_adversarial_review() {
   local env_file="$CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
 
   # Skip if env file missing or not interactive
   [ -f "$env_file" ] || return 0
   [ -t 0 ] || return 0
 
-  # Skip if already explicitly enabled
-  if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
-    echo "Gemini adversarial review: already enabled in $env_file"
+  # Skip if already explicitly enabled (new or legacy var)
+  if grep -q '^export AIDW_ADVERSARIAL_REVIEW="1"' "$env_file" 2>/dev/null || \
+     grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
+    echo "Adversarial review: already enabled in $env_file"
     return 0
   fi
 
   echo ""
+
+  # Detect available providers
+  local _available=()
   if command -v gemini &>/dev/null; then
-    echo "Gemini CLI detected: $(command -v gemini)"
-  else
-    echo "Gemini CLI not found (can be installed later: npm install -g @google/gemini-cli)"
+    _available+=("gemini")
   fi
-  printf "Enable Gemini adversarial review? [y/N] "
-  read -r _gemini_response </dev/tty || _gemini_response=""
+  if command -v copilot &>/dev/null; then
+    _available+=("copilot")
+  fi
+  if command -v codex &>/dev/null; then
+    _available+=("codex")
+  fi
+
+  if [ ${#_available[@]} -eq 0 ]; then
+    echo "Adversarial review: no supported providers detected (gemini, copilot, codex)."
+    echo "  To enable later, install a provider and set AIDW_ADVERSARIAL_REVIEW=1 in $env_file"
+    return 0
+  fi
+
+  echo "Adversarial review providers detected:"
+  local _i=1
+  for _p in "${_available[@]}"; do
+    echo "  $_i) $_p"
+    _i=$((_i + 1))
+  done
+  echo "  $_i) none (skip)"
+  printf "Choose adversarial review provider [1-%s]: " "$_i"
+  read -r _choice </dev/tty || _choice=""
   echo ""
 
-  if [[ "${_gemini_response:-}" =~ ^[Yy]$ ]]; then
-    # Uncomment or update AIDW_GEMINI_REVIEW in env_file
-    if grep -qE '^#*[[:space:]]*export AIDW_GEMINI_REVIEW=' "$env_file" 2>/dev/null; then
-      awk '{if (/^#*[[:space:]]*export AIDW_GEMINI_REVIEW=/) {print "export AIDW_GEMINI_REVIEW=\"1\""} else {print}}' \
+  local _chosen=""
+  if [[ "$_choice" =~ ^[0-9]+$ ]] && [ "$_choice" -ge 1 ] && [ "$_choice" -lt "$_i" ]; then
+    _chosen="${_available[$((_choice - 1))]}"
+  fi
+
+  if [ -n "$_chosen" ]; then
+    # Write or update AIDW_ADVERSARIAL_REVIEW
+    if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
+      awk '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_REVIEW=/) {print "export AIDW_ADVERSARIAL_REVIEW=\"1\""} else {print}}' \
         "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
     else
-      printf '\nexport AIDW_GEMINI_REVIEW="1"\n' >> "$env_file"
+      printf '\nexport AIDW_ADVERSARIAL_REVIEW="1"\n' >> "$env_file"
     fi
-    echo "Gemini adversarial review enabled."
-    if ! command -v gemini &>/dev/null; then
-      echo "  Install:       npm install -g @google/gemini-cli"
-      echo "  Authenticate:  gemini auth login"
+    # Write or update AIDW_ADVERSARIAL_PROVIDER
+    if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_PROVIDER=' "$env_file" 2>/dev/null; then
+      awk -v p="$_chosen" '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_PROVIDER=/) {print "export AIDW_ADVERSARIAL_PROVIDER=\""p"\""} else {print}}' \
+        "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+    else
+      printf 'export AIDW_ADVERSARIAL_PROVIDER="%s"\n' "$_chosen" >> "$env_file"
     fi
+    # For non-gemini providers, clear AIDW_ADVERSARIAL_MODEL so the provider uses its own default.
+    if [ "$_chosen" != "gemini" ]; then
+      if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=' "$env_file" 2>/dev/null; then
+        awk '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=/) {print "export AIDW_ADVERSARIAL_MODEL=\"\""} else {print}}' \
+          "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+      fi
+    fi
+    echo "Adversarial review enabled with provider: $_chosen"
+    case "$_chosen" in
+      gemini)
+        if ! command -v gemini &>/dev/null; then
+          echo "  gemini CLI not found — see https://github.com/google-gemini/gemini-cli"
+        fi
+        ;;
+      copilot)
+        if ! command -v copilot &>/dev/null; then
+          echo "  copilot CLI not found — see https://github.com/github/copilot-cli"
+        fi
+        ;;
+      codex)
+        if ! command -v codex &>/dev/null; then
+          echo "  codex CLI not found — see https://github.com/openai/codex"
+        fi
+        ;;
+    esac
   else
-    echo "Gemini adversarial review skipped. To enable later:"
-    echo "  Set AIDW_GEMINI_REVIEW=1 in $env_file"
+    echo "Adversarial review skipped. To enable later:"
+    echo "  Set AIDW_ADVERSARIAL_REVIEW=1 and AIDW_ADVERSARIAL_PROVIDER=<gemini|copilot|codex> in $env_file"
   fi
 }
 
@@ -447,7 +515,7 @@ configure_repo_gitignore() {
 
 write_env_file
 patch_shell_profile
-configure_gemini_review
+configure_adversarial_review
 configure_repo_gitignore
 
 echo

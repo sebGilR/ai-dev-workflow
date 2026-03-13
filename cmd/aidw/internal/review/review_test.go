@@ -292,11 +292,14 @@ func TestReviewBundle_BasicStructure(t *testing.T) {
 }
 
 func TestGeminiReview_NotInstalled(t *testing.T) {
+	if _, err := exec.LookPath("gemini"); err == nil {
+		t.Skip("gemini is installed; not_installed path cannot be tested")
+	}
+
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 
-	// Ensure branch state and write a fake bundle with non-empty diff
-	state, err := wip.EnsureBranchState(dir, "test-branch")
+	state, err := wip.EnsureBranchState(dir, "")
 	if err != nil {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
@@ -306,20 +309,9 @@ func TestGeminiReview_NotInstalled(t *testing.T) {
 		GeneratedAt: "2026-01-01T00:00:00Z",
 		BranchDiff:  "diff --git a/foo.go b/foo.go\n+added line",
 	}
-	bundlePath := filepath.Join(state.WipDir, "review-bundle.json")
-	if err := util.WriteJSON(bundlePath, bundle); err != nil {
+	if err := util.WriteJSON(filepath.Join(state.WipDir, "review-bundle.json"), bundle); err != nil {
 		t.Fatal(err)
 	}
-
-	// Set PATH to only include git's directory, excluding gemini
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not found, skipping")
-	}
-	if _, err2 := exec.LookPath("gemini"); err2 == nil {
-		t.Skip("gemini is installed; not_installed path cannot be tested")
-	}
-	t.Setenv("PATH", filepath.Dir(gitBin))
 
 	result, err := GeminiReview(dir, "", 0)
 	if err != nil {
@@ -327,5 +319,158 @@ func TestGeminiReview_NotInstalled(t *testing.T) {
 	}
 	if result.Status != "not_installed" {
 		t.Errorf("expected status=not_installed, got %q", result.Status)
+	}
+}
+
+// writeFakeBundle is a helper that creates a review-bundle.json with a non-empty diff.
+func writeFakeBundle(t *testing.T, wipDir string) {
+	t.Helper()
+	bundle := &BundleResult{
+		Repo:        "test-repo",
+		Branch:      "test-branch",
+		GeneratedAt: "2026-01-01T00:00:00Z",
+		BranchDiff:  "diff --git a/foo.go b/foo.go\n+added line",
+		ChangedFiles: []string{"foo.go"},
+	}
+	if err := util.WriteJSON(filepath.Join(wipDir, "review-bundle.json"), bundle); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdversarialReview_NoBundleReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	_, err := AdversarialReview(dir, "gemini", "", 0)
+	if err == nil {
+		t.Fatal("expected error when review-bundle.json is missing")
+	}
+	if !strings.Contains(err.Error(), "review-bundle.json not found") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestAdversarialReview_EmptyDiffSkips(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	state, err := wip.EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyBundle := &BundleResult{Repo: "r", Branch: "b", GeneratedAt: "2026-01-01T00:00:00Z"}
+	if err := util.WriteJSON(filepath.Join(state.WipDir, "review-bundle.json"), emptyBundle); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AdversarialReview(dir, "gemini", "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "skipped" {
+		t.Errorf("expected skipped, got %q", result.Status)
+	}
+}
+
+func TestAdversarialReview_NotInstalled(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	state, err := wip.EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFakeBundle(t, state.WipDir)
+
+	// Map each provider name to the binary AdversarialReview will look up.
+	// Only test providers that are NOT currently installed to avoid accidental invocations.
+	providerBinaries := map[string]string{
+		"gemini":  "gemini",
+		"copilot": "copilot", // github/copilot-cli: https://github.com/github/copilot-cli
+		"codex":   "codex",
+	}
+
+	var tested int
+	for provider, binary := range providerBinaries {
+		if _, lookErr := exec.LookPath(binary); lookErr == nil {
+			t.Logf("skipping provider %q: %q is installed", provider, binary)
+			continue
+		}
+		result, runErr := AdversarialReview(dir, provider, "", 10)
+		if runErr != nil {
+			t.Fatalf("provider %s: unexpected error: %v", provider, runErr)
+		}
+		if result.Status != "not_installed" {
+			t.Errorf("provider %s: expected not_installed, got %q", provider, result.Status)
+		}
+		if result.Provider != provider {
+			t.Errorf("provider %s: result.Provider = %q, want %q", provider, result.Provider, provider)
+		}
+		tested++
+	}
+
+	if tested == 0 {
+		t.Skip("all tested providers are installed; cannot exercise not_installed path")
+	}
+}
+
+func TestAdversarialReview_GeminiReviewBackcompat(t *testing.T) {
+	if _, err := exec.LookPath("gemini"); err == nil {
+		t.Skip("gemini is installed; skipping not_installed path")
+	}
+
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	state, err := wip.EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFakeBundle(t, state.WipDir)
+
+	// GeminiReview should delegate to AdversarialReview with "gemini" and return not_installed.
+	result, err := GeminiReview(dir, "", 0)
+	if err != nil {
+		t.Fatalf("GeminiReview error: %v", err)
+	}
+	if result.Status != "not_installed" {
+		t.Errorf("expected not_installed, got %q", result.Status)
+	}
+}
+
+func TestAdversarialReview_ReviewPassesName(t *testing.T) {
+	if _, err := exec.LookPath("gemini"); err == nil {
+		t.Skip("gemini installed; skipping pass-name test to avoid network call")
+	}
+
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	state, err := wip.EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFakeBundle(t, state.WipDir)
+
+	result, err := AdversarialReview(dir, "gemini", "", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "not_installed" {
+		t.Skipf("expected not_installed for gemini; got %q — skipping pass-name check", result.Status)
+	}
+
+	// Verify status.json was NOT updated with a pass for not_installed.
+	statusPath := filepath.Join(state.WipDir, "status.json")
+	if _, serr := os.Stat(statusPath); serr == nil {
+		var st map[string]any
+		if rerr := util.ReadJSON(statusPath, &st); rerr == nil {
+			passes, _ := st["review_passes"].([]any)
+			for _, p := range passes {
+				if p == "gemini-adversarial" {
+					t.Error("gemini-adversarial pass should not be written for not_installed result")
+				}
+			}
+		}
 	}
 }
