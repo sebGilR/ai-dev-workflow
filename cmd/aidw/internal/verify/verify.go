@@ -284,13 +284,13 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	switch provider {
 	case "gemini":
 		warn("adversarial: gemini CLI installed", commandExists("gemini"),
-			"install: npm install -g @google/gemini-cli")
+			"see https://github.com/google-gemini/gemini-cli")
 	case "copilot":
 		warn("adversarial: copilot CLI installed", commandExists("copilot"),
-			"install: npm install -g @github/copilot  or  brew install copilot-cli")
+			"see https://github.com/github/copilot-cli")
 	case "codex":
 		warn("adversarial: codex CLI installed", commandExists("codex"),
-			"install: npm install -g @openai/codex")
+			"see https://github.com/openai/codex")
 	default:
 		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
 			"valid values: gemini, copilot, codex")

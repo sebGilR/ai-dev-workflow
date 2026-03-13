@@ -253,7 +253,6 @@ func (geminiProvider) run(diffText, prompt, model string, timeoutSecs int) (stri
 
 // copilotProvider runs adversarial review via the GitHub Copilot CLI
 // (https://github.com/github/copilot-cli, binary: `copilot`).
-// Install: npm install -g @github/copilot  or  brew install copilot-cli
 type copilotProvider struct{}
 
 func (copilotProvider) run(diffText, prompt, model string, timeoutSecs int) (string, string, error) {

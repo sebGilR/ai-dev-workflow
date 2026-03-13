@@ -386,7 +386,7 @@ func TestAdversarialReview_NotInstalled(t *testing.T) {
 	// Only test providers that are NOT currently installed to avoid accidental invocations.
 	providerBinaries := map[string]string{
 		"gemini":  "gemini",
-		"copilot": "copilot", // github/copilot-cli: npm install -g @github/copilot
+		"copilot": "copilot", // github/copilot-cli: https://github.com/github/copilot-cli
 		"codex":   "codex",
 	}
 

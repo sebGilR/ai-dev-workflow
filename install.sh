@@ -402,20 +402,17 @@ configure_adversarial_review() {
     case "$_chosen" in
       gemini)
         if ! command -v gemini &>/dev/null; then
-          echo "  Install:       npm install -g @google/gemini-cli"
-          echo "  Authenticate:  gemini auth login"
+          echo "  gemini CLI not found — see https://github.com/google-gemini/gemini-cli"
         fi
         ;;
       copilot)
-        echo "  Requires: GitHub Copilot CLI (github/copilot-cli) with an active Copilot subscription"
-        echo "  Install:  npm install -g @github/copilot"
-        echo "         or brew install copilot-cli"
-        echo "  Docs:     https://github.com/github/copilot-cli"
+        if ! command -v copilot &>/dev/null; then
+          echo "  copilot CLI not found — see https://github.com/github/copilot-cli"
+        fi
         ;;
       codex)
         if ! command -v codex &>/dev/null; then
-          echo "  Install:  npm install -g @openai/codex"
-          echo "  Requires: OPENAI_API_KEY env var"
+          echo "  codex CLI not found — see https://github.com/openai/codex"
         fi
         ;;
     esac
