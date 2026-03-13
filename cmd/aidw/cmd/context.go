@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -33,7 +34,7 @@ var contextSummaryCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
 		}
-		summaryPath := state.WipDir + "/context-summary.md"
+		summaryPath := filepath.Join(state.WipDir, "context-summary.md")
 		data, err := os.ReadFile(summaryPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw] No context-summary.md found. Run: aidw summarize-context <path>")
