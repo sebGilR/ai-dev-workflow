@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# serena-query — bridge Serena's HTTP project server for any Bash-capable agent.
+#
+# Usage: serena-query <tool_name> <tool_params_json> [project_name]
+#
+# Examples:
+#   serena-query find_symbol '{"name":"ReviewBundle"}'
+#   serena-query get_symbols_overview '{"relative_path":"cmd/aidw/internal/review/review.go"}'
+#   serena-query find_referencing_symbols '{"name":"ReviewBundle"}'
+#   serena-query search_for_pattern '{"pattern":"TODO","paths_include_glob":"*.go"}'
+#
+# Exit 0: prints tool result JSON to stdout.
+# Exit 1: server unavailable, project not registered, or bad args — agents fall back to grep+Read.
+#
+# Environment:
+#   SERENA_PORT   — override port scan (e.g. SERENA_PORT=9000)
+#   SERENA_LOG    — path to log file (default: ~/.claude/serena.log)
+
+set -euo pipefail
+
+TOOL_NAME="${1:-}"
+TOOL_PARAMS="${2:-}"
+LOG_FILE="${SERENA_LOG:-$HOME/.claude/serena.log}"
+
+if [ -z "$TOOL_NAME" ] || [ -z "$TOOL_PARAMS" ]; then
+  echo "Usage: serena-query <tool_name> <tool_params_json> [project_name]" >&2
+  exit 1
+fi
+
+# Derive project name from repo root basename, or use explicit arg.
+if [ -n "${3:-}" ]; then
+  PROJECT_NAME="$3"
+else
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$REPO_ROOT" ]; then
+    echo "[serena-query] Not in a git repo; cannot determine project name." >&2
+    exit 1
+  fi
+  PROJECT_NAME="$(basename "$REPO_ROOT")"
+fi
+
+# ---------------------------------------------------------------------------
+# Port discovery
+# ---------------------------------------------------------------------------
+
+SERENA_PORT="${SERENA_PORT:-}"
+FOUND_PORT=""
+
+_heartbeat() {
+  local port="$1"
+  curl -sf --max-time 2 "http://127.0.0.1:${port}/heartbeat" >/dev/null 2>&1
+}
+
+if [ -n "$SERENA_PORT" ]; then
+  if _heartbeat "$SERENA_PORT"; then
+    FOUND_PORT="$SERENA_PORT"
+  fi
+else
+  for p in 9000 9001 9002 9003 9004 9005; do
+    if _heartbeat "$p"; then
+      FOUND_PORT="$p"
+      break
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# Start project server if not running
+# ---------------------------------------------------------------------------
+
+if [ -z "$FOUND_PORT" ]; then
+  START_PORT="${SERENA_PORT:-9000}"
+
+  # Check uvx is available
+  if ! command -v uvx >/dev/null 2>&1; then
+    echo "[serena-query] uvx not found; cannot start Serena project server. Install uv first." >&2
+    exit 1
+  fi
+
+  echo "[serena-query] Starting Serena project server on port ${START_PORT}..." >&2
+  # Ensure language server binaries are on PATH for Serena's LSP startup.
+  # Go (gopls): probe local install candidates; gopls lives in ~/go/bin.
+  _go_candidates=(
+    "$HOME/.claude/ai-dev-workflow/.go/bin"
+    "$HOME/.local/go/bin"
+    "/usr/local/go/bin"
+  )
+  for _gc in "${_go_candidates[@]}"; do
+    if [ -x "$_gc/go" ]; then
+      export PATH="$_gc:$PATH"
+      break
+    fi
+  done
+  # gopls is installed by 'go install' into ~/go/bin (GOPATH/bin).
+  [[ ":$PATH:" != *":$HOME/go/bin:"* ]] && export PATH="$HOME/go/bin:$PATH"
+  # Rust (rust-analyzer): lives in ~/.cargo/bin; harmless to add if absent.
+  [[ ":$PATH:" != *":$HOME/.cargo/bin:"* ]] && export PATH="$HOME/.cargo/bin:$PATH"
+  uvx --from "git+https://github.com/oraios/serena" serena \
+    start-project-server --port "$START_PORT" \
+    >/tmp/serena-project-server.log 2>&1 &
+  SERENA_PID=$!
+
+  # Wait up to 15s for the server to become ready
+  READY=0
+  for _ in $(seq 1 15); do
+    sleep 1
+    if _heartbeat "$START_PORT"; then
+      READY=1
+      FOUND_PORT="$START_PORT"
+      break
+    fi
+  done
+
+  if [ "$READY" -eq 0 ]; then
+    echo "[serena-query] Serena project server did not start in 15s. Check /tmp/serena-project-server.log" >&2
+    kill "$SERENA_PID" 2>/dev/null || true
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Query the project server
+# ---------------------------------------------------------------------------
+
+# tool_params_json must be a JSON-encoded string (not an object) per the project server API.
+PAYLOAD="$(python3 -c "
+import json, sys
+print(json.dumps({
+  'project_name': sys.argv[1],
+  'tool_name':    sys.argv[2],
+  'tool_params_json': sys.argv[3],
+}))" "$PROJECT_NAME" "$TOOL_NAME" "$TOOL_PARAMS")"
+
+RESPONSE="$(curl -sf --max-time 30 \
+  -X POST "http://127.0.0.1:${FOUND_PORT}/query_project" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD" 2>/dev/null)" || {
+  echo "[serena-query] HTTP request to project server failed." >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Log the successful call
+# ---------------------------------------------------------------------------
+
+mkdir -p "$(dirname "$LOG_FILE")"
+printf '[%s] [bridge] %s %s (project: %s)\n' \
+  "$(date '+%Y-%m-%d %H:%M:%S')" \
+  "$TOOL_NAME" \
+  "$TOOL_PARAMS" \
+  "$PROJECT_NAME" \
+  >> "$LOG_FILE"
+
+printf '%s\n' "$RESPONSE"

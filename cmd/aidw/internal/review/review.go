@@ -2,6 +2,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,16 +25,17 @@ const (
 
 // BundleResult is the JSON-serialisable review bundle written to review-bundle.json.
 type BundleResult struct {
-	Repo        string      `json:"repo"`
-	RepoPath    string      `json:"repo_path"`
-	Branch      string      `json:"branch"`
-	GeneratedAt string      `json:"generated_at"`
-	DiffSources DiffSources `json:"diff_sources"`
-	ChangedFiles []string   `json:"changed_files"`
-	Status      string      `json:"status"`
-	BranchDiff  string      `json:"branch_diff"`
-	Diff        string      `json:"diff"`
-	StagedDiff  string      `json:"staged_diff"`
+	Repo            string      `json:"repo"`
+	RepoPath        string      `json:"repo_path"`
+	Branch          string      `json:"branch"`
+	GeneratedAt     string      `json:"generated_at"`
+	DiffSources     DiffSources `json:"diff_sources"`
+	ChangedFiles    []string    `json:"changed_files"`
+	Status          string      `json:"status"`
+	BranchDiff      string      `json:"branch_diff"`
+	Diff            string      `json:"diff"`
+	StagedDiff      string      `json:"staged_diff"`
+	DiffFingerprint string      `json:"diff_fingerprint,omitempty"`
 }
 
 // DiffSources describes each diff stream in the bundle.
@@ -69,10 +72,11 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	var branchTruncated bool
 	var branchOrigBytes int
 	var branchBase *string
+	var rawBranchDiff string
 	if mergeBase != "" {
-		raw := gitOutput(top, "diff", mergeBase, "HEAD", "--")
-		branchOrigBytes = len([]byte(raw))
-		branchDiff, branchTruncated = util.TruncateDiff(raw, maxDiffBytes)
+		rawBranchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--")
+		branchOrigBytes = len(rawBranchDiff)
+		branchDiff, branchTruncated = util.TruncateDiff(rawBranchDiff, maxDiffBytes)
 		branchBase = &mergeBase
 	}
 
@@ -83,6 +87,30 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	// Staged changes
 	rawStaged := gitOutput(top, "diff", "--cached", "--", ".")
 	stagedDiff, stagedTruncated := util.TruncateDiff(rawStaged, maxDiffBytes)
+
+	// Compute fingerprint from raw diffs; skip rebuild if unchanged.
+	// Note: rawBranchDiff is empty when there is no merge base (branch has not
+	// diverged from main). The cache is still valid in that scenario — the hash
+	// covers only working-tree and staged changes.
+	h := sha256.New()
+	// NUL separators prevent hash collisions across field boundaries.
+	fmt.Fprintf(h, "%s\x00%s\x00%s", rawBranchDiff, rawDiff, rawStaged)
+	fingerprint := "sha256:" + hex.EncodeToString(h.Sum(nil))
+
+	// Ensure WIP dir exists after all git ops so that a failed git command
+	// does not leave an orphaned .wip/<branch>/ directory.
+	state, err := wip.EnsureBranchState(top, "")
+	if err != nil {
+		return nil, fmt.Errorf("ensure branch state: %w", err)
+	}
+	outPath := state.WipDir + "/review-bundle.json"
+
+	var existing BundleResult
+	if rerr := util.ReadJSON(outPath, &existing); rerr == nil &&
+		existing.DiffFingerprint == fingerprint {
+		fmt.Fprintln(os.Stderr, "[aidw] review-bundle.json is up-to-date (diff unchanged), skipping rebuild.")
+		return &existing, nil
+	}
 
 	status := gitOutput(top, "status", "--short")
 	changedFiles := parseChangedFiles(status)
@@ -111,26 +139,22 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 			WorkingTree: DiffMeta{
 				Description:   "git diff -- .",
 				Truncated:     diffTruncated,
-				OriginalBytes: len([]byte(rawDiff)),
+				OriginalBytes: len(rawDiff),
 			},
 			Staged: DiffMeta{
 				Description:   "git diff --cached -- .",
 				Truncated:     stagedTruncated,
-				OriginalBytes: len([]byte(rawStaged)),
+				OriginalBytes: len(rawStaged),
 			},
 		},
-		ChangedFiles: changedFiles,
-		Status:       status,
-		BranchDiff:   branchDiff,
-		Diff:         diff,
-		StagedDiff:   stagedDiff,
+		ChangedFiles:    changedFiles,
+		Status:          status,
+		BranchDiff:      branchDiff,
+		Diff:            diff,
+		StagedDiff:      stagedDiff,
+		DiffFingerprint: fingerprint,
 	}
 
-	state, err := wip.EnsureBranchState(top, "")
-	if err != nil {
-		return nil, fmt.Errorf("ensure branch state: %w", err)
-	}
-	outPath := state.WipDir + "/review-bundle.json"
 	if err := util.WriteJSON(outPath, bundle); err != nil {
 		return nil, fmt.Errorf("write review-bundle.json: %w", err)
 	}
