@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	embedfs "aidw"
+	"aidw/cmd/aidw/internal/config"
 	"aidw/cmd/aidw/internal/wip"
 )
 
@@ -254,6 +255,9 @@ func Run(workspacePath string) *Results {
 		warn("mcp: mcp.json exists", false, "run installer or create ~/.claude/mcp.json manually")
 	}
 
+	// Adversarial review provider check
+	checkAdversarialProvider(warn)
+
 	r.OK = r.Failed == 0
 	return r
 }
@@ -266,4 +270,29 @@ func fileExists(path string) bool {
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// checkAdversarialProvider adds a provider-specific warn check for adversarial review.
+// Uses config.Load() to respect the same priority logic as the rest of the tool.
+func checkAdversarialProvider(warn func(string, bool, ...string)) {
+	cfg := config.Load()
+	if !cfg.AdversarialReview {
+		return
+	}
+
+	provider := cfg.ResolvedProvider()
+	switch provider {
+	case "gemini":
+		warn("adversarial: gemini CLI installed", commandExists("gemini"),
+			"install: npm install -g @google/gemini-cli")
+	case "copilot":
+		warn("adversarial: copilot CLI installed", commandExists("copilot"),
+			"install: npm install -g @github/copilot  or  brew install copilot-cli")
+	case "codex":
+		warn("adversarial: codex CLI installed", commandExists("codex"),
+			"install: npm install -g @openai/codex")
+	default:
+		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
+			"valid values: gemini, copilot, codex")
+	}
 }

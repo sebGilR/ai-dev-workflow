@@ -38,13 +38,15 @@ var synthesizeReviewCmd = &cobra.Command{
 }
 
 var geminiReviewCmd = &cobra.Command{
-	Use:   "gemini-review <path>",
-	Short: "Run adversarial Gemini review pass",
-	Args:  cobra.ExactArgs(1),
+	Use:        "gemini-review <path>",
+	Short:      "Run adversarial Gemini review pass",
+	Deprecated: "use `adversarial-review` instead",
+	Args:       cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		cfg := config.Load()
 		if !cfg.GeminiReview {
 			fmt.Fprintln(os.Stderr, "[aidw] Gemini adversarial review disabled (AIDW_GEMINI_REVIEW != 1).")
+			fmt.Fprintln(os.Stderr, "[aidw] Use `aidw adversarial-review` with AIDW_ADVERSARIAL_REVIEW=1 instead.")
 			os.Exit(0)
 		}
 		model, _ := c.Flags().GetString("model")
@@ -68,11 +70,50 @@ var geminiReviewCmd = &cobra.Command{
 	},
 }
 
+var adversarialReviewCmd = &cobra.Command{
+	Use:   "adversarial-review <path>",
+	Short: "Run adversarial review pass using the configured provider",
+	Args:  cobra.ExactArgs(1),
+	Run: func(c *cobra.Command, args []string) {
+		cfg := config.Load()
+		if !cfg.AdversarialReview {
+			fmt.Fprintln(os.Stderr, "[aidw] Adversarial review disabled (AIDW_ADVERSARIAL_REVIEW != 1).")
+			os.Exit(0)
+		}
+		provider, _ := c.Flags().GetString("provider")
+		model, _ := c.Flags().GetString("model")
+		timeout, _ := c.Flags().GetInt("timeout")
+		timeout = util.ClampInt(timeout, 10, 600)
+
+		result, err := review.AdversarialReview(args[0], provider, model, timeout)
+		if err != nil {
+			Die("%v", err)
+		}
+		switch result.Status {
+		case "ok":
+			fmt.Fprintf(os.Stderr, "Adversarial review (%s) complete.\n", result.Provider)
+		case "skipped", "empty":
+			fmt.Fprintf(os.Stderr, "[aidw] Adversarial review %s: %s\n", result.Status, result.Reason)
+		case "not_installed":
+			fmt.Fprintf(os.Stderr, "[aidw] Adversarial review provider %q not installed — skipping.\n", result.Provider)
+		default:
+			fmt.Fprintf(os.Stderr, "[aidw] Adversarial review failed: %v\n", result)
+			os.Exit(1)
+		}
+	},
+}
+
 func init() {
 	cfg := config.Load()
 	geminiReviewCmd.Flags().String("model", cfg.GeminiModel, "Gemini model to use (env: AIDW_GEMINI_MODEL)")
 	geminiReviewCmd.Flags().Int("timeout", cfg.GeminiTimeout, "Timeout in seconds (env: AIDW_GEMINI_TIMEOUT)")
+
+	adversarialReviewCmd.Flags().String("provider", cfg.AdversarialProvider, "Review provider: gemini|copilot|codex (env: AIDW_ADVERSARIAL_PROVIDER)")
+	adversarialReviewCmd.Flags().String("model", cfg.AdversarialModel, "Model name for the provider (env: AIDW_ADVERSARIAL_MODEL)")
+	adversarialReviewCmd.Flags().Int("timeout", cfg.AdversarialTimeout, "Timeout in seconds (env: AIDW_ADVERSARIAL_TIMEOUT)")
+
 	Root.AddCommand(reviewBundleCmd)
 	Root.AddCommand(synthesizeReviewCmd)
 	Root.AddCommand(geminiReviewCmd)
+	Root.AddCommand(adversarialReviewCmd)
 }

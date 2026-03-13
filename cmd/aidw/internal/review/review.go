@@ -208,17 +208,122 @@ func SynthesizeReview(repoPath string) (*SynthesizeResult, error) {
 	return &SynthesizeResult{ReviewPath: reviewPath, Synthesized: true}, nil
 }
 
-// GeminiReviewResult is returned by GeminiReview.
-type GeminiReviewResult struct {
+// AdversarialReviewResult is returned by AdversarialReview.
+type AdversarialReviewResult struct {
 	Status     string `json:"status"`
+	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	ReturnCode int    `json:"returncode,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
 
-// GeminiReview runs an adversarial Gemini review pass, writing adversarial-review.md.
-func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult, error) {
+// GeminiReviewResult is an alias for AdversarialReviewResult for backward compatibility.
+//
+// Deprecated: use AdversarialReviewResult instead.
+type GeminiReviewResult = AdversarialReviewResult
+
+// provider is the internal interface for adversarial review provider implementations.
+type provider interface {
+	run(diffText, prompt, model string, timeoutSecs int) (output, status string, err error)
+}
+
+// geminiProvider runs adversarial review via the `gemini` CLI.
+type geminiProvider struct{}
+
+func (geminiProvider) run(diffText, prompt, model string, timeoutSecs int) (string, string, error) {
+	geminiPath, err := exec.LookPath("gemini")
+	if err != nil {
+		return "", "not_installed", nil
+	}
+	cmd := exec.Command(geminiPath, "--prompt", prompt, "--model", model, "--output-format", "text")
+	cmd.Stdin = strings.NewReader(diffText)
+	out, exitCode, runErr := runWithTimeout(cmd, timeoutSecs)
+	if runErr != nil {
+		if strings.Contains(runErr.Error(), "timeout") {
+			return "", "timeout", nil
+		}
+		return "", "error", runErr
+	}
+	if exitCode != 0 {
+		return out.stderr, "error", nil
+	}
+	return strings.TrimSpace(out.stdout), "ok", nil
+}
+
+// copilotProvider runs adversarial review via the GitHub Copilot CLI
+// (https://github.com/github/copilot-cli, binary: `copilot`).
+// Install: npm install -g @github/copilot  or  brew install copilot-cli
+type copilotProvider struct{}
+
+func (copilotProvider) run(diffText, prompt, model string, timeoutSecs int) (string, string, error) {
+	copilotPath, err := exec.LookPath("copilot")
+	if err != nil {
+		return "", "not_installed", nil
+	}
+	// Embed the diff directly in the prompt so no file-read tool permission is needed.
+	fullPrompt := prompt + "\n\n=== DIFF ===\n" + diffText
+	// --prompt runs non-interactively: copilot completes the task and exits.
+	cmd := exec.Command(copilotPath, "--prompt", fullPrompt)
+	out, exitCode, runErr := runWithTimeout(cmd, timeoutSecs)
+	if runErr != nil {
+		if strings.Contains(runErr.Error(), "timeout") {
+			return "", "timeout", nil
+		}
+		return "", "error", runErr
+	}
+	if exitCode != 0 {
+		return out.stderr, "error", nil
+	}
+	return strings.TrimSpace(out.stdout), "ok", nil
+}
+
+// codexProvider runs adversarial review via the `codex` CLI.
+type codexProvider struct{}
+
+func (codexProvider) run(diffText, prompt, model string, timeoutSecs int) (string, string, error) {
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		return "", "not_installed", nil
+	}
+	// codex reads prompt from args; diff is passed via stdin.
+	args := []string{prompt}
+	if model != "" {
+		args = append([]string{"--model", model}, args...)
+	}
+	cmd := exec.Command(codexPath, args...)
+	cmd.Stdin = strings.NewReader(diffText)
+	out, exitCode, runErr := runWithTimeout(cmd, timeoutSecs)
+	if runErr != nil {
+		if strings.Contains(runErr.Error(), "timeout") {
+			return "", "timeout", nil
+		}
+		return "", "error", runErr
+	}
+	if exitCode != 0 {
+		return out.stderr, "error", nil
+	}
+	return strings.TrimSpace(out.stdout), "ok", nil
+}
+
+// resolveProvider returns the provider implementation for the given name.
+// Returns (provider, true) for known providers; (nil, false) for unknown ones.
+func resolveProvider(name string) (provider, bool) {
+	switch name {
+	case "gemini":
+		return geminiProvider{}, true
+	case "copilot":
+		return copilotProvider{}, true
+	case "codex":
+		return codexProvider{}, true
+	default:
+		return nil, false
+	}
+}
+
+// AdversarialReview runs an adversarial review pass using the specified provider,
+// writing adversarial-review.md to the WIP directory.
+func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*AdversarialReviewResult, error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("git toplevel: %w", err)
@@ -252,7 +357,7 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 	if strings.TrimSpace(diffText) == "" {
 		fmt.Fprintln(os.Stderr, "[aidw] No diff available for adversarial review.")
 		_ = os.Remove(adversarialPath)
-		return &GeminiReviewResult{Status: "skipped", Reason: "empty diff"}, nil
+		return &AdversarialReviewResult{Status: "skipped", Reason: "empty diff"}, nil
 	}
 
 	fileListStr := "  (unknown)"
@@ -270,68 +375,68 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 		"Changed files:\n" + fileListStr + "\n\n" +
 		"The full diff is provided via stdin. Review it thoroughly and report your findings."
 
+	if providerName == "" {
+		providerName = "gemini"
+	}
 	if model == "" {
 		model = defaultGeminiModel
 	}
 	if timeoutSecs <= 0 {
 		timeoutSecs = defaultGeminiTimeoutSecs
 	}
-	if timeoutSecs < 10 {
-		timeoutSecs = 10
-	}
-	if timeoutSecs > 600 {
-		timeoutSecs = 600
-	}
+	timeoutSecs = util.ClampInt(timeoutSecs, 10, 600)
 
-	geminiPath, lookErr := exec.LookPath("gemini")
-	if lookErr != nil {
-		return &GeminiReviewResult{Status: "not_installed"}, nil
+	p, ok := resolveProvider(providerName)
+	if !ok {
+		return nil, fmt.Errorf("unknown adversarial review provider %q — valid values: gemini, copilot, codex", providerName)
 	}
-
-	cmd := exec.Command(geminiPath, "--prompt", prompt, "--model", model, "--output-format", "text")
-	cmd.Stdin = strings.NewReader(diffText)
-
-	// Apply timeout via context
-	output, exitCode, runErr := runWithTimeout(cmd, timeoutSecs)
+	rawOut, runStatus, runErr := p.run(diffText, prompt, model, timeoutSecs)
 	if runErr != nil {
-		if strings.Contains(runErr.Error(), "timeout") {
-			fmt.Fprintf(os.Stderr, "[aidw] Gemini adversarial review timed out after %ds.\n", timeoutSecs)
-			return &GeminiReviewResult{Status: "timeout", Model: model}, nil
-		}
 		return nil, runErr
 	}
 
-	if exitCode != 0 {
-		fmt.Fprintf(os.Stderr, "[aidw] Gemini adversarial review failed (exit %d):\n%s\n", exitCode, output.stderr)
-		return &GeminiReviewResult{Status: "error", Model: model, ReturnCode: exitCode, Stderr: output.stderr}, nil
+	result := &AdversarialReviewResult{Status: runStatus, Provider: providerName, Model: model}
+
+	switch runStatus {
+	case "not_installed":
+		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review provider %q not found — skipping.\n", providerName)
+		return result, nil
+	case "timeout":
+		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) timed out after %ds.\n", providerName, timeoutSecs)
+		return result, nil
+	case "error":
+		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) failed:\n%s\n", providerName, rawOut)
+		result.Stderr = rawOut
+		return result, nil
 	}
 
-	out := strings.TrimSpace(output.stdout)
-	if out == "" {
-		fmt.Fprintln(os.Stderr, "[aidw] Gemini returned empty output.")
+	if rawOut == "" {
+		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) returned empty output.\n", providerName)
+		result.Status = "empty"
 		_ = os.Remove(adversarialPath)
-		return &GeminiReviewResult{Status: "empty", Model: model}, nil
+		return result, nil
 	}
 
-	if werr := util.AtomicWrite(adversarialPath, []byte(out+"\n"), 0o644); werr != nil {
+	if werr := util.AtomicWrite(adversarialPath, []byte(rawOut+"\n"), 0o644); werr != nil {
 		return nil, fmt.Errorf("write adversarial-review.md: %w", werr)
 	}
 
 	// Update status.json review_passes
+	passName := providerName + "-adversarial"
 	statusPath := wipDir + "/status.json"
 	if _, serr := os.Stat(statusPath); serr == nil {
 		var st map[string]any
 		if rerr := util.ReadJSON(statusPath, &st); rerr == nil {
 			passes, _ := st["review_passes"].([]any)
-			hasGemini := false
+			alreadyPresent := false
 			for _, p := range passes {
-				if p == "gemini-adversarial" {
-					hasGemini = true
+				if p == passName {
+					alreadyPresent = true
 					break
 				}
 			}
-			if !hasGemini {
-				passes = append(passes, "gemini-adversarial")
+			if !alreadyPresent {
+				passes = append(passes, passName)
 				st["review_passes"] = passes
 			}
 			st["updated_at"] = util.NowISO()
@@ -339,7 +444,15 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 		}
 	}
 
-	return &GeminiReviewResult{Status: "ok", Model: model}, nil
+	result.Status = "ok"
+	return result, nil
+}
+
+// GeminiReview runs an adversarial Gemini review pass, writing adversarial-review.md.
+//
+// Deprecated: use AdversarialReview with provider "gemini" instead.
+func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult, error) {
+	return AdversarialReview(repoPath, "gemini", model, timeoutSecs)
 }
 
 // --- helpers ---
