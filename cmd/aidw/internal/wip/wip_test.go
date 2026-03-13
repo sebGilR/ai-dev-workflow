@@ -147,7 +147,7 @@ func TestEnsureBranchState_SeedsWIPFiles(t *testing.T) {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
 
-	for _, f := range WIP_FILES {
+	for _, f := range wipFiles {
 		p := filepath.Join(state.WipDir, f)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("WIP file %q missing: %v", f, err)
@@ -300,6 +300,39 @@ func TestClearWip_DeletesLegacyDirs(t *testing.T) {
 	}
 }
 
+func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	if err := os.MkdirAll(wipBase, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two legacy dirs, no dated dirs
+	older := filepath.Join(wipBase, "aaa-branch")
+	newer := filepath.Join(wipBase, "zzz-branch")
+	for _, d := range []string{older, newer} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := ClearWip(dir)
+	if err != nil {
+		t.Fatalf("ClearWip: %v", err)
+	}
+
+	// Should keep the alphabetically last legacy dir
+	if result.Kept == nil || *result.Kept != "zzz-branch" {
+		t.Errorf("expected kept=zzz-branch, got %v", result.Kept)
+	}
+	if _, err := os.Stat(older); !os.IsNotExist(err) {
+		t.Error("older legacy dir should have been deleted")
+	}
+	if _, err := os.Stat(newer); err != nil {
+		t.Errorf("newer legacy dir should still exist: %v", err)
+	}
+}
+
 func TestClearWip_EmptyWip(t *testing.T) {
 	dir := initGitRepo(t)
 
@@ -326,7 +359,7 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 	}
 
 	// Write content into all WIP files so they exist
-	for _, f := range append(WIP_FILES, "extra.md") {
+	for _, f := range append(wipFiles, "extra.md") {
 		if err := os.WriteFile(filepath.Join(state.WipDir, f), []byte("content"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -337,7 +370,7 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 		t.Fatalf("CleanupBranch: %v", err)
 	}
 
-	for keep := range KEEP_ON_CLEANUP {
+	for keep := range keepOnCleanup {
 		p := filepath.Join(state.WipDir, keep)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected %q to be kept, but it's missing: %v", keep, err)
@@ -345,7 +378,7 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 	}
 
 	for _, del := range result.Deleted {
-		if KEEP_ON_CLEANUP[del] {
+		if keepOnCleanup[del] {
 			t.Errorf("file %q should not have been deleted", del)
 		}
 	}

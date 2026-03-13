@@ -15,14 +15,14 @@ import (
 	"aidw/cmd/aidw/internal/util"
 )
 
-// WIP_FILES is the list of standard WIP workflow files.
-var WIP_FILES = []string{"plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"}
+// wipFiles is the list of standard WIP workflow files.
+var wipFiles = []string{"plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"}
 
-// KEEP_ON_CLEANUP is the set of files to keep during cleanup-branch.
-var KEEP_ON_CLEANUP = map[string]bool{"context.md": true, "pr.md": true}
+// keepOnCleanup is the set of files to keep during cleanup-branch.
+var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true}
 
-// STAGES is the set of valid workflow stages.
-var STAGES = map[string]bool{
+// stages is the set of valid workflow stages.
+var stages = map[string]bool{
 	"started":      true,
 	"planned":      true,
 	"researched":   true,
@@ -69,9 +69,15 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 	}
 
 	// Phase 1: find existing dated dir (YYYYMMDD-<branch_name>); pick the newest
+	// Note: check-then-create is not atomic; concurrent invocations for the same branch
+	// could both see no existing dir and each create one. In practice this tool runs once
+	// per CLI invocation so the race is not reachable under normal use.
 	datePattern := regexp.MustCompile(`^(\d{8})-` + regexp.QuoteMeta(branchName) + `$`)
 	var candidates []string
-	entries, _ := os.ReadDir(wipBase)
+	entries, err := os.ReadDir(wipBase)
+	if err != nil {
+		return nil, fmt.Errorf("read wip directory: %w", err)
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -111,10 +117,12 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 	}
 
 	// Seed WIP files
-	for _, filename := range WIP_FILES {
+	for _, filename := range wipFiles {
 		name := strings.ReplaceAll(strings.TrimSuffix(filename, ".md"), "-", " ")
-		seedFileIfMissing(filepath.Join(wipDir, filename),
-			fmt.Sprintf("# %s\n\n", titleCase(name)))
+		if err := seedFileIfMissing(filepath.Join(wipDir, filename),
+			fmt.Sprintf("# %s\n\n", titleCase(name))); err != nil {
+			return nil, fmt.Errorf("seed %s: %w", filename, err)
+		}
 	}
 
 	// Load or create status.json
@@ -163,7 +171,9 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 - Initialized at: `+"`%s`"+`
 - Current status file: `+"`status.json`"+`
 `, filepath.Base(top), top, branchName, util.NowISO())
-		_ = util.AtomicWrite(contextPath, []byte(content), 0o644)
+		if err := util.AtomicWrite(contextPath, []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("write context.md: %w", err)
+		}
 	}
 
 	return &BranchState{
@@ -203,7 +213,7 @@ type SetStageResult map[string]any
 
 // SetStage transitions the workflow to a new stage.
 func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, error) {
-	if !STAGES[stage] {
+	if !stages[stage] {
 		return nil, fmt.Errorf("unsupported stage: %s. Allowed: %v", stage, sortedStages())
 	}
 
@@ -245,7 +255,9 @@ func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, er
 		return nil, err
 	}
 
-	// Auto-regenerate context-summary if it exists
+	// Auto-regenerate context-summary if it exists. This is best-effort: a failure
+	// here does not roll back the stage transition — the summary will be stale but
+	// the caller can re-run `aidw summarize-context` to regenerate it.
 	summaryPath := filepath.Join(state.WipDir, "context-summary.md")
 	if _, err := os.Stat(summaryPath); err == nil {
 		_, _ = WriteContextSummary(repoPath)
@@ -353,7 +365,7 @@ func CleanupBranch(repoPath string) (*CleanupResult, error) {
 
 	var deleted []string
 	for _, e := range entries {
-		if KEEP_ON_CLEANUP[e.Name()] {
+		if keepOnCleanup[e.Name()] {
 			continue
 		}
 		path := filepath.Join(state.WipDir, e.Name())
@@ -370,8 +382,8 @@ func CleanupBranch(repoPath string) (*CleanupResult, error) {
 	}
 
 	sort.Strings(deleted)
-	kept := make([]string, 0, len(KEEP_ON_CLEANUP))
-	for k := range KEEP_ON_CLEANUP {
+	kept := make([]string, 0, len(keepOnCleanup))
+	for k := range keepOnCleanup {
 		kept = append(kept, k)
 	}
 	sort.Strings(kept)
@@ -389,7 +401,11 @@ type ClearWipResult struct {
 	Deleted []string `json:"deleted"`
 }
 
-// ClearWip deletes all .wip branch dirs except the most recently dated one.
+// ClearWip deletes old .wip branch dirs, keeping only the single most recently
+// dated one across all branches. If no dated dirs exist, the most recent legacy
+// dir (alphabetically last) is preserved to avoid data loss. This operates
+// globally across all branches in the repo — it is intended as a workspace
+// cleanup tool, not a per-branch operation.
 func ClearWip(repoPath string) (*ClearWipResult, error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
@@ -437,9 +453,16 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 		return dated[i].name < dated[j].name
 	})
 
+	sort.Strings(others)
+
 	var keep *string
 	if len(dated) > 0 {
 		keepName := dated[len(dated)-1].name
+		keep = &keepName
+	} else if len(others) > 0 {
+		// No dated dirs — preserve the last legacy dir (alphabetically) to avoid
+		// deleting everything when the user has never used a dated workflow.
+		keepName := others[len(others)-1]
 		keep = &keepName
 	}
 
@@ -451,6 +474,9 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 		deleted = append(deleted, dated[i].name)
 	}
 	for _, name := range others {
+		if keep != nil && name == *keep {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(wipBase, name)); err != nil {
 			return nil, err
 		}
@@ -573,10 +599,11 @@ func DetectRepos(workspacePath string) ([]string, error) {
 
 // --- helpers ---
 
-func seedFileIfMissing(path, content string) {
+func seedFileIfMissing(path, content string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		_ = os.WriteFile(path, []byte(content), 0o644)
+		return util.AtomicWrite(path, []byte(content), 0o644)
 	}
+	return nil
 }
 
 func initialStatus(repoName, repoPath, branch string) map[string]any {
@@ -594,12 +621,12 @@ func initialStatus(repoName, repoPath, branch string) map[string]any {
 }
 
 func sortedStages() []string {
-	var stages []string
-	for s := range STAGES {
-		stages = append(stages, s)
+	var ss []string
+	for s := range stages {
+		ss = append(ss, s)
 	}
-	sort.Strings(stages)
-	return stages
+	sort.Strings(ss)
+	return ss
 }
 
 func collectContextFiles(wipDir string) map[string]string {
@@ -632,10 +659,11 @@ func trim(text string, limit int) string {
 	if text == "" {
 		return "_none_"
 	}
-	if len(text) <= limit {
+	runes := []rune(text)
+	if len(runes) <= limit {
 		return text
 	}
-	return strings.TrimSpace(text[:limit]) + " ..."
+	return strings.TrimSpace(string(runes[:limit])) + " ..."
 }
 
 func generateSummaryText(files map[string]string, status map[string]any) string {
