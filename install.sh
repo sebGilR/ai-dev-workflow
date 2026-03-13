@@ -96,18 +96,110 @@ for agent_file in "$SCRIPT_DIR"/claude/agents/*; do
   safe_link "$agent_file" "$CLAUDE_HOME/agents/$agent_name"
 done
 
+# ---------------------------------------------------------------------------
+# Auto-install Go locally if not present
+# ---------------------------------------------------------------------------
+# Usage: ensure_go [install_dir]
+# Sets PATH and GOROOT if Go is installed locally
+ensure_go() {
+  local install_dir="${1:-$SCRIPT_DIR/.go}"
+
+  # Already available system-wide?
+  if command -v go &>/dev/null; then
+    return 0
+  fi
+
+  # Already installed locally?
+  if [ -x "$install_dir/bin/go" ]; then
+    export PATH="$install_dir/bin:$PATH"
+    export GOROOT="$install_dir"
+    return 0
+  fi
+
+  echo "→ Go not found. Installing locally (no sudo required)..."
+
+  local os arch version tarball url tmp_dir
+
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64)    arch="amd64" ;;
+    aarch64)   arch="arm64" ;;
+    armv*)     arch="armv6l" ;;
+    i386|i686) arch="386" ;;
+  esac
+
+  # Fetch latest stable version
+  version=""
+  if command -v curl &>/dev/null; then
+    version=$(curl -sL "https://go.dev/VERSION?m=text" 2>/dev/null | head -1)
+  elif command -v wget &>/dev/null; then
+    version=$(wget -qO- "https://go.dev/VERSION?m=text" 2>/dev/null | head -1)
+  fi
+
+  # Validate or use fallback (update this version periodically as Go releases new versions)
+  if ! [[ "$version" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+    version="go1.22.5"
+  fi
+
+  tarball="${version}.${os}-${arch}.tar.gz"
+  url="https://go.dev/dl/${tarball}"
+  tmp_dir=$(mktemp -d)
+
+  echo "  Version: ${version}"
+  echo "  Platform: ${os}-${arch}"
+  echo "  Downloading from: ${url}"
+
+  local download_ok=0
+  if command -v curl &>/dev/null; then
+    curl -sL "$url" -o "$tmp_dir/go.tar.gz" && download_ok=1
+  elif command -v wget &>/dev/null; then
+    wget -q "$url" -O "$tmp_dir/go.tar.gz" && download_ok=1
+  else
+    echo "ERROR: Neither curl nor wget found." >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if [ "$download_ok" -ne 1 ] || ! tar tf "$tmp_dir/go.tar.gz" &>/dev/null; then
+    rm -rf "$tmp_dir"
+    echo "ERROR: Failed to download/validate Go tarball." >&2
+    echo "       Install Go manually: https://go.dev/dl/" >&2
+    return 1
+  fi
+
+  echo "  Extracting to: ${install_dir}"
+  # Extract to a sibling temp dir first, then atomically swap so that a failed
+  # extraction never leaves the user without a working Go toolchain.
+  extract_tmp="${install_dir}.tmp.$$"
+  mkdir -p "$extract_tmp"
+  tar -C "$extract_tmp" --strip-components=1 -xzf "$tmp_dir/go.tar.gz"
+  rm -rf "$tmp_dir"
+
+  if [ ! -x "$extract_tmp/bin/go" ]; then
+    rm -rf "$extract_tmp"
+    echo "ERROR: Go binary not found after extraction." >&2
+    return 1
+  fi
+
+  rm -rf "$install_dir"
+  mv "$extract_tmp" "$install_dir"
+
+  export PATH="$install_dir/bin:$PATH"
+  export GOROOT="$install_dir"
+
+  echo "  Go ${version} installed: $("$install_dir/bin/go" version)"
+  return 0
+}
+
 # Build the Go binary if needed (required by merge-* commands below).
 if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/null 2>&1; then
   echo "→ Building aidw Go binary..."
-  if command -v go &>/dev/null; then
-    (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
-      echo "ERROR: 'go build' failed. Install Go from https://go.dev/dl/ and retry." >&2
-      exit 1
-    }
-  else
-    echo "ERROR: Go toolchain not found. Install from https://go.dev/dl/ and retry." >&2
+  ensure_go "$SCRIPT_DIR/.go" || exit 1
+  (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
+    echo "ERROR: 'go build' failed." >&2
     exit 1
-  fi
+  }
 fi
 
 "$SCRIPT_DIR/bin/aidw" merge-claude-md \

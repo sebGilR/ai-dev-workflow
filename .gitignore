@@ -12,3 +12,6 @@ __pycache__/
 .wip/
 .claude/repo-docs/
 .claude/settings.local.json
+
+# Locally installed Go (auto-installed by install.sh if Go not found)
+.go/

@@ -112,8 +112,9 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 
 	// Seed WIP files
 	for _, filename := range WIP_FILES {
+		name := strings.ReplaceAll(strings.TrimSuffix(filename, ".md"), "-", " ")
 		seedFileIfMissing(filepath.Join(wipDir, filename),
-			fmt.Sprintf("# %s\n\n", strings.Title(strings.ReplaceAll(strings.TrimSuffix(filename, ".md"), "-", " "))))
+			fmt.Sprintf("# %s\n\n", titleCase(name)))
 	}
 
 	// Load or create status.json
@@ -534,6 +535,8 @@ func BootstrapWorkspace(workspacePath string) (*BootstrapWorkspaceResult, error)
 }
 
 // DetectRepos finds all git repos in a workspace (root + immediate subdirs).
+// Only scans root and immediate subdirectories — intentionally not recursive
+// to avoid descending into vendor/, node_modules/, or nested git submodules.
 func DetectRepos(workspacePath string) ([]string, error) {
 	var repos []string
 	seen := make(map[string]bool)
@@ -610,6 +613,18 @@ func collectContextFiles(wipDir string) map[string]string {
 	data, _ := os.ReadFile(statusPath)
 	result["status.json"] = strings.TrimSpace(string(data))
 	return result
+}
+
+// titleCase capitalizes the first letter of each space-separated word.
+// Used instead of the deprecated strings.Title.
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if w != "" {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 func trim(text string, limit int) string {
