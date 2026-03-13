@@ -4,7 +4,9 @@ Use the installed `/wip-*` skills as the default workflow for code tasks when ap
 
 Workflow conventions:
 
-- Every repo uses a gitignored `.wip/<branch>/` directory for branch-scoped workflow state.
+- Every repo uses a gitignored `.wip/` directory for branch-scoped workflow state.
+- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDD-<branch>/` (e.g., `.wip/20260313-main/`).
+  - **Never create or reference `.wip/<branch>/` paths directly.** Always use `aidw start .` to initialize a branch session. The CLI resolves the correct directory, including migrating legacy un-prefixed dirs.
 - The canonical branch folder files are:
   - `plan.md`
   - `review.md`
@@ -24,6 +26,7 @@ Default expectations:
 - Use `/wip-resume` to continue after a context reset or a new session.
 - Use `/wip-review` before `/wip-pr` for any non-trivial change.
 - Keep updates concise and useful; do not spam `.wip` files with noise.
+- Use `/wip-upgrade` when `.wip` files appear in the wrong directory, or after pulling updates to `ai-dev-workflow`.
 
 ## Repository Intelligence Tools
 

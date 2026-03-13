@@ -401,6 +401,58 @@ type ClearWipResult struct {
 	Deleted []string `json:"deleted"`
 }
 
+// MigratedDir describes a single legacy-to-dated rename.
+type MigratedDir struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// MigrateWipResult is returned by MigrateWip.
+type MigrateWipResult struct {
+	WipBase  string        `json:"wip_base"`
+	Migrated []MigratedDir `json:"migrated"`
+}
+
+// MigrateWip renames legacy (un-timestamped) .wip/<slug> directories to the
+// current YYYYMMDD-<slug> format so that EnsureBranchState can find them.
+// Directories that already match the dated pattern are left untouched.
+func MigrateWip(repoPath string) (*MigrateWipResult, error) {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repo: %w", err)
+	}
+
+	wipBase := filepath.Join(top, ".wip")
+	entries, err := os.ReadDir(wipBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &MigrateWipResult{WipBase: wipBase}, nil
+		}
+		return nil, fmt.Errorf("read wip directory: %w", err)
+	}
+
+	datedPattern := regexp.MustCompile(`^\d{8}-`)
+	today := time.Now().Format("20060102")
+
+	var migrated []MigratedDir
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if datedPattern.MatchString(name) {
+			continue // already in the correct format
+		}
+		newName := today + "-" + name
+		newPath := filepath.Join(wipBase, newName)
+		if err := os.Rename(filepath.Join(wipBase, name), newPath); err != nil {
+			return nil, fmt.Errorf("rename %s → %s: %w", name, newName, err)
+		}
+		migrated = append(migrated, MigratedDir{Old: name, New: newName})
+	}
+	return &MigrateWipResult{WipBase: wipBase, Migrated: migrated}, nil
+}
+
 // ClearWip deletes old .wip branch dirs, keeping only the single most recently
 // dated one across all branches. If no dated dirs exist, the most recent legacy
 // dir (alphabetically last) is preserved to avoid data loss. This operates
