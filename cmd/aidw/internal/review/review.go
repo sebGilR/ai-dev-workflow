@@ -88,13 +88,19 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	rawStaged := gitOutput(top, "diff", "--cached", "--", ".")
 	stagedDiff, stagedTruncated := util.TruncateDiff(rawStaged, maxDiffBytes)
 
-	// Compute fingerprint from raw diffs; skip rebuild if unchanged.
-	// Note: rawBranchDiff is empty when there is no merge base (branch has not
-	// diverged from main). The cache is still valid in that scenario — the hash
-	// covers only working-tree and staged changes.
+	// Fetch status before computing the fingerprint so it is included in the
+	// cache key. Status changes (new untracked files, renames, mode changes)
+	// that don't affect diffs would otherwise produce a stale bundle.
+	status := gitOutput(top, "status", "--short")
+	changedFiles := parseChangedFiles(status)
+
+	// Compute fingerprint from raw diffs + status; skip rebuild if unchanged.
+	// Note: rawBranchDiff is empty when no merge base could be found (i.e.,
+	// neither main nor master exists, or git merge-base failed). The
+	// fingerprint still covers working-tree and staged changes in that case.
 	h := sha256.New()
 	// NUL separators prevent hash collisions across field boundaries.
-	fmt.Fprintf(h, "%s\x00%s\x00%s", rawBranchDiff, rawDiff, rawStaged)
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", rawBranchDiff, rawDiff, rawStaged, status)
 	fingerprint := "sha256:" + hex.EncodeToString(h.Sum(nil))
 
 	// Ensure WIP dir exists after all git ops so that a failed git command
@@ -111,9 +117,6 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 		fmt.Fprintln(os.Stderr, "[aidw] review-bundle.json is up-to-date (diff unchanged), skipping rebuild.")
 		return &existing, nil
 	}
-
-	status := gitOutput(top, "status", "--short")
-	changedFiles := parseChangedFiles(status)
 
 	branchDiffDesc := "unavailable (no merge base found)"
 	if mergeBase != "" {

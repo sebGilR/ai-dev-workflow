@@ -116,10 +116,16 @@ IDEMPOTENCY_CHECK
   fi
 
   python3 - "$settings" "$hook_cmd" << 'PYEOF'
-import json, sys
+import json, sys, shutil
 settings_path, hook_cmd = sys.argv[1], sys.argv[2]
-with open(settings_path) as f:
-    d = json.load(f)
+try:
+    with open(settings_path) as f:
+        d = json.load(f)
+except json.JSONDecodeError:
+    backup = settings_path + '.bak'
+    shutil.copy2(settings_path, backup)
+    print(f"WARNING: {settings_path} contained invalid JSON. Backed up to {backup} and reset.", file=sys.stderr)
+    d = {}
 d.setdefault('hooks', {}).setdefault('PostToolUse', []).append({
     "matcher": "mcp__serena__.*",
     "hooks": [{"type": "command", "command": hook_cmd}]
@@ -370,7 +376,9 @@ install_workspace_lsp() {
   fi
 
   # --- C/C++ ---
-  if [ -f "$WORKSPACE_ROOT/CMakeLists.txt" ] || ls "$WORKSPACE_ROOT"/*.c "$WORKSPACE_ROOT"/*.cpp 2>/dev/null | head -1 &>/dev/null; then
+  if [ -f "$WORKSPACE_ROOT/CMakeLists.txt" ] || \
+     compgen -G "$WORKSPACE_ROOT/*.c" > /dev/null 2>&1 || \
+     compgen -G "$WORKSPACE_ROOT/*.cpp" > /dev/null 2>&1; then
     if ! command -v clangd &>/dev/null; then
       echo "NOTE: C/C++ project detected but 'clangd' is not installed." >&2
       echo "      Install it for Serena LSP support: brew install llvm  (macOS)" >&2
@@ -709,7 +717,7 @@ echo ""
 echo "Repository intelligence tools:"
 echo "  Serena   → semantic code navigation (symbol lookup, call chains, file discovery)"
 echo "             To enable fast symbol lookup via serena-query, register this repo:"
-echo "             uvx --from git+https://github.com/oraios/serena serena project create"
+echo "             uvx --from git+https://github.com/oraios/serena@v0.1.4 serena project create"
 echo "             (Run from the repo root. One-time per repo.)"
 echo "             Language servers are installed automatically when detected."
 echo "             Serena calls will be logged to ~/.claude/serena.log"

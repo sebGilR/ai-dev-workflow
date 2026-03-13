@@ -291,6 +291,43 @@ func TestReviewBundle_BasicStructure(t *testing.T) {
 	}
 }
 
+func TestReviewBundle_CacheHit(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	bundle1, err := ReviewBundle(dir)
+	if err != nil {
+		t.Fatalf("ReviewBundle (first): %v", err)
+	}
+
+	state, err := wip.EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	bundlePath := filepath.Join(state.WipDir, "review-bundle.json")
+	info1, err := os.Stat(bundlePath)
+	if err != nil {
+		t.Fatalf("stat bundle: %v", err)
+	}
+
+	bundle2, err := ReviewBundle(dir)
+	if err != nil {
+		t.Fatalf("ReviewBundle (second): %v", err)
+	}
+
+	// Cache hit: same GeneratedAt, file not rewritten.
+	if bundle2.GeneratedAt != bundle1.GeneratedAt {
+		t.Errorf("GeneratedAt changed on cache hit: %q → %q", bundle1.GeneratedAt, bundle2.GeneratedAt)
+	}
+	info2, err := os.Stat(bundlePath)
+	if err != nil {
+		t.Fatalf("stat bundle (second): %v", err)
+	}
+	if !info2.ModTime().Equal(info1.ModTime()) {
+		t.Error("review-bundle.json was rewritten on cache hit; expected no write")
+	}
+}
+
 func TestGeminiReview_NotInstalled(t *testing.T) {
 	if _, err := exec.LookPath("gemini"); err == nil {
 		t.Skip("gemini is installed; not_installed path cannot be tested")
