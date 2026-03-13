@@ -78,6 +78,75 @@ install_managed_script "templates/global/scripts/save-wip-snapshot.sh" "save-wip
 install_managed_script "templates/global/scripts/claude-fetch-usage.sh" "claude-fetch-usage.sh"
 install_managed_script "templates/global/scripts/start-claude-watch.sh" "start-claude-watch.sh"
 
+# Install serena log hook (serena-query lives in bin/ and is reachable via the
+# ~/.claude/ai-dev-workflow symlink once PATH is configured in aidw.env.sh).
+mkdir -p "$CLAUDE_HOME/hooks"
+_serena_hook_installed=false
+if [ -f "$SCRIPT_DIR/templates/global/hooks/log-serena.sh" ]; then
+  chmod +x "$SCRIPT_DIR/templates/global/hooks/log-serena.sh"
+  if safe_link "$SCRIPT_DIR/templates/global/hooks/log-serena.sh" "$CLAUDE_HOME/hooks/log-serena.sh"; then
+    chmod +x "$CLAUDE_HOME/hooks/log-serena.sh" 2>/dev/null || true
+    _serena_hook_installed=true
+  fi
+fi
+
+# Register the PostToolUse hook for Serena logging in ~/.claude/settings.json.
+_register_serena_hook() {
+  local settings="$CLAUDE_HOME/settings.json"
+  local hook_cmd="$CLAUDE_HOME/hooks/log-serena.sh"
+
+  # Ensure settings.json exists with a base object.
+  if [ ! -f "$settings" ]; then
+    echo '{}' > "$settings"
+  fi
+
+  # Idempotency: skip if hook is already registered.
+  if python3 - "$settings" "$hook_cmd" <<'IDEMPOTENCY_CHECK' 2>/dev/null
+import json, sys
+settings_path, hook_cmd = sys.argv[1], sys.argv[2]
+d = json.load(open(settings_path))
+for h in d.get('hooks', {}).get('PostToolUse', []):
+    for entry in h.get('hooks', []):
+        if hook_cmd in entry.get('command', ''):
+            sys.exit(0)
+sys.exit(1)
+IDEMPOTENCY_CHECK
+  then
+    return 0
+  fi
+
+  python3 - "$settings" "$hook_cmd" << 'PYEOF'
+import json, sys, shutil
+settings_path, hook_cmd = sys.argv[1], sys.argv[2]
+try:
+    with open(settings_path) as f:
+        d = json.load(f)
+except json.JSONDecodeError:
+    backup = settings_path + '.bak'
+    shutil.copy2(settings_path, backup)
+    print(f"WARNING: {settings_path} contained invalid JSON. Backed up to {backup} and reset.", file=sys.stderr)
+    d = {}
+d.setdefault('hooks', {}).setdefault('PostToolUse', []).append({
+    "matcher": "mcp__serena__.*",
+    "hooks": [{"type": "command", "command": hook_cmd}]
+})
+with open(settings_path, 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\n')
+print(f"Registered Serena PostToolUse hook in {settings_path}")
+PYEOF
+}
+if [ "$_serena_hook_installed" = true ]; then
+  echo ""
+  echo "NOTE: Registering a PostToolUse hook for Serena MCP calls."
+  echo "      The hook logs tool name and input parameters to ~/.claude/serena.log."
+  echo "      This log is local — nothing is sent remotely."
+  echo "      To opt out: remove the mcp__serena\\.\\* entry from ~/.claude/settings.json"
+  echo "      and delete ~/.claude/hooks/log-serena.sh"
+  echo ""
+  _register_serena_hook
+fi
+
 mkdir -p "$CLAUDE_HOME/skills" "$CLAUDE_HOME/agents"
 mkdir -p "$COPILOT_HOME/skills"
 
@@ -95,6 +164,55 @@ for agent_file in "$SCRIPT_DIR"/claude/agents/*; do
   agent_name="$(basename "$agent_file")"
   safe_link "$agent_file" "$CLAUDE_HOME/agents/$agent_name"
 done
+
+# ---------------------------------------------------------------------------
+# Generate .github/agents/ from claude/agents/ (strips MCP-only sub-sections)
+# ---------------------------------------------------------------------------
+# Produces copies of claude/agents/*.md into WORKSPACE_ROOT/.github/agents/
+# with the "### 1. Serena MCP" sub-section removed (MCP is unavailable in
+# Copilot CLI). Sections 2 (serena-query bridge) and 3 (Navigation Strategy)
+# are kept verbatim — they work with Bash access.
+generate_github_agents() {
+  local src_dir="$SCRIPT_DIR/claude/agents"
+  local dest_dir="$WORKSPACE_ROOT/.github/agents"
+
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dest_dir"
+
+  for src_file in "$src_dir"/*.md; do
+    [ -f "$src_file" ] || continue
+    local agent_name
+    agent_name="$(basename "$src_file")"
+    local dest_file="$dest_dir/$agent_name"
+
+    # Strip "### 1. Serena MCP ..." sub-section (everything from that heading
+    # through the blank line before the next ### or ## heading, or end of block).
+    local stripped
+    stripped="$(awk '
+      /^### 1\. Serena MCP/ { skip=1; next }
+      skip && /^###/ { skip=0 }
+      skip && /^## / { skip=0 }
+      skip { next }
+      /^### [0-9]+\./ { sub(/^### [0-9]+\./, "### " ++n "."); print; next }
+      { print }
+    ' "$src_file")"
+
+    # Skip write if content is identical (idempotent).
+    if [ -f "$dest_file" ] && [ "$stripped" = "$(cat "$dest_file")" ]; then
+      continue
+    fi
+
+    if [ -f "$dest_file" ]; then
+      echo "WARNING: Overwriting $dest_file (content differs from generated version)." >&2
+      echo "         Any customizations in this file will be lost." >&2
+    fi
+    printf '%s\n' "$stripped" > "$dest_file"
+  done
+}
+
+if [ -d "$WORKSPACE_ROOT/.git" ]; then
+  generate_github_agents
+fi
 
 # ---------------------------------------------------------------------------
 # Auto-install Go locally if not present
@@ -219,6 +337,61 @@ if [ -n "$WORKSPACE_ROOT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Serena LSP setup — detect workspace language and install required LSP binary
+# ---------------------------------------------------------------------------
+# Only Go requires an explicit binary install; all other languages Serena
+# supports are either bundled (Python/pyright), auto-downloaded (TS/Bash via
+# npm, Java via GitHub release), or handled by the user's toolchain (Rust via
+# rustup, which Serena triggers automatically at runtime).
+install_workspace_lsp() {
+  [ -d "$WORKSPACE_ROOT" ] || return 0
+
+  # --- Go ---
+  if [ -f "$WORKSPACE_ROOT/go.mod" ]; then
+    if ! command -v go &>/dev/null; then
+      echo "NOTE: Go project detected (go.mod found) but 'go' is not on PATH." >&2
+      echo "      Serena's Go LSP will be unavailable until Go is installed." >&2
+      return 0
+    fi
+    # Ensure ~/go/bin (where 'go install' places binaries) is on PATH.
+    export PATH="$HOME/go/bin:$PATH"
+    if command -v gopls &>/dev/null; then
+      echo "→ gopls already installed: $(command -v gopls)"
+    else
+      echo "→ Go project detected: installing gopls (required for Serena Go LSP)..."
+      # Pin to a specific version to avoid supply-chain risk from @latest.
+      # Update this version after vetting each new gopls release.
+      go install golang.org/x/tools/gopls@v0.15.3 && \
+        echo "  gopls installed: $(command -v gopls 2>/dev/null || echo '~/go/bin/gopls')" || \
+        echo "WARNING: gopls install failed. Serena Go LSP will be unavailable." >&2
+    fi
+  fi
+
+  # --- Rust ---
+  # Serena calls 'rustup component add rust-analyzer' automatically at runtime
+  # if rustup is present. We just need ~/.cargo/bin on PATH for the project server.
+  if [ -f "$WORKSPACE_ROOT/Cargo.toml" ] && [ -d "$HOME/.cargo/bin" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    echo "→ Rust project detected: ~/.cargo/bin added to PATH (rust-analyzer provisioned by Serena at runtime)"
+  fi
+
+  # --- C/C++ ---
+  if [ -f "$WORKSPACE_ROOT/CMakeLists.txt" ] || \
+     compgen -G "$WORKSPACE_ROOT/*.c" > /dev/null 2>&1 || \
+     compgen -G "$WORKSPACE_ROOT/*.cpp" > /dev/null 2>&1; then
+    if ! command -v clangd &>/dev/null; then
+      echo "NOTE: C/C++ project detected but 'clangd' is not installed." >&2
+      echo "      Install it for Serena LSP support: brew install llvm  (macOS)" >&2
+      echo "                                          apt install clangd  (Debian/Ubuntu)" >&2
+    fi
+  fi
+}
+
+if [ -n "$WORKSPACE_ROOT" ]; then
+  install_workspace_lsp
+fi
+
+# ---------------------------------------------------------------------------
 # MCP server configuration (Serena, Context7)
 # ---------------------------------------------------------------------------
 
@@ -252,6 +425,12 @@ write_env_file() {
 # Edit this file to customise your settings. It is NOT committed to git.
 # Sourced automatically by your shell profile after install.
 
+# Add ai-dev-workflow bin/ to PATH (provides serena-query and other helpers).
+[[ ":$PATH:" != *":$HOME/.claude/ai-dev-workflow/bin:"* ]] && export PATH="$HOME/.claude/ai-dev-workflow/bin:$PATH"
+
+# Add Go bin/ to PATH (provides gopls for Serena Go LSP support).
+[[ ":$PATH:" != *":$HOME/go/bin:"* ]] && export PATH="$HOME/go/bin:$PATH"
+
 # Adversarial review (optional) — choose a provider: gemini, copilot, codex
 # Set AIDW_ADVERSARIAL_REVIEW=1 to enable
 export AIDW_ADVERSARIAL_REVIEW="0"
@@ -267,6 +446,16 @@ ENVEOF
   else
     echo "Env file already exists: $env_file (appending missing vars if needed)"
     local _added=0
+    # Ensure PATH includes ai-dev-workflow/bin (idempotent guard).
+    if ! grep -q "ai-dev-workflow/bin" "$env_file" 2>/dev/null; then
+      echo '[[ ":$PATH:" != *":$HOME/.claude/ai-dev-workflow/bin:"* ]] && export PATH="$HOME/.claude/ai-dev-workflow/bin:$PATH"' >> "$env_file"
+      _added=$((_added + 1))
+    fi
+    # Ensure PATH includes ~/go/bin for gopls.
+    if ! grep -q 'go/bin' "$env_file" 2>/dev/null; then
+      echo '[[ ":$PATH:" != *":$HOME/go/bin:"* ]] && export PATH="$HOME/go/bin:$PATH"' >> "$env_file"
+      _added=$((_added + 1))
+    fi
     # Migrate AIDW_ADVERSARIAL_REVIEW: preserve legacy enablement if AIDW_GEMINI_REVIEW="1".
     if ! grep -q '^export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
       if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
@@ -527,4 +716,9 @@ echo "Suggested next step inside a repo: /wip-start"
 echo ""
 echo "Repository intelligence tools:"
 echo "  Serena   → semantic code navigation (symbol lookup, call chains, file discovery)"
+echo "             To enable fast symbol lookup via serena-query, register this repo:"
+echo "             uvx --from git+https://github.com/oraios/serena@v0.1.4 serena project create"
+echo "             (Run from the repo root. One-time per repo.)"
+echo "             Language servers are installed automatically when detected."
+echo "             Serena calls will be logged to ~/.claude/serena.log"
 echo "  Context7 → up-to-date library documentation (API usage, framework examples)"

@@ -1,7 +1,6 @@
 ---
 name: wip-review
 description: Prepare a review bundle and consolidate review notes.
-model: claude-opus-4.6
 ---
 
 When this skill is used:
@@ -20,13 +19,27 @@ When this skill is used:
 ~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
 ```
 
-4. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
+4. Model selection and Opus escalation:
+
+   a. Run:
+   ```bash
+   git --no-pager diff HEAD --stat | tail -1
+   ```
+   Show the output to the user.
+
+   b. Check the `AIDW_REVIEW_MODEL` environment variable:
+   - If set to `"opus"` → use `claude-opus-4.6` (CI override, no prompt)
+   - If set to `"sonnet"` → use `claude-sonnet-4.6` (CI override, no prompt)
+   - If unset → ask the user: **"Escalate to Opus 4.6 for deeper analysis? [y/N]"**
+     Default (no answer / N) → `claude-sonnet-4.6`
+
+5. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
 
 The reviewer should:
 - Read the existing `review.md`
 - Read the review bundle (`review-bundle.json`) for additional context
 - **Perform an independent analysis of the git diff directly**
-- **Ultrathink about each finding before flagging it** — only surface issues that genuinely matter
+- **Think carefully about each finding before flagging it** — only surface issues that genuinely matter
 - Focus on: architecture fit, maintainability, edge cases, API design, cross-file dependencies
 - Write a prioritized Claude analysis into the `## Claude Review` section:
   - High priority (blockers)
@@ -63,16 +76,16 @@ Legacy users with `AIDW_GEMINI_REVIEW=1` can also use:
 AIDW_GEMINI_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
 ```
 
-6. Verify the review.md write succeeded:
+7. Verify the review.md write succeeded:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw verify-review .
 ```
 
-7. If verification passes, update the stage:
+8. If verification passes, update the stage:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw set-stage . reviewed
 ```
 
-8. Summarize the review findings, focusing on blockers and high-priority issues.
+9. Summarize the review findings, focusing on blockers and high-priority issues.

@@ -1,7 +1,7 @@
 ---
 name: wip-planner
 description: Plan implementation work for the current ticket or branch with minimal noise. Use when creating or refreshing implementation plans.
-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview
 model: inherit
 permissionMode: plan
 ---
@@ -18,11 +18,32 @@ Your job:
 
 ## Code Navigation
 
-Prefer Serena MCP tools for codebase exploration when available:
+Use the best available method in this priority order. Stop at the first that works.
+
+### 1. Serena MCP (Claude Code and MCP-capable hosts)
+If `mcp__serena__*` tools are available, use them first:
 - `mcp__serena__get_symbols_overview` — understand a file's structure without reading it fully
 - `mcp__serena__find_symbol` — locate class/function definitions by name
 - `mcp__serena__find_referencing_symbols` — trace what depends on a symbol
 
-Fall back to Grep/Glob only for non-symbolic searches (config files, text patterns).
+### 2. Serena bridge (`serena-query`)
+If MCP is not available but Bash is, use the bridge script:
+```bash
+serena-query get_symbols_overview '{"relative_path":"path/to/file.go"}'
+serena-query find_symbol '{"name_path_pattern":"MyFunc"}'
+# find_referencing_symbols requires the relative_path from find_symbol's result:
+serena-query find_referencing_symbols '{"name_path":"MyFunc","relative_path":"path/to/file.go"}'
+```
+Exit 0 → use the result. Exit 1 → fall back to step 3.
+
+### 3. Navigation Strategy (grep + ranged Read)
+Last resort for symbolic searches:
+- `grep -rn "FunctionName" .` to find file and line
+- `grep -n -A 15 -B 2 "^func FunctionName"` to preview the body without a full read
+- `Read` with line ranges only — not full file reads unless the file is small (< 80 lines)
+
+---
+
+For **non-symbolic searches** (config files, text patterns): use Grep/Glob directly — do not use Serena for these.
 
 Do not edit production code.
