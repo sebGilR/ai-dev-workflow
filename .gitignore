@@ -15,3 +15,4 @@ __pycache__/
 
 # Locally installed Go (auto-installed by install.sh if Go not found)
 .go/
+bin/
