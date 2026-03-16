@@ -27,9 +27,31 @@ Default expectations:
 
 ## Repository Intelligence Tools
 
-Always prefer Serena for repository exploration and code navigation:
-- symbol lookup, dependency tracing, call chain analysis
-- file discovery, semantic code search, class/module relationships
+**IMPORTANT: Do NOT use the `Explore` subagent for code navigation. Use Serena MCP tools directly.**
+
+### When to use Serena (always try first)
+
+Use `mcp__serena__*` tools directly — not through a subagent — for any of these:
+
+| Task | Tool |
+|------|------|
+| Find a class/function/method definition | `mcp__serena__find_symbol` with `name_path_pattern` |
+| Find all usages/callers of a symbol | `mcp__serena__find_referencing_symbols` (needs `name_path` + `relative_path` from find_symbol first) |
+| Understand a file's structure without reading it | `mcp__serena__get_symbols_overview` |
+| Search for a pattern across the codebase | `mcp__serena__search_for_pattern` |
+
+### When NOT to use Serena (fall back to Grep/Read/Glob)
+
+- Searching for **text content** in non-code files (JSON, YAML, config, markdown)
+- The target is a text string, not a symbol name (e.g. a log message, a URL, a string literal)
+- The file is very small (< ~50 lines) and a direct Read is simpler
+- Serena returns an error or no results — fall back to Grep then ranged Read
+
+### Prohibited fallback
+
+**Never use `Agent(subagent_type="Explore")` for code navigation.** The Explore agent reads entire files and consumes excessive tokens. Serena + Grep cover all legitimate navigation needs.
+
+### External libraries and APIs
 
 When working with external libraries, frameworks, or APIs, use Context7 to retrieve
 the latest documentation before generating code. This reduces outdated API usage.
