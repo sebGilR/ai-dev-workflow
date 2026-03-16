@@ -6,7 +6,7 @@ description: Gather relevant implementation research and save it into .wip files
 When this skill is used:
 
 1. Ensure the repo is initialized for the current branch.
-2. Use the `wip-researcher` subagent to gather codebase findings. Prefer Serena for symbol lookup, call chain tracing, and pattern identification. The subagent may expand scope as needed based on the task.
+2. Use the `wip-researcher` subagent to gather codebase findings. The subagent uses Serena MCP tools as its primary navigation layer — do not attempt code navigation in the main context before dispatching the subagent. The subagent may expand scope as needed based on the task.
 3. Update `research.md` with concrete findings.
 4. Update `context.md` with a concise distilled context snapshot for continuation.
 5. Verify the write succeeded:
