@@ -25,29 +25,54 @@ var mcpServers = map[string]map[string]any{
 	},
 }
 
+// MCPMergeResult reports what MergeMCPJSONTo applied.
+type MCPMergeResult struct {
+	Added   []string
+	Updated []string
+}
+
 // MergeMCPJSON merges the hardcoded MCP server definitions into
-// ~/.claude/mcp.json. Existing entries are only overwritten when their
-// command or args differ from the canonical value (stale detection).
+// ~/.claude/mcp.json and prints a status message to stdout. Existing entries
+// are only overwritten when their command or args differ from the canonical
+// value (stale detection).
 func MergeMCPJSON() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	return mergeMCPJSONToPath(filepath.Join(home, ".claude", "mcp.json"))
+	result, err := MergeMCPJSONTo(filepath.Join(home, ".claude", "mcp.json"))
+	if err != nil {
+		return err
+	}
+	if len(result.Added) == 0 && len(result.Updated) == 0 {
+		fmt.Println("MCP servers already configured (no changes made).")
+		return nil
+	}
+	if len(result.Updated) > 0 {
+		fmt.Printf("MCP servers updated (config corrected): %s\n", joinNames(result.Updated))
+	}
+	if len(result.Added) > 0 {
+		fmt.Printf("MCP servers added: %s\n", joinNames(result.Added))
+	}
+	return nil
 }
 
-// mergeMCPJSONToPath is the path-injectable core used by both MergeMCPJSON
-// and tests.
-func mergeMCPJSONToPath(mcpPath string) error {
+// MergeMCPJSONTo merges the hardcoded MCP server definitions into the given
+// mcp.json path. It returns a structured result without printing anything.
+// Existing entries are only overwritten when their command or args differ from
+// the canonical value (stale detection).
+func MergeMCPJSONTo(mcpPath string) (MCPMergeResult, error) {
+	var result MCPMergeResult
+
 	var data map[string]any
 	if raw, err := os.ReadFile(mcpPath); err == nil {
 		if jerr := json.Unmarshal(raw, &data); jerr != nil {
-			return fmt.Errorf("invalid JSON in %s: %w", mcpPath, jerr)
+			return result, fmt.Errorf("invalid JSON in %s: %w", mcpPath, jerr)
 		}
 	} else if os.IsNotExist(err) {
 		data = map[string]any{}
 	} else {
-		return fmt.Errorf("read %s: %w", mcpPath, err)
+		return result, fmt.Errorf("read %s: %w", mcpPath, err)
 	}
 
 	servers, _ := data["mcpServers"].(map[string]any)
@@ -56,53 +81,45 @@ func mergeMCPJSONToPath(mcpPath string) error {
 		data["mcpServers"] = servers
 	}
 
-	var added, updated []string
 	for name, cfg := range mcpServers {
 		existing, ok := servers[name]
 		if !ok {
 			servers[name] = cfg
-			added = append(added, name)
+			result.Added = append(result.Added, name)
 			continue
 		}
 		existingMap, _ := existing.(map[string]any)
 		if existingMap == nil {
 			// Non-map entry (corrupted config) — replace entirely.
 			servers[name] = cfg
-			updated = append(updated, name)
+			result.Updated = append(result.Updated, name)
 			continue
 		}
 		if isStale(existingMap, cfg) {
 			// Preserve user-added fields; only update managed keys.
 			existingMap["command"] = cfg["command"]
 			existingMap["args"] = cfg["args"]
-			updated = append(updated, name)
+			result.Updated = append(result.Updated, name)
 		}
 	}
 
-	if len(added) == 0 && len(updated) == 0 {
-		fmt.Println("MCP servers already configured (no changes made).")
-		return nil
+	if len(result.Added) == 0 && len(result.Updated) == 0 {
+		return result, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(mcpPath), 0o755); err != nil {
-		return err
+		return result, err
 	}
 	out, _ := json.MarshalIndent(data, "", "  ")
 	tmp := mcpPath + ".tmp"
 	if err := os.WriteFile(tmp, append(out, '\n'), 0o644); err != nil {
-		return err
+		return result, err
 	}
 	if err := os.Rename(tmp, mcpPath); err != nil {
-		return err
+		return result, err
 	}
 
-	if len(updated) > 0 {
-		fmt.Printf("MCP servers updated (config corrected): %s\n", joinNames(updated))
-	}
-	if len(added) > 0 {
-		fmt.Printf("MCP servers added: %s\n", joinNames(added))
-	}
-	return nil
+	return result, nil
 }
 
 // isStale reports whether an existing server entry differs from the canonical one.

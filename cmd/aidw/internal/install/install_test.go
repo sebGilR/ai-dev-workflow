@@ -202,8 +202,8 @@ func TestMergeMCPJSON_AddsServers(t *testing.T) {
 	}
 
 	// Call the internal merge logic directly (bypasses home dir lookup)
-	if err := mergeMCPJSONToPath(mcpPath); err != nil {
-		t.Fatalf("mergeMCPJSONToPath: %v", err)
+	if _, err := MergeMCPJSONTo(mcpPath); err != nil {
+		t.Fatalf("MergeMCPJSONTo: %v", err)
 	}
 
 	data, _ := os.ReadFile(mcpPath)
@@ -229,7 +229,7 @@ func TestMergeMCPJSON_NoopIfAlreadyConfigured(t *testing.T) {
 	os.WriteFile(mcpPath, canonical, 0o644)
 
 	fi1, _ := os.Stat(mcpPath)
-	if err := mergeMCPJSONToPath(mcpPath); err != nil {
+	if _, err := MergeMCPJSONTo(mcpPath); err != nil {
 		t.Fatal(err)
 	}
 	fi2, _ := os.Stat(mcpPath)
@@ -246,7 +246,7 @@ func TestMergeMCPJSON_InvalidJSONReturnsError(t *testing.T) {
 	os.WriteFile(mcpPath, []byte("{not valid json}"), 0o644)
 
 	fi1, _ := os.Stat(mcpPath)
-	err := mergeMCPJSONToPath(mcpPath)
+	_, err := MergeMCPJSONTo(mcpPath)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -274,7 +274,7 @@ func TestMergeMCPJSON_PreservesUserFields(t *testing.T) {
 	raw, _ := json.Marshal(stale)
 	os.WriteFile(mcpPath, raw, 0o644)
 
-	if err := mergeMCPJSONToPath(mcpPath); err != nil {
+	if _, err := MergeMCPJSONTo(mcpPath); err != nil {
 		t.Fatal(err)
 	}
 

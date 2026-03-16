@@ -73,11 +73,12 @@ Pass a repo path to also run ensure-repo and migrate-wip for that directory.`,
 		}
 
 		// 3. Merge mcp.json.
-		if err := install.MergeMCPJSON(); err != nil {
+		mcpPath := filepath.Join(claudeHome, "mcp.json")
+		if _, err := install.MergeMCPJSONTo(mcpPath); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("merge-mcp-json: %v", err))
 			result.MCPJSON = "skipped (error)"
 		} else {
-			result.MCPJSON = filepath.Join(claudeHome, "mcp.json")
+			result.MCPJSON = mcpPath
 		}
 
 		// 4. Update global gitignore.
