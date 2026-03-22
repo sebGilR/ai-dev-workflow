@@ -44,12 +44,12 @@ Use `mcp__serena__*` tools directly — not through a subagent — for any of th
 
 - Searching for **text content** in non-code files (JSON, YAML, config, markdown)
 - The target is a text string, not a symbol name (e.g. a log message, a URL, a string literal)
-- The file is very small (< ~50 lines) and a direct Read is simpler
+- The file is very small (< 80 lines) and a direct Read is simpler
 - Serena returns an error or no results — fall back to Grep then ranged Read
 
 ### Prohibited fallback
 
-**Never use `Agent(subagent_type="Explore")` for code navigation.** The Explore agent reads entire files and consumes excessive tokens. Serena + Grep cover all legitimate navigation needs.
+**Never use `Agent(subagent_type="Explore")` for code navigation.** The built-in Explore subagent reads entire files and consumes excessive tokens. Serena + Grep cover all legitimate navigation needs. (This does not apply to named workflow subagents like `wip-researcher`.)
 
 ### External libraries and APIs
 
