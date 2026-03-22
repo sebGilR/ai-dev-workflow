@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AI Dev Workflow: Start",
+      "type": "shell",
+      "command": "~/.claude/ai-dev-workflow/bin/aidw start ."
+    },
+    {
+      "label": "AI Dev Workflow: Resume",
+      "type": "shell",
+      "command": "~/.claude/ai-dev-workflow/bin/aidw status ."
+    },
+    {
+      "label": "AI Dev Workflow: Review",
+      "type": "shell",
+      "command": "~/.claude/ai-dev-workflow/bin/aidw review-bundle ."
+    },
+    {
+      "label": "AI Dev Workflow: PR Draft",
+      "type": "shell",
+      "command": "~/.claude/ai-dev-workflow/bin/aidw set-stage . pr-prep"
+    }
+  ]
+}

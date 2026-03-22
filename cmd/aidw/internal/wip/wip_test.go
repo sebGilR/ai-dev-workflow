@@ -401,3 +401,121 @@ func TestTitleCase(t *testing.T) {
 		}
 	}
 }
+
+// ── MigrateWip ───────────────────────────────────────────────────────────────
+
+// makeWipDir creates a .wip/<name>/status.json so MigrateWip recognises it as
+// a WIP branch directory.
+func makeWipDir(t *testing.T, wipBase, name string) {
+	t.Helper()
+	dir := filepath.Join(wipBase, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrateWip_RenamesLegacyDirs(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	makeWipDir(t, wipBase, "my-feature")
+	makeWipDir(t, wipBase, "fix-bug")
+
+	result, err := MigrateWip(dir)
+	if err != nil {
+		t.Fatalf("MigrateWip: %v", err)
+	}
+	if len(result.Migrated) != 2 {
+		t.Errorf("expected 2 migrated, got %d: %v", len(result.Migrated), result.Migrated)
+	}
+	if len(result.Warnings) != 0 {
+		t.Errorf("expected no warnings, got: %v", result.Warnings)
+	}
+	// Originals should be gone; dated dirs should exist.
+	datedRe := regexp.MustCompile(`^\d{8}-`)
+	for _, m := range result.Migrated {
+		if !datedRe.MatchString(m.New) {
+			t.Errorf("migrated dir %q does not match YYYYMMDD- pattern", m.New)
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, m.New)); err != nil {
+			t.Errorf("expected %s to exist after migration: %v", m.New, err)
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, m.Old)); err == nil {
+			t.Errorf("expected %s to be gone after migration", m.Old)
+		}
+	}
+}
+
+func TestMigrateWip_LeavesAlreadyDatedDirsUntouched(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	makeWipDir(t, wipBase, "20260101-my-feature")
+
+	result, err := MigrateWip(dir)
+	if err != nil {
+		t.Fatalf("MigrateWip: %v", err)
+	}
+	if len(result.Migrated) != 0 {
+		t.Errorf("expected 0 migrated, got %d: %v", len(result.Migrated), result.Migrated)
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, "20260101-my-feature")); err != nil {
+		t.Error("already-dated dir should still exist")
+	}
+}
+
+func TestMigrateWip_SkipsCollisionWithWarning(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	makeWipDir(t, wipBase, "my-feature")
+
+	// Run migration once to get the dated name, then restore the legacy dir.
+	result1, err := MigrateWip(dir)
+	if err != nil || len(result1.Migrated) != 1 {
+		t.Fatalf("first migration failed: err=%v migrated=%v", err, result1.Migrated)
+	}
+	datedName := result1.Migrated[0].New
+
+	// Recreate legacy dir — dated dir still exists, so the next run collides.
+	makeWipDir(t, wipBase, "my-feature")
+
+	result2, err := MigrateWip(dir)
+	if err != nil {
+		t.Fatalf("MigrateWip with collision: %v", err)
+	}
+	if len(result2.Migrated) != 0 {
+		t.Errorf("expected 0 migrated on collision, got %d", len(result2.Migrated))
+	}
+	if len(result2.Warnings) != 1 {
+		t.Errorf("expected 1 warning for collision, got %d: %v", len(result2.Warnings), result2.Warnings)
+	}
+	// Both dirs should still exist.
+	if _, err := os.Stat(filepath.Join(wipBase, "my-feature")); err != nil {
+		t.Error("legacy dir should still exist after skipped collision")
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, datedName)); err != nil {
+		t.Error("dated dir should still exist after skipped collision")
+	}
+}
+
+func TestMigrateWip_SkipsNonWipDirs(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	// A directory with no canonical WIP files should not be migrated.
+	nonWip := filepath.Join(wipBase, "random-dir")
+	if err := os.MkdirAll(nonWip, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := MigrateWip(dir)
+	if err != nil {
+		t.Fatalf("MigrateWip: %v", err)
+	}
+	if len(result.Migrated) != 0 {
+		t.Errorf("expected 0 migrated for non-WIP dir, got %d", len(result.Migrated))
+	}
+	if _, err := os.Stat(nonWip); err != nil {
+		t.Error("non-WIP dir should not be touched")
+	}
+}

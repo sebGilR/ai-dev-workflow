@@ -60,7 +60,7 @@ var mergeMCPJSONCmd = &cobra.Command{
 	Use:   "merge-mcp-json",
 	Short: "Add or update Serena and Context7 in ~/.claude/mcp.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := install.MergeMCPJSON(); err != nil {
+		if err := install.MergeMCPJSON(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "merge-mcp-json:", err)
 			os.Exit(1)
 		}

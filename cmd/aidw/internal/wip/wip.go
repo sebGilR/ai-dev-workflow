@@ -401,6 +401,87 @@ type ClearWipResult struct {
 	Deleted []string `json:"deleted"`
 }
 
+// MigratedDir describes a single legacy-to-dated rename.
+type MigratedDir struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// MigrateWipResult is returned by MigrateWip.
+type MigrateWipResult struct {
+	WipBase  string        `json:"wip_base"`
+	Migrated []MigratedDir `json:"migrated"`
+	Warnings []string      `json:"warnings,omitempty"`
+}
+
+// MigrateWip renames legacy (un-timestamped) .wip/<slug> directories to the
+// YYYYMMDD-<slug> format. This standardises directory names and enables
+// date-based cleanup policies. Only directories that contain at least one
+// canonical WIP file (status.json, plan.md, context.md, etc.) are considered
+// WIP branch dirs and eligible for migration — unrecognised directories are
+// left untouched. Directories that already match the dated pattern are also
+// left untouched. If the target name already exists the directory is skipped
+// with a warning rather than aborting the entire migration.
+func MigrateWip(repoPath string) (*MigrateWipResult, error) {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repo: %w", err)
+	}
+
+	wipBase := filepath.Join(top, ".wip")
+	entries, err := os.ReadDir(wipBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &MigrateWipResult{WipBase: wipBase}, nil
+		}
+		return nil, fmt.Errorf("read wip directory: %w", err)
+	}
+
+	datedPattern := regexp.MustCompile(`^\d{8}-`)
+	today := time.Now().Format("20060102")
+
+	// Canonical files that identify a WIP branch directory.
+	wipMarkers := []string{"status.json", "plan.md", "context.md", "review.md", "research.md", "execution.md", "pr.md"}
+
+	var migrated []MigratedDir
+	var warnings []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if datedPattern.MatchString(name) {
+			continue // already in the correct format
+		}
+
+		// Only migrate directories that look like WIP branch dirs.
+		dirPath := filepath.Join(wipBase, name)
+		isWip := false
+		for _, marker := range wipMarkers {
+			if _, err := os.Stat(filepath.Join(dirPath, marker)); err == nil {
+				isWip = true
+				break
+			}
+		}
+		if !isWip {
+			continue
+		}
+
+		newName := today + "-" + name
+		newPath := filepath.Join(wipBase, newName)
+		if _, err := os.Lstat(newPath); err == nil {
+			warnings = append(warnings, fmt.Sprintf("skip %s: target %s already exists", name, newName))
+			continue
+		}
+		if err := os.Rename(dirPath, newPath); err != nil {
+			warnings = append(warnings, fmt.Sprintf("skip %s: rename failed: %v", name, err))
+			continue
+		}
+		migrated = append(migrated, MigratedDir{Old: name, New: newName})
+	}
+	return &MigrateWipResult{WipBase: wipBase, Migrated: migrated, Warnings: warnings}, nil
+}
+
 // ClearWip deletes old .wip branch dirs, keeping only the single most recently
 // dated one across all branches. If no dated dirs exist, the most recent legacy
 // dir (alphabetically last) is preserved to avoid data loss. This operates
