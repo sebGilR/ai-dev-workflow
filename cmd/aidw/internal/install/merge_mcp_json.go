@@ -3,6 +3,7 @@ package install
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,17 +29,19 @@ var mcpServers = map[string]map[string]any{
 // MergeMCPJSON merges the hardcoded MCP server definitions into
 // ~/.claude/mcp.json. Existing entries are only overwritten when their
 // command or args differ from the canonical value (stale detection).
-func MergeMCPJSON() error {
+// Informational messages are written to w (pass os.Stderr from commands that
+// output structured JSON to stdout, or os.Stdout for interactive use).
+func MergeMCPJSON(w io.Writer) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	return mergeMCPJSONToPath(filepath.Join(home, ".claude", "mcp.json"))
+	return mergeMCPJSONToPath(filepath.Join(home, ".claude", "mcp.json"), w)
 }
 
 // mergeMCPJSONToPath is the path-injectable core used by both MergeMCPJSON
 // and tests.
-func mergeMCPJSONToPath(mcpPath string) error {
+func mergeMCPJSONToPath(mcpPath string, w io.Writer) error {
 	var data map[string]any
 	if raw, err := os.ReadFile(mcpPath); err == nil {
 		if jerr := json.Unmarshal(raw, &data); jerr != nil {
@@ -80,7 +83,7 @@ func mergeMCPJSONToPath(mcpPath string) error {
 	}
 
 	if len(added) == 0 && len(updated) == 0 {
-		fmt.Println("MCP servers already configured (no changes made).")
+		fmt.Fprintln(w, "MCP servers already configured (no changes made).")
 		return nil
 	}
 
@@ -97,10 +100,10 @@ func mergeMCPJSONToPath(mcpPath string) error {
 	}
 
 	if len(updated) > 0 {
-		fmt.Printf("MCP servers updated (config corrected): %s\n", joinNames(updated))
+		fmt.Fprintf(w, "MCP servers updated (config corrected): %s\n", joinNames(updated))
 	}
 	if len(added) > 0 {
-		fmt.Printf("MCP servers added: %s\n", joinNames(added))
+		fmt.Fprintf(w, "MCP servers added: %s\n", joinNames(added))
 	}
 	return nil
 }

@@ -73,7 +73,7 @@ Pass a repo path to also run ensure-repo and migrate-wip for that directory.`,
 		}
 
 		// 3. Merge mcp.json.
-		if err := install.MergeMCPJSON(); err != nil {
+		if err := install.MergeMCPJSON(os.Stderr); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("merge-mcp-json: %v", err))
 			result.MCPJSON = "skipped (error)"
 		} else {
@@ -113,6 +113,7 @@ Pass a repo path to also run ensure-repo and migrate-wip for that directory.`,
 				result.Warnings = append(result.Warnings, fmt.Sprintf("migrate-wip: %v", err))
 			} else {
 				result.WipMigrated = migrateResult.Migrated
+				result.Warnings = append(result.Warnings, migrateResult.Warnings...)
 			}
 		}
 
@@ -155,7 +156,10 @@ func safeSymlink(src, dest string) error {
 	info, err := os.Lstat(dest)
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
-			current, _ := os.Readlink(dest)
+			current, err := os.Readlink(dest)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", dest, err)
+			}
 			if current == src {
 				return nil // already correct
 			}

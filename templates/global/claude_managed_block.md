@@ -5,8 +5,8 @@ Use the installed `/wip-*` skills as the default workflow for code tasks when ap
 Workflow conventions:
 
 - Every repo uses a gitignored `.wip/` directory for branch-scoped workflow state.
-- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDD-<branch>/` (e.g., `.wip/20260313-main/`).
-  - **Never create or reference `.wip/<branch>/` paths directly.** Always use `aidw start .` to initialize a branch session. The CLI resolves the correct directory, including migrating legacy un-prefixed dirs.
+- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDD-<branch-slug>/` (e.g., `.wip/20260313-main/`). The branch name is slugified by the CLI, so special characters are replaced.
+  - **Never create or reference `.wip/<branch>/` paths directly.** Always use `aidw start .` to initialize a branch session. The CLI resolves the correct directory; use `aidw upgrade .` or `aidw migrate-wip .` to rename legacy un-prefixed dirs.
 - The canonical branch folder files are:
   - `plan.md`
   - `review.md`
