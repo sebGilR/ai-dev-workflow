@@ -22,3 +22,35 @@ For a full verification:
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw verify
 ```
+
+6. Check whether RTK is installed:
+
+   ```bash
+   which rtk
+   ```
+
+   - **If already installed**: confirm it's active and move on.
+   - **If not installed**: offer to install it with the following prompt to the user:
+
+     > **RTK** is an optional token compression tool that reduces Claude Code's Bash output by 60-90% — making sessions faster and cheaper. It works by intercepting Bash tool calls and stripping noise from build, test, git, lint, and file commands. It only affects Claude Code's internal Bash tool; it does not modify your shell, `.bashrc`, or `.zshrc`. You can uninstall it at any time with `rtk init -g --uninstall`.
+     >
+     > **Install RTK? [y/N]**
+
+   If the user says yes, run:
+   ```bash
+   brew install rtk
+   rtk init -g
+   ```
+
+   Then write the recommended config if `~/.config/rtk/config.toml` does not already exist:
+   ```toml
+   [hooks]
+   exclude_commands = ["docker logs", "kubectl logs"]
+
+   [tee]
+   enabled = true
+   mode = "failures"
+   max_files = 50
+   ```
+
+   Confirm success with `rtk --version` and inform the user that RTK is now active for this Claude Code session.
