@@ -34,3 +34,5 @@ When RTK is installed (`rtk init -g`), the Claude Code Bash hook automatically r
 - `rtk git diff --stat` — condensed diff summary
 
 Note: explicit `rtk <cmd>` calls require RTK to be installed — they are not transparent fallbacks. If RTK is absent, use the raw command equivalents directly.
+
+If full output is needed from a command (e.g., to debug an unexpected result), ask the user first before running `rtk proxy <cmd>` to bypass compression.

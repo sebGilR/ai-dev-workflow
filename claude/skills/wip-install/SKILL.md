@@ -36,13 +36,20 @@ For a full verification:
      >
      > **Install RTK? [y/N]**
 
-   If the user says yes, run:
+   If the user says yes, install via Homebrew (preferred) or curl:
    ```bash
-   brew install rtk
+   # macOS/Linux with Homebrew:
+   brew install rtk && rtk init -g
+
+   # Without Homebrew:
+   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
    rtk init -g
    ```
 
-   Then write the recommended config if the config file does not already exist:
+   Then write the recommended config if it does not already exist. The config path is OS-dependent — use `rtk config` to confirm the location, or write to:
+   - **macOS:** `~/Library/Application Support/rtk/config.toml`
+   - **Linux:** `~/.config/rtk/config.toml`
+
    ```toml
    [tee]
    enabled = true
@@ -51,6 +58,4 @@ For a full verification:
    max_file_size = 10485760
    ```
 
-   Confirm success with `rtk --version` and inform the user that RTK is now active for this Claude Code session.
-
-   Note: `exclude_commands` is not supported by the Claude Code thin-delegator hook — to bypass compression for a specific command, ask the user and use `rtk proxy <cmd>` instead.
+   Confirm success with `rtk --version` and inform the user that RTK is now active for this Claude Code session. To bypass compression for a specific command, ask the user and use `rtk proxy <cmd>` — there is no config-based exclusion supported for the Claude Code hook.

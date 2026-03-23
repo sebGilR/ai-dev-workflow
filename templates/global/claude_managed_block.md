@@ -70,7 +70,7 @@ RTK is an optional CLI proxy that compresses Bash tool call output before Claude
 | Codebase exploration | `rtk ls`, `rtk grep`, `rtk find`, `rtk git log` |
 | Build and test output | `rtk cargo build`, `rtk test`, `rtk lint`, `rtk tsc` |
 | Review artifacts | `rtk git diff`, `rtk lint`, `rtk tsc` |
-| PR workflow | `gh pr list`, `rtk git log` |
+| PR workflow | `rtk gh pr list`, `rtk git log` |
 
 ### When to bypass RTK (full output needed)
 
@@ -88,7 +88,7 @@ Only proceed with `rtk proxy <command>` after the user confirms. Situations wher
 When a command fails during implementation and the agent needs to preserve the raw output for reference, dump it to the branch logs directory. Look up the actual wip path from `status.json` (`wip_dir` field — e.g., `.wip/20260322-my-feature/`), then:
 ```bash
 mkdir -p <wip_dir>/logs
-rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/<timestamp>-<cmd>.log
+rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log
 ```
 **Never use `.wip/<branch-name>/logs/`** — the CLI enforces date-prefixed slugs. Always derive the path from `status.json`. The `logs/` directory is cleaned up automatically by `/wip-cleanup`.
 

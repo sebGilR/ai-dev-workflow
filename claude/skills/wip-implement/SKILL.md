@@ -53,10 +53,10 @@ This gives full raw output (passthrough — no compression applied). Do not bypa
 For persistent debugging context, dump the raw output to the branch `logs/` directory. First look up the actual wip directory from `status.json` (`wip_dir` field), then:
 ```bash
 mkdir -p <wip_dir>/logs
-rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/<timestamp>-<cmd>.log
+rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log
 ```
 Replace `<wip_dir>` with the date-prefixed path from `status.json` (e.g., `.wip/20260322-my-feature/`). The `logs/` directory is automatically cleaned up by `/wip-cleanup` — no manual deletion needed.
 
 **Automatic failure capture (RTK config):**
 
-If `~/.config/rtk/config.toml` has `[tee] mode = "failures"`, RTK already saves raw output on non-zero exit codes to its own tee directory. Reference that as a fallback when the agent needs the full output of the previous failed command.
+If RTK's config has `[tee] mode = "failures"`, RTK already saves raw output on non-zero exit codes to its own tee directory (location varies by OS — check `rtk config` for the path). Reference that as a fallback when the agent needs the full output of the previous failed command.

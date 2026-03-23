@@ -627,8 +627,8 @@ configure_adversarial_review() {
 }
 
 configure_rtk() {
-  # Skip if not interactive
-  [ -t 0 ] || return 0
+  # Skip if not interactive (no controlling terminal available)
+  [ -r /dev/tty ] || return 0
 
   # Already installed — nothing to do
   if command -v rtk &>/dev/null; then
@@ -640,7 +640,7 @@ configure_rtk() {
   echo "RTK is an optional token compression tool for Claude Code."
   echo "  It reduces Bash command output by 60-90% (build, test, git, lint, file commands)."
   echo "  It only intercepts Claude Code's internal Bash tool — your shell is unchanged."
-  echo "  Uninstall at any time: rtk init -g --uninstall && brew uninstall rtk"
+  echo "  Uninstall at any time: rtk init -g --uninstall  (then: brew uninstall rtk, or remove the binary)"
   echo ""
   printf "Install RTK? [y/N]: "
   read -r _rtk_choice </dev/tty || _rtk_choice=""
@@ -652,8 +652,10 @@ configure_rtk() {
         brew install rtk
       else
         echo "→ brew not found. Installing RTK via curl..."
-        curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-        export PATH="$HOME/.local/bin:$PATH"
+        echo "  Note: this downloads and executes a script from github.com/rtk-ai/rtk"
+        curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+        # Add common install locations to PATH so command -v rtk can find the binary
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
       fi
 
       if command -v rtk &>/dev/null; then
