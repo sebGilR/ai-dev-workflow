@@ -670,13 +670,14 @@ configure_rtk() {
         if [ ! -f "$_rtk_config" ]; then
           mkdir -p "$(dirname "$_rtk_config")"
           cat > "$_rtk_config" << 'RTKEOF'
-[hooks]
-exclude_commands = ["docker logs", "kubectl logs"]
+# RTK config for Claude Code
+# To bypass compression for a specific command, ask the user and use: rtk proxy <cmd>
 
 [tee]
 enabled = true
 mode = "failures"
 max_files = 50
+max_file_size = 10485760
 RTKEOF
           echo "→ RTK config written to: $_rtk_config"
         fi

@@ -42,15 +42,15 @@ For a full verification:
    rtk init -g
    ```
 
-   Then write the recommended config if `~/.config/rtk/config.toml` does not already exist:
+   Then write the recommended config if the config file does not already exist:
    ```toml
-   [hooks]
-   exclude_commands = ["docker logs", "kubectl logs"]
-
    [tee]
    enabled = true
    mode = "failures"
    max_files = 50
+   max_file_size = 10485760
    ```
 
    Confirm success with `rtk --version` and inform the user that RTK is now active for this Claude Code session.
+
+   Note: `exclude_commands` is not supported by the Claude Code thin-delegator hook — to bypass compression for a specific command, ask the user and use `rtk proxy <cmd>` instead.
