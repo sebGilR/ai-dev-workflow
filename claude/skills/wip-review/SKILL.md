@@ -99,4 +99,8 @@ The `aidw review-bundle` command already produces compact output. For any supple
 - `rtk lint` / `rtk lint biome` — linter output grouped by rule
 - `rtk cargo clippy` — Rust lint output
 
-These are most useful when the reviewer subagent runs supplementary checks outside the review bundle. If a check fails and the compressed output is insufficient to diagnose the cause, fall back to `rtk proxy <cmd>` for full output.
+These are most useful when the reviewer subagent runs supplementary checks outside the review bundle. If a check fails and the compressed output is insufficient to diagnose the cause, ask the user before bypassing:
+
+> "I need full output from `<cmd>` to [reason]. Run without RTK compression? [y/N]"
+
+Only use `rtk proxy <cmd>` after the user confirms.

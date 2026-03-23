@@ -36,13 +36,17 @@ When RTK is installed (`rtk init -g`), Bash commands are automatically compresse
 - `rtk lint` / `rtk tsc` — errors grouped by file
 - `rtk git diff` — condensed diff
 
-**On failure — bypass RTK for full context:**
+**On failure — ask permission to bypass RTK:**
 
-When a command fails and you need the complete output to diagnose the problem, use:
+When compressed output is insufficient to diagnose a failure, ask the user first:
+
+> "I need full output from `<cmd>` to [specific reason]. Run without RTK compression? [y/N]"
+
+If the user confirms, use:
 ```bash
 rtk proxy <failing-command> 2>&1
 ```
-This gives full raw output (passthrough — no compression applied).
+This gives full raw output (passthrough — no compression applied). Do not bypass silently.
 
 **Capturing failure logs to the branch context:**
 

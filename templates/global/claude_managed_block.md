@@ -74,10 +74,14 @@ RTK is an optional CLI proxy that compresses Bash tool call output before Claude
 
 ### When to bypass RTK (full output needed)
 
-Use `rtk proxy <command>` for full raw output when:
-- Debugging a failure that requires complete stack traces or sequential log context
-- Reading `docker logs` or `kubectl logs` during a live debug session
+**Always ask the user before bypassing RTK.** Do not unilaterally run `rtk proxy` — explain why you need full output and get confirmation first:
+
+> "I need full uncompressed output from `<cmd>` to [specific reason — e.g., 'see the full stack trace', 'read sequential log context']. Run without RTK compression? [y/N]"
+
+Only proceed with `rtk proxy <command>` after the user confirms. Situations where this is appropriate:
 - A command failed and the compressed output is insufficient to diagnose the cause
+- Debugging requires complete stack traces or sequential log context
+- Reading `docker logs` or `kubectl logs` during a live debug session
 
 ### Failure log convention
 
