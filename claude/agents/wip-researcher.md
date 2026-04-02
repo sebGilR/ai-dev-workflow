@@ -38,7 +38,7 @@ serena-query search_for_pattern '{"pattern":"TODO.*auth","paths_include_glob":"*
 ```
 Exit 0 → use the result. Exit 1 → fall back to step 3.
 
-Setup (one-time per repo): `uvx --from git+https://github.com/oraios/serena serena project create`
+Setup (one-time per repo): `uvx --from git+https://github.com/oraios/serena serena project generate-yml`
 
 ### 3. Navigation Strategy (grep + ranged Read)
 Last resort for symbolic searches when neither Serena option is available:
