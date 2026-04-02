@@ -626,6 +626,76 @@ configure_adversarial_review() {
   fi
 }
 
+configure_rtk() {
+  # Skip if not interactive (no controlling terminal available)
+  [ -r /dev/tty ] || return 0
+
+  # Already installed — nothing to do
+  if command -v rtk &>/dev/null; then
+    echo "RTK: already installed ($(rtk --version 2>/dev/null || echo 'version unknown'))"
+    return 0
+  fi
+
+  echo ""
+  echo "RTK is an optional token compression tool for Claude Code."
+  echo "  It reduces Bash command output by 60-90% (build, test, git, lint, file commands)."
+  echo "  It only intercepts Claude Code's internal Bash tool — your shell is unchanged."
+  echo "  Uninstall at any time: rtk init -g --uninstall  (then: brew uninstall rtk, or remove the binary)"
+  echo ""
+  printf "Install RTK? [y/N]: "
+  read -r _rtk_choice </dev/tty || _rtk_choice=""
+  echo ""
+
+  case "${_rtk_choice:-n}" in
+    y|Y|yes|Yes|YES)
+      if command -v brew &>/dev/null; then
+        brew install rtk
+      else
+        echo "→ brew not found. Installing RTK via curl..."
+        echo "  Note: this downloads and executes a script from github.com/rtk-ai/rtk"
+        curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+        # Add common install locations to PATH so command -v rtk can find the binary
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
+      fi
+
+      if command -v rtk &>/dev/null; then
+        rtk init -g
+        echo "→ RTK Claude Code hook enabled."
+
+        # Write recommended config if missing
+        local _rtk_config
+        if [ "$(uname)" = "Darwin" ]; then
+          _rtk_config="$HOME/Library/Application Support/rtk/config.toml"
+        else
+          _rtk_config="$HOME/.config/rtk/config.toml"
+        fi
+        if [ ! -f "$_rtk_config" ]; then
+          mkdir -p "$(dirname "$_rtk_config")"
+          cat > "$_rtk_config" << 'RTKEOF'
+# RTK config for Claude Code
+# To bypass compression for a specific command, ask the user and use: rtk proxy <cmd>
+
+[tee]
+enabled = true
+mode = "failures"
+max_files = 50
+max_file_size = 10485760
+RTKEOF
+          echo "→ RTK config written to: $_rtk_config"
+        fi
+
+        echo "RTK installed: $(rtk --version 2>/dev/null || echo 'ok')"
+      else
+        echo "WARNING: RTK install may have failed — 'rtk' not found on PATH." >&2
+        echo "         Try: brew install rtk && rtk init -g" >&2
+      fi
+      ;;
+    *)
+      echo "RTK skipped. To install later: brew install rtk && rtk init -g"
+      ;;
+  esac
+}
+
 configure_repo_gitignore() {
   # Skip if workspace root is not a git repo or not running interactively
   [ -d "$WORKSPACE_ROOT/.git" ] || return 0
@@ -705,6 +775,7 @@ configure_repo_gitignore() {
 write_env_file
 patch_shell_profile
 configure_adversarial_review
+configure_rtk
 configure_repo_gitignore
 
 echo

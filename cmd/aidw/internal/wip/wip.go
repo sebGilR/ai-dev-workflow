@@ -568,6 +568,45 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 	return &ClearWipResult{Kept: keep, Deleted: deleted}, nil
 }
 
+// ClearOtherBranches deletes all .wip branch dirs except the current branch's
+// dir. Unlike ClearWip (which keeps the most-recently-dated dir globally),
+// this command identifies the "keep" dir by the current git branch. All files
+// inside the kept dir are preserved.
+//
+// Side effect: calls EnsureBranchState, which creates and seeds the current
+// branch .wip/ directory if it does not already exist.
+func ClearOtherBranches(repoPath string) (*ClearWipResult, error) {
+	state, err := EnsureBranchState(repoPath, "")
+	if err != nil {
+		return nil, err
+	}
+
+	keepDirName := filepath.Base(state.WipDir)
+	wipBase := filepath.Dir(state.WipDir)
+
+	entries, err := os.ReadDir(wipBase)
+	if err != nil {
+		return nil, err
+	}
+
+	deleted := []string{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if e.Name() == keepDirName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(wipBase, e.Name())); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, e.Name())
+	}
+
+	sort.Strings(deleted)
+	return &ClearWipResult{Kept: &keepDirName, Deleted: deleted}, nil
+}
+
 // EnsureRepoResult is returned by EnsureRepo.
 type EnsureRepoResult struct {
 	Repo      string `json:"repo"`
