@@ -348,6 +348,179 @@ func TestClearWip_EmptyWip(t *testing.T) {
 	}
 }
 
+// ── ClearOtherBranches ───────────────────────────────────────────────────────
+
+func TestClearOtherBranches_KeepsCurrentBranchDir(t *testing.T) {
+	dir := initGitRepo(t)
+
+	// Get the current branch's wip dir first
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	// Add an extra branch dir to be deleted
+	wipBase := filepath.Dir(state.WipDir)
+	other := filepath.Join(wipBase, "20260101-other-branch")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ClearOtherBranches(dir)
+	if err != nil {
+		t.Fatalf("ClearOtherBranches: %v", err)
+	}
+
+	keepName := filepath.Base(state.WipDir)
+	if result.Kept == nil || *result.Kept != keepName {
+		t.Errorf("expected kept=%s, got %v", keepName, result.Kept)
+	}
+
+	// Current branch dir must remain
+	if _, err := os.Stat(state.WipDir); err != nil {
+		t.Errorf("current branch dir should still exist: %v", err)
+	}
+	// Other dir must be gone
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Error("other branch dir should have been deleted")
+	}
+	if len(result.Deleted) != 1 || result.Deleted[0] != "20260101-other-branch" {
+		t.Errorf("expected Deleted=[20260101-other-branch], got %v", result.Deleted)
+	}
+}
+
+func TestClearOtherBranches_PreservesAllFilesInCurrentDir(t *testing.T) {
+	dir := initGitRepo(t)
+
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	// Write several files into the current branch dir
+	files := []string{"plan.md", "context.md", "execution.md", "pr.md", "extra.txt"}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(state.WipDir, f), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Add another branch dir to be deleted
+	wipBase := filepath.Dir(state.WipDir)
+	other := filepath.Join(wipBase, "20260101-other-branch")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ClearOtherBranches(dir); err != nil {
+		t.Fatalf("ClearOtherBranches: %v", err)
+	}
+
+	// All files in kept dir must survive
+	for _, f := range files {
+		p := filepath.Join(state.WipDir, f)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("file %s should still exist: %v", f, err)
+		}
+	}
+}
+
+func TestClearOtherBranches_DeletesLegacyDirs(t *testing.T) {
+	dir := initGitRepo(t)
+
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	// Add a legacy (undated) dir
+	wipBase := filepath.Dir(state.WipDir)
+	legacy := filepath.Join(wipBase, "old-branch-name")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ClearOtherBranches(dir)
+	if err != nil {
+		t.Fatalf("ClearOtherBranches: %v", err)
+	}
+
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Error("legacy dir should have been deleted")
+	}
+	found := false
+	for _, d := range result.Deleted {
+		if d == "old-branch-name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected old-branch-name in Deleted, got %v", result.Deleted)
+	}
+}
+
+func TestClearOtherBranches_NothingToDelete(t *testing.T) {
+	dir := initGitRepo(t)
+
+	// Initialize the current branch so .wip exists
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	result, err := ClearOtherBranches(dir)
+	if err != nil {
+		t.Fatalf("ClearOtherBranches on empty wip: %v", err)
+	}
+
+	keepName := filepath.Base(state.WipDir)
+	if result.Kept == nil || *result.Kept != keepName {
+		t.Errorf("expected kept=%s, got %v", keepName, result.Kept)
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("expected no deletions, got %v", result.Deleted)
+	}
+}
+
+func TestClearOtherBranches_DeletesMultipleDirsAndSorts(t *testing.T) {
+	dir := initGitRepo(t)
+
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	wipBase := filepath.Dir(state.WipDir)
+	stale := []string{"20260101-aaa-branch", "20260201-bbb-branch", "20260301-ccc-branch"}
+	for _, name := range stale {
+		if err := os.MkdirAll(filepath.Join(wipBase, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := ClearOtherBranches(dir)
+	if err != nil {
+		t.Fatalf("ClearOtherBranches: %v", err)
+	}
+
+	if len(result.Deleted) != len(stale) {
+		t.Fatalf("expected %d deletions, got %d: %v", len(stale), len(result.Deleted), result.Deleted)
+	}
+	for i, name := range stale {
+		if result.Deleted[i] != name {
+			t.Errorf("Deleted[%d]: expected %s, got %s", i, name, result.Deleted[i])
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, name)); !os.IsNotExist(err) {
+			t.Errorf("dir %s should have been deleted", name)
+		}
+	}
+
+	// Current branch dir must still exist
+	if _, err := os.Stat(state.WipDir); err != nil {
+		t.Errorf("current branch dir should still exist: %v", err)
+	}
+}
+
 // ── CleanupBranch ─────────────────────────────────────────────────────────────
 
 func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {

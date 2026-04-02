@@ -37,7 +37,22 @@ var clearWipCmd = &cobra.Command{
 	},
 }
 
+var clearOthersCmd = &cobra.Command{
+	Use:   "clear-others <path>",
+	Short: "Delete all .wip branch dirs except the current branch's dir",
+	Args:  cobra.ExactArgs(1),
+	Run: func(c *cobra.Command, args []string) {
+		result, err := wip.ClearOtherBranches(args[0])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[aidw]", err)
+			os.Exit(1)
+		}
+		PrintJSON(result)
+	},
+}
+
 func init() {
 	Root.AddCommand(cleanupBranchCmd)
 	Root.AddCommand(clearWipCmd)
+	Root.AddCommand(clearOthersCmd)
 }
