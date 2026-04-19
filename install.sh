@@ -772,11 +772,35 @@ configure_repo_gitignore() {
   esac
 }
 
+configure_serena_project() {
+  # Only run when the workspace root is a git repo
+  [ -d "$WORKSPACE_ROOT/.git" ] || return 0
+
+  if ! command -v uvx &>/dev/null; then
+    return 0
+  fi
+
+  local serena_yml="$WORKSPACE_ROOT/.serena/project.yml"
+  if [ -f "$serena_yml" ]; then
+    echo "→ Serena project already registered: $serena_yml (skipping)"
+    return 0
+  fi
+
+  echo "→ Registering workspace with Serena..."
+  if (cd "$WORKSPACE_ROOT" && uvx --from git+https://github.com/oraios/serena@v0.1.4 serena project generate-yml 2>&1); then
+    echo "→ Serena project registered: $serena_yml"
+  else
+    echo "  Warning: Serena project registration failed. Run manually from the repo root:" >&2
+    echo "  uvx --from git+https://github.com/oraios/serena@v0.1.4 serena project generate-yml" >&2
+  fi
+}
+
 write_env_file
 patch_shell_profile
 configure_adversarial_review
 configure_rtk
 configure_repo_gitignore
+configure_serena_project
 
 echo
 echo "ai-dev-workflow installed."
@@ -787,9 +811,6 @@ echo "Suggested next step inside a repo: /wip-start"
 echo ""
 echo "Repository intelligence tools:"
 echo "  Serena   → semantic code navigation (symbol lookup, call chains, file discovery)"
-echo "             To enable fast symbol lookup via serena-query, register this repo:"
-echo "             uvx --from git+https://github.com/oraios/serena@v0.1.4 serena project create"
-echo "             (Run from the repo root. One-time per repo.)"
 echo "             Language servers are installed automatically when detected."
 echo "             Serena calls will be logged to ~/.claude/serena.log"
 echo "  Context7 → up-to-date library documentation (API usage, framework examples)"
