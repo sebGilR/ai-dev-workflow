@@ -41,7 +41,7 @@ Use `mcp__serena__*` tools directly — not through a subagent — for any of th
 | Find a class/function/method definition | `mcp__serena__find_symbol` with `name_path_pattern` |
 | Find all usages/callers of a symbol | `mcp__serena__find_referencing_symbols` (needs `name_path` + `relative_path` from find_symbol first) |
 | Understand a file's structure without reading it | `mcp__serena__get_symbols_overview` |
-| Search for a pattern across the codebase | `mcp__serena__search_for_pattern` |
+| Search for a symbol pattern across the codebase | `mcp__serena__search_for_pattern` |
 
 ### When NOT to use Serena (fall back to Grep/Read/Glob)
 

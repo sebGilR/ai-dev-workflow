@@ -1,7 +1,7 @@
 ---
 name: wip-planner
 description: Plan implementation work for the current ticket or branch with minimal noise. Use when creating or refreshing implementation plans.
-tools: Read, Glob, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview
+tools: Read, Glob, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern
 model: inherit
 permissionMode: plan
 ---
