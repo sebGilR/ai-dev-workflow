@@ -73,10 +73,7 @@ install_managed_script() {
 }
 
 install_managed_script "templates/global/scripts/statusline.sh" "statusline.sh"
-install_managed_script "templates/global/scripts/claude-watch.sh" "claude-watch.sh"
 install_managed_script "templates/global/scripts/save-wip-snapshot.sh" "save-wip-snapshot.sh"
-install_managed_script "templates/global/scripts/claude-fetch-usage.sh" "claude-fetch-usage.sh"
-install_managed_script "templates/global/scripts/start-claude-watch.sh" "start-claude-watch.sh"
 
 # Install serena log hook (serena-query lives in bin/ and is reachable via the
 # ~/.claude/ai-dev-workflow symlink once PATH is configured in aidw.env.sh).

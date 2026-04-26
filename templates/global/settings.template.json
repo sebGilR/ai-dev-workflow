@@ -4,17 +4,6 @@
     "command": "~/.claude/statusline.sh"
   },
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/start-claude-watch.sh"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "*",

@@ -1,7 +1,7 @@
 ---
 name: wip-reviewer
 description: Review changes for correctness, maintainability, and risk. Use proactively after code changes or when consolidating review findings.
-tools: Read, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview
+tools: Read, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern
 model: inherit
 permissionMode: plan
 ---

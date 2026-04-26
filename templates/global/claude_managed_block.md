@@ -61,27 +61,26 @@ the latest documentation before generating code. This reduces outdated API usage
 
 ## Token Compression (RTK)
 
-RTK is an optional CLI proxy that compresses Bash tool call output before Claude processes it (60-90% token reduction). When installed (`rtk init -g`), it transparently rewrites Bash commands. Claude Code's built-in Read, Grep, and Glob tools are **not** affected.
+RTK is an optional CLI proxy that compresses Bash tool call output (60-90% token reduction). When installed (`rtk init -g`), it transparently rewrites commands. Claude Code's built-in Read, Grep, and Glob tools are **not** affected.
 
-### When to use RTK (high value)
+### Selective RTK usage (high value)
 
-| Situation | Commands |
-|-----------|----------|
-| Codebase exploration | `rtk ls`, `rtk grep`, `rtk find`, `rtk git log` |
-| Build and test output | `rtk cargo build`, `rtk test`, `rtk lint`, `rtk tsc` |
-| Review artifacts | `rtk git diff`, `rtk lint`, `rtk tsc` |
-| PR workflow | `rtk gh pr list`, `rtk git log` |
+RTK is most valuable when commands produce large outputs that would otherwise consume your context window:
+
+| Situation | Recommended Commands |
+|-----------|----------------------|
+| **Deep Research** | `rtk ls -R`, `rtk grep`, `rtk find` |
+| **History Review** | `rtk git log`, `rtk git show` |
+| **Noisy Builds** | `rtk cargo build`, `rtk npm install`, `rtk go test ./...` |
+| **Large Diffs** | `rtk git diff HEAD`, `rtk git diff main...` |
 
 ### When to bypass RTK (full output needed)
 
-**Always ask the user before bypassing RTK.** Do not unilaterally run `rtk proxy` — explain why you need full output and get confirmation first:
+**Always ask the user before bypassing RTK.** If you need full uncompressed output to see complete stack traces or sequential log context, explain why and get confirmation:
 
-> "I need full uncompressed output from `<cmd>` to [specific reason — e.g., 'see the full stack trace', 'read sequential log context']. Run without RTK compression? [y/N]"
+> "I need full uncompressed output from `<cmd>` to [specific reason]. Run without RTK compression? [y/N]"
 
-Only proceed with `rtk proxy <command>` after the user confirms. Situations where this is appropriate:
-- A command failed and the compressed output is insufficient to diagnose the cause
-- Debugging requires complete stack traces or sequential log context
-- Reading `docker logs` or `kubectl logs` during a live debug session
+Only proceed with `rtk proxy <command>` after the user confirms.
 
 ### Failure log convention
 

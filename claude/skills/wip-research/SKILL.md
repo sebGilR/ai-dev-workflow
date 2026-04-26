@@ -25,14 +25,11 @@ Keep the notes compact and continuation-friendly.
 
 ## RTK Usage (Token Compression)
 
-When RTK is installed (`rtk init -g`), the Claude Code Bash hook automatically rewrites common commands (`ls`, `grep`, `git`, etc.) to their RTK equivalents — no explicit invocation needed. If you want to call RTK directly (e.g., to force compression on a command the hook doesn't cover), use:
+When RTK is installed (`rtk init -g`), common commands are automatically compressed. **In large codebases**, using RTK is essential to avoid hitting context limits during research:
 
-- `rtk ls <dir>` — compact directory tree
-- `rtk grep "<pattern>" <dir>` — grouped search results
-- `rtk find "<glob>" <dir>` — condensed file discovery
-- `rtk git log --oneline -20` — compact commit history
-- `rtk git diff --stat` — condensed diff summary
+- `rtk ls -R <dir>` — compact recursive directory tree
+- `rtk grep "<pattern>"` — grouped search results with snippet deduplication
+- `rtk find "<glob>"` — condensed file discovery
+- `rtk git log -n 50` — compact history summary
 
-Note: explicit `rtk <cmd>` calls require RTK to be installed — they are not transparent fallbacks. If RTK is absent, use the raw command equivalents directly.
-
-If full output is needed from a command (e.g., to debug an unexpected result), ask the user first before running `rtk proxy <cmd>` to bypass compression.
+If RTK is absent, use the raw command equivalents directly. If you need full uncompressed output to see complete context, ask the user before running `rtk proxy <cmd>`.

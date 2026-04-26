@@ -118,64 +118,11 @@ format_reset_time() {
   printf '%s' "$raw"
 }
 
-usage_cache_get() {
-  local key="$1"
-  if [[ ! -f "$CLAUDE_USAGE_CACHE" ]]; then
-    return 1
-  fi
-  # Skip re-validation if the file is already known to be corrupted.
-  if [[ "${cache_corrupted:-0}" -eq 1 ]]; then
-    return 1
-  fi
-  # Validate JSON before extracting values. If parse fails, return 1 (error).
-  if ! jq empty "$CLAUDE_USAGE_CACHE" 2>/dev/null; then
-    return 1
-  fi
-  jq -r "$key // empty" 2>/dev/null "$CLAUDE_USAGE_CACHE"
-}
-
 used_pct="$(format_session_pct "$used_pct_raw")"
 
 [[ "$total_in_raw"  =~ ^[0-9]+$ ]] || total_in_raw=0
 [[ "$total_out_raw" =~ ^[0-9]+$ ]] || total_out_raw=0
 total_tokens=$(( total_in_raw + total_out_raw ))
-
-# Check if cache file exists but is corrupted
-cache_corrupted=0
-if [[ -f "$CLAUDE_USAGE_CACHE" ]] && ! jq empty "$CLAUDE_USAGE_CACHE" 2>/dev/null; then
-  cache_corrupted=1
-fi
-
-source_label="$(usage_cache_get '.source')"
-
-# Only show account-level usage when OAuth data is present (subscribers on macOS).
-# API-only users and non-macOS subscribers have no meaningful daily limit to display.
-if [[ "$source_label" == "oauth" ]]; then
-  usage_pct="$(usage_cache_get '.usage_percentage')"
-  daily_reset_at="$(usage_cache_get '.daily_reset_at')"
-  weekly_reset_at="$(usage_cache_get '.weekly_reset_at')"
-  seven_day_pct="$(usage_cache_get '.seven_day_pct')"
-  usage_pct_display="$(format_usage_pct "$usage_pct")"
-  seven_day_pct_display="$(format_usage_pct "$seven_day_pct")"
-
-  usage_line="$(dim "Claude usage:") $(color_pct "$usage_pct" "${usage_pct_display}%")"
-
-  if [[ -n "$seven_day_pct_display" ]]; then
-    usage_line+=" $(dim "|") $(dim "7d") $(color_pct "$seven_day_pct" "${seven_day_pct_display}%")"
-  fi
-
-  if [[ -n "$daily_reset_at" ]]; then
-    usage_line+=" $(dim "| resets $(format_reset_time "$daily_reset_at")")"
-  fi
-
-  if [[ -n "$weekly_reset_at" && "$weekly_reset_at" != "$daily_reset_at" ]]; then
-    usage_line+=" $(dim "| 7d resets $(format_reset_time "$weekly_reset_at")")"
-  fi
-
-  printf "%b\n" "$usage_line"
-elif (( cache_corrupted )); then
-  printf "%b\n" "$(dim "Claude usage:") ${c_red}cache error${c_reset}"
-fi
 
 # Session line: context window % + total tokens consumed this session
 session_line="$(dim "Session:") $(color_pct "$used_pct" "${used_pct}%")"

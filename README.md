@@ -37,11 +37,8 @@ The installer creates or updates:
 | `~/.claude/settings.json` | Merged permission rules |
 | `~/.claude/CLAUDE.md` | Managed workflow block (non-destructive merge) |
 | `~/.claude/ai-dev-workflow` | Symlink pointing to this repo |
-| `~/.claude/statusline.sh` | Claude statusline renderer (usage summary + session token summary) |
-| `~/.claude/claude-watch.sh` | Daily token watcher (20s loop, threshold warnings at 75/85/90%) |
-| `~/.claude/start-claude-watch.sh` | SessionStart hook — launches watcher and tracks per-session reference count |
-| `~/.claude/claude-fetch-usage.sh` | OAuth usage poller — fetches real utilization % from Anthropic API (macOS) |
-| `~/.claude/save-wip-snapshot.sh` | Snapshot helper used by watcher and Claude hooks |
+| `~/.claude/statusline.sh` | Claude statusline renderer (session token summary) |
+| `~/.claude/save-wip-snapshot.sh` | Snapshot helper used by Claude hooks |
 
 Claude Code picks up skills and agents natively because they live in the standard user-level directories.
 
@@ -142,59 +139,6 @@ To continue after a break:
 ```
 /wip-resume
 ```
-
-### 5. Optional: token monitor + autosave
-
-Run this in a second terminal while working:
-
-```bash
-~/.claude/claude-watch.sh
-```
-
-On macOS with an active Claude Code session, `claude-watch.sh` automatically delegates to `claude-fetch-usage.sh` to fetch real utilization % from the Anthropic OAuth API. No extra setup needed — it happens transparently as long as you are logged in to Claude Code. On non-macOS systems or if the token is unavailable, the watcher falls back to a transcript-based estimate.
-
-Defaults:
-
-- Daily limit: `200000` tokens
-- Warn at `75%`
-- Autosave snapshot at `85%` (`warn`)
-- Final autosave snapshot at `90%` (`critical`)
-
-What this currently powers:
-
-- `~/.claude/claude-fetch-usage.sh` (macOS) calls the Anthropic OAuth API and writes `~/.claude/usage-status.json` with real utilization %
-- `~/.claude/claude-watch.sh` delegates to the fetcher, falls back to transcript-based estimate on non-macOS or auth failure, and fires threshold warnings at 75/85/90%
-- `~/.claude/statusline.sh` reads the cache and shows Claude account usage plus session token percentage
-
-Statusline shape when OAuth data is available (macOS):
-
-```text
-Claude usage: 17% | 7d 72% | resets 2026-03-09T02:00:00+00:00
-Session: 38%
-```
-
-Statusline shape when falling back to transcript estimate:
-
-```text
-Claude usage: 142k / 200k today | 71% | source transcript-estimate
-Session: 38%
-```
-
-If the watcher is not running or the cache file is missing, the statusline falls back to:
-
-```text
-Claude usage: unavailable
-Session: 38%
-```
-
-Note: the OAuth endpoint used by `claude-fetch-usage.sh` is unofficial and undocumented. It relies on the macOS Keychain for the OAuth token and may change without notice.
-
-Snapshots are written in the active repo under `.wip/<branch>/` and include:
-
-- `research.md`
-- `plan.md`
-- `handoff.md`
-- `progress.log`
 
 ---
 
