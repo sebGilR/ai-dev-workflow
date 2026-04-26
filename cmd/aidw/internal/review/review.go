@@ -450,21 +450,19 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 	passName := providerName + "-adversarial"
 	statusPath := wipDir + "/status.json"
 	if _, serr := os.Stat(statusPath); serr == nil {
-		var st map[string]any
+		var st wip.Status
 		if rerr := util.ReadJSON(statusPath, &st); rerr == nil {
-			passes, _ := st["review_passes"].([]any)
 			alreadyPresent := false
-			for _, p := range passes {
+			for _, p := range st.ReviewPasses {
 				if p == passName {
 					alreadyPresent = true
 					break
 				}
 			}
 			if !alreadyPresent {
-				passes = append(passes, passName)
-				st["review_passes"] = passes
+				st.ReviewPasses = append(st.ReviewPasses, passName)
 			}
-			st["updated_at"] = util.NowISO()
+			st.UpdatedAt = util.NowISO()
 			_ = util.WriteJSON(statusPath, st)
 		}
 	}

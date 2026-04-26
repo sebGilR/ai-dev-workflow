@@ -128,12 +128,12 @@ func TestEnsureBranchState_SeedsStatusJSON(t *testing.T) {
 	}
 
 	// stage must be "started" on fresh init
-	stage, _ := state.Status["stage"].(string)
+	stage := state.Status.Stage
 	if stage != "started" {
 		t.Errorf("expected stage=started, got %q", stage)
 	}
 	// branch must match what we passed
-	branch, _ := state.Status["branch"].(string)
+	branch := state.Status.Branch
 	if branch != "seed-test" {
 		t.Errorf("expected branch=seed-test, got %q", branch)
 	}
@@ -186,7 +186,7 @@ func TestSetStage_ValidTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetStage: %v", err)
 	}
-	stage, _ := result["stage"].(string)
+	stage := result.Stage
 	if stage != "planned" {
 		t.Errorf("expected stage=planned, got %q", stage)
 	}
@@ -224,8 +224,8 @@ func TestSetStage_SkipVerificationBypasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetStage with skip-verification: %v", err)
 	}
-	if result["stage"] != "planned" {
-		t.Errorf("expected planned, got %v", result["stage"])
+	if result.Stage != "planned" {
+		t.Errorf("expected planned, got %v", result.Stage)
 	}
 }
 

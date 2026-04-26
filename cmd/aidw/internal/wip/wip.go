@@ -32,12 +32,24 @@ var stages = map[string]bool{
 	"pr-prep":      true,
 }
 
+// Status represents the state recorded in status.json.
+type Status struct {
+	Repo              string   `json:"repo"`
+	RepoPath          string   `json:"repo_path"`
+	Branch            string   `json:"branch"`
+	Stage             string   `json:"stage"`
+	CreatedAt         string   `json:"created_at"`
+	UpdatedAt         string   `json:"updated_at"`
+	LastCompletedStep *string  `json:"last_completed_step"`
+	ReviewPasses      []string `json:"review_passes"`
+}
+
 // BranchState contains the resolved state for a branch's WIP directory.
 type BranchState struct {
 	Repo   string         `json:"repo"`
 	Branch string         `json:"branch"`
 	WipDir string         `json:"wip_dir"`
-	Status map[string]any `json:"status"`
+	Status Status `json:"status"`
 }
 
 // EnsureBranchState ensures the .wip/<branch> directory exists and is properly initialized.
@@ -127,7 +139,7 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 
 	// Load or create status.json
 	statusPath := filepath.Join(wipDir, "status.json")
-	var status map[string]any
+	var status Status
 	if _, err := os.Stat(statusPath); os.IsNotExist(err) {
 		status = initialStatus(filepath.Base(top), top, branchName)
 		if err := util.WriteJSON(statusPath, status); err != nil {
@@ -138,20 +150,20 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 			return nil, err
 		}
 		changed := false
-		if status["repo"] != filepath.Base(top) {
-			status["repo"] = filepath.Base(top)
+		if status.Repo != filepath.Base(top) {
+			status.Repo = filepath.Base(top)
 			changed = true
 		}
-		if status["repo_path"] != top {
-			status["repo_path"] = top
+		if status.RepoPath != top {
+			status.RepoPath = top
 			changed = true
 		}
-		if status["branch"] != branchName {
-			status["branch"] = branchName
+		if status.Branch != branchName {
+			status.Branch = branchName
 			changed = true
 		}
 		if changed {
-			status["updated_at"] = util.NowISO()
+			status.UpdatedAt = util.NowISO()
 			if err := util.WriteJSON(statusPath, status); err != nil {
 				return nil, err
 			}
@@ -209,7 +221,7 @@ func VerifyWipFile(wipDir, filename string) (bool, string) {
 }
 
 // SetStageResult is returned by SetStage.
-type SetStageResult map[string]any
+type SetStageResult *Status
 
 // SetStage transitions the workflow to a new stage.
 func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, error) {
@@ -242,14 +254,14 @@ func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, er
 	}
 
 	statusPath := filepath.Join(state.WipDir, "status.json")
-	var status map[string]any
+	var status Status
 	if err := util.ReadJSON(statusPath, &status); err != nil {
 		return nil, err
 	}
 
-	status["stage"] = stage
-	status["updated_at"] = util.NowISO()
-	status["last_completed_step"] = stage
+	status.Stage = stage
+	status.UpdatedAt = util.NowISO()
+	status.LastCompletedStep = &stage
 
 	if err := util.WriteJSON(statusPath, status); err != nil {
 		return nil, err
@@ -263,7 +275,7 @@ func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, er
 		_, _ = WriteContextSummary(repoPath)
 	}
 
-	return status, nil
+	return (*Status)(&status), nil
 }
 
 // ContextSummaryResult is returned by WriteContextSummary.
@@ -288,7 +300,7 @@ func WriteContextSummary(repoPath string) (*ContextSummaryResult, error) {
 		return nil, err
 	}
 
-	branch, _ := state.Status["branch"].(string)
+	branch := state.Status.Branch
 	return &ContextSummaryResult{
 		SummaryPath: summaryPath,
 		SizeBytes:   len(summary),
@@ -323,9 +335,9 @@ func SummarizeStatus(repoPath string) (string, error) {
 	execution := firstNonEmpty(filepath.Join(state.WipDir, "execution.md"), "")
 	context := firstNonEmpty(filepath.Join(state.WipDir, "context.md"), "")
 
-	branch, _ := state.Status["branch"].(string)
-	stage, _ := state.Status["stage"].(string)
-	updatedAt, _ := state.Status["updated_at"].(string)
+	branch := state.Status.Branch
+	stage := state.Status.Stage
+	updatedAt := state.Status.UpdatedAt
 
 	return fmt.Sprintf(`Repo: %s
 Branch: %s
@@ -726,17 +738,16 @@ func seedFileIfMissing(path, content string) error {
 	return nil
 }
 
-func initialStatus(repoName, repoPath, branch string) map[string]any {
+func initialStatus(repoName, repoPath, branch string) Status {
 	now := util.NowISO()
-	return map[string]any{
-		"repo":                repoName,
-		"repo_path":           repoPath,
-		"branch":              branch,
-		"stage":               "started",
-		"created_at":          now,
-		"updated_at":          now,
-		"last_completed_step": nil,
-		"review_passes":       []any{},
+	return Status{
+		Repo:         repoName,
+		RepoPath:     repoPath,
+		Branch:       branch,
+		Stage:        "started",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		ReviewPasses: []string{},
 	}
 }
 
@@ -786,10 +797,10 @@ func trim(text string, limit int) string {
 	return strings.TrimSpace(string(runes[:limit])) + " ..."
 }
 
-func generateSummaryText(files map[string]string, status map[string]any) string {
-	branch, _ := status["branch"].(string)
-	stage, _ := status["stage"].(string)
-	updated, _ := status["updated_at"].(string)
+func generateSummaryText(files map[string]string, status Status) string {
+	branch := status.Branch
+	stage := status.Stage
+	updated := status.UpdatedAt
 
 	lines := []string{
 		"# Workflow Summary",

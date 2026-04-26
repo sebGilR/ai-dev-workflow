@@ -500,10 +500,9 @@ func TestAdversarialReview_ReviewPassesName(t *testing.T) {
 	// Verify status.json was NOT updated with a pass for not_installed.
 	statusPath := filepath.Join(state.WipDir, "status.json")
 	if _, serr := os.Stat(statusPath); serr == nil {
-		var st map[string]any
+		var st wip.Status
 		if rerr := util.ReadJSON(statusPath, &st); rerr == nil {
-			passes, _ := st["review_passes"].([]any)
-			for _, p := range passes {
+			for _, p := range st.ReviewPasses {
 				if p == "gemini-adversarial" {
 					t.Error("gemini-adversarial pass should not be written for not_installed result")
 				}
