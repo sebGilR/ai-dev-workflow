@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+
+	"aidw/cmd/aidw/internal/util"
 )
 
 // mcpServers contains the hardcoded servers to add/update.
@@ -92,12 +94,7 @@ func mergeMCPJSONToPath(mcpPath string, w io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(mcpPath), 0o755); err != nil {
 		return err
 	}
-	out, _ := json.MarshalIndent(data, "", "  ")
-	tmp := mcpPath + ".tmp"
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, mcpPath); err != nil {
+	if err := util.WriteJSON(mcpPath, data); err != nil {
 		return err
 	}
 
