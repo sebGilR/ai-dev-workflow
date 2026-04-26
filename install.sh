@@ -177,42 +177,14 @@ generate_github_agents() {
   local dest_dir="$WORKSPACE_ROOT/.github/agents"
 
   [ -d "$src_dir" ] || return 0
-  mkdir -p "$dest_dir"
 
-  for src_file in "$src_dir"/*.md; do
-    [ -f "$src_file" ] || continue
-    local agent_name
-    agent_name="$(basename "$src_file")"
-    local dest_file="$dest_dir/$agent_name"
+  if [ ! -x "$SCRIPT_DIR/bin/aidw" ]; then
+    echo "ERROR: aidw binary not found at $SCRIPT_DIR/bin/aidw" >&2
+    return 1
+  fi
 
-    # Strip "### 1. Serena MCP ..." sub-section (everything from that heading
-    # through the blank line before the next ### or ## heading, or end of block).
-    local stripped
-    stripped="$(awk '
-      /^### 1\. Serena MCP/ { skip=1; next }
-      skip && /^###/ { skip=0 }
-      skip && /^## / { skip=0 }
-      skip { next }
-      /^### [0-9]+\./ { sub(/^### [0-9]+\./, "### " ++n "."); print; next }
-      { print }
-    ' "$src_file")"
-
-    # Skip write if content is identical (idempotent).
-    if [ -f "$dest_file" ] && [ "$stripped" = "$(cat "$dest_file")" ]; then
-      continue
-    fi
-
-    if [ -f "$dest_file" ]; then
-      echo "WARNING: Overwriting $dest_file (content differs from generated version)." >&2
-      echo "         Any customizations in this file will be lost." >&2
-    fi
-    printf '%s\n' "$stripped" > "$dest_file"
-  done
+  "$SCRIPT_DIR/bin/aidw" generate-github-agents --src "$src_dir" --dest "$dest_dir"
 }
-
-if [ -d "$WORKSPACE_ROOT/.git" ]; then
-  generate_github_agents
-fi
 
 # ---------------------------------------------------------------------------
 # Auto-install Go locally if not present
@@ -334,6 +306,11 @@ fi
 # Bootstrap the workspace if WORKSPACE_ROOT is set.
 if [ -n "$WORKSPACE_ROOT" ]; then
   "$SCRIPT_DIR/bin/aidw" bootstrap-workspace "$WORKSPACE_ROOT"
+fi
+
+# Generate GitHub agents now that aidw is built
+if [ -d "$WORKSPACE_ROOT/.git" ]; then
+  generate_github_agents
 fi
 
 # ---------------------------------------------------------------------------

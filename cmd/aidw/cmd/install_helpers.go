@@ -14,12 +14,32 @@ func init() {
 	Root.AddCommand(mergeSettingsCmd)
 	Root.AddCommand(mergeMCPJSONCmd)
 	Root.AddCommand(updateGlobalGitignoreCmd)
+	Root.AddCommand(generateGithubAgentsCmd)
 
 	mergeCLAUDEMdCmd.Flags().String("claude-md", "", "Path to CLAUDE.md")
 	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file")
 	mergeSettingsCmd.Flags().String("settings", "", "Path to settings.json")
 	mergeSettingsCmd.Flags().String("template", "", "Path to template JSON")
 	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
+	generateGithubAgentsCmd.Flags().String("src", "", "Source directory containing agent markdown files")
+	generateGithubAgentsCmd.Flags().String("dest", "", "Destination directory for generated agents")
+}
+
+var generateGithubAgentsCmd = &cobra.Command{
+	Use:   "generate-github-agents",
+	Short: "Generate .github/agents/ from claude/agents/ stripping MCP sections",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		src, _ := cmd.Flags().GetString("src")
+		dest, _ := cmd.Flags().GetString("dest")
+		if src == "" || dest == "" {
+			return fmt.Errorf("--src and --dest are required")
+		}
+		if err := install.GenerateGithubAgents(src, dest); err != nil {
+			fmt.Fprintln(os.Stderr, "generate-github-agents:", err)
+			os.Exit(1)
+		}
+		return nil
+	},
 }
 
 var mergeCLAUDEMdCmd = &cobra.Command{
