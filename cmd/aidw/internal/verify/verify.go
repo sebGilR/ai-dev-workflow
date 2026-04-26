@@ -2,12 +2,14 @@
 package verify
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	embedfs "aidw"
 	"aidw/cmd/aidw/internal/config"
@@ -281,18 +283,65 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	}
 
 	provider := cfg.ResolvedProvider()
+	installed := false
+	var checkCmd *exec.Cmd
+
 	switch provider {
 	case "gemini":
-		warn("adversarial: gemini CLI installed", commandExists("gemini"),
+		installed = commandExists("gemini")
+		warn("adversarial: gemini CLI installed", installed,
 			"see https://github.com/google-gemini/gemini-cli")
+		if installed {
+			checkCmd = exec.Command("gemini", "--prompt", "ping", "--output-format", "text")
+			checkCmd.Stdin = strings.NewReader("pong")
+		}
 	case "copilot":
-		warn("adversarial: copilot CLI installed", commandExists("copilot"),
+		installed = commandExists("copilot")
+		warn("adversarial: copilot CLI installed", installed,
 			"see https://github.com/github/copilot-cli")
+		if installed {
+			checkCmd = exec.Command("copilot", "--prompt", "ping pong")
+		}
 	case "codex":
-		warn("adversarial: codex CLI installed", commandExists("codex"),
+		installed = commandExists("codex")
+		warn("adversarial: codex CLI installed", installed,
 			"see https://github.com/openai/codex")
+		if installed {
+			checkCmd = exec.Command("codex", "ping")
+			checkCmd.Stdin = strings.NewReader("pong")
+		}
 	default:
 		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
 			"valid values: gemini, copilot, codex")
+		return
+	}
+
+	if !installed {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, checkCmd.Path, checkCmd.Args[1:]...)
+	cmd.Stdin = checkCmd.Stdin
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			warn(fmt.Sprintf("adversarial: %s functional check", provider), false, "timeout after 15s")
+		} else {
+			// Provide snippet of error output
+			errMsg := strings.TrimSpace(string(out))
+			if len(errMsg) > 200 {
+				errMsg = errMsg[:197] + "..."
+			}
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			warn(fmt.Sprintf("adversarial: %s functional check", provider), false, errMsg)
+		}
+	} else {
+		warn(fmt.Sprintf("adversarial: %s functional check", provider), true)
 	}
 }
