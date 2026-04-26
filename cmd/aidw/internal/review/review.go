@@ -483,8 +483,18 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 // --- helpers ---
 
 func findMergeBase(repoPath string) string {
-	for _, base := range []string{"main", "master"} {
-		out := strings.TrimSpace(gitOutput(repoPath, "merge-base", base, "HEAD"))
+	defaultBranch := git.DefaultBranch(repoPath)
+	out := strings.TrimSpace(gitOutput(repoPath, "merge-base", defaultBranch, "HEAD"))
+	if out != "" {
+		return out
+	}
+
+	// Fallback to checking other common branches if the dynamically detected one didn't yield a merge base
+	for _, base := range []string{"main", "master", "develop", "trunk"} {
+		if base == defaultBranch {
+			continue
+		}
+		out = strings.TrimSpace(gitOutput(repoPath, "merge-base", base, "HEAD"))
 		if out != "" {
 			return out
 		}
