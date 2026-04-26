@@ -69,24 +69,26 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 
 	// Branch diff (all committed changes since divergence)
 	var branchDiff string
-	var branchTruncated bool
+	var branchTruncated bool = false
 	var branchOrigBytes int
 	var branchBase *string
 	var rawBranchDiff string
 	if mergeBase != "" {
 		rawBranchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--")
 		branchOrigBytes = len(rawBranchDiff)
-		branchDiff, branchTruncated = util.TruncateDiff(rawBranchDiff, maxDiffBytes)
+		branchDiff = rawBranchDiff
 		branchBase = &mergeBase
 	}
 
 	// Working-tree (unstaged) changes
 	rawDiff := gitOutput(top, "diff", "--", ".")
-	diff, diffTruncated := util.TruncateDiff(rawDiff, maxDiffBytes)
+	diff := rawDiff
+	diffTruncated := false
 
 	// Staged changes
 	rawStaged := gitOutput(top, "diff", "--cached", "--", ".")
-	stagedDiff, stagedTruncated := util.TruncateDiff(rawStaged, maxDiffBytes)
+	stagedDiff := rawStaged
+	stagedTruncated := false
 
 	// Fetch status before computing the fingerprint so it is included in the
 	// cache key. Status changes (new untracked files, renames, mode changes)
@@ -415,14 +417,44 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 	if !ok {
 		return nil, fmt.Errorf("unknown adversarial review provider %q — valid values: gemini, copilot, codex", providerName)
 	}
-	rawOut, runStatus, runErr := p.run(diffText, prompt, model, timeoutSecs)
-	if runErr != nil {
-		return nil, runErr
+
+	chunks := util.ChunkDiff(diffText, maxDiffBytes)
+	var finalOut strings.Builder
+	var finalStatus string = "ok"
+	var lastStderr string
+
+	for i, chunk := range chunks {
+		chunkPrompt := prompt
+		if len(chunks) > 1 {
+			chunkPrompt = fmt.Sprintf("[Chunk %d/%d]\n%s", i+1, len(chunks), prompt)
+			fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s): processing chunk %d/%d...\n", providerName, i+1, len(chunks))
+		}
+
+		rawOut, runStatus, runErr := p.run(chunk, chunkPrompt, model, timeoutSecs)
+		if runErr != nil {
+			return nil, runErr
+		}
+
+		if runStatus != "ok" {
+			finalStatus = runStatus
+			lastStderr = rawOut
+			break // abort on first error/timeout/not_installed
+		}
+
+		if rawOut != "" {
+			if finalOut.Len() > 0 {
+				finalOut.WriteString("\n\n---\n\n")
+			}
+			if len(chunks) > 1 {
+				finalOut.WriteString(fmt.Sprintf("### Review Chunk %d/%d\n\n", i+1, len(chunks)))
+			}
+			finalOut.WriteString(rawOut)
+		}
 	}
 
-	result := &AdversarialReviewResult{Status: runStatus, Provider: providerName, Model: model}
+	result := &AdversarialReviewResult{Status: finalStatus, Provider: providerName, Model: model}
 
-	switch runStatus {
+	switch finalStatus {
 	case "not_installed":
 		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review provider %q not found — skipping.\n", providerName)
 		return result, nil
@@ -430,11 +462,12 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) timed out after %ds.\n", providerName, timeoutSecs)
 		return result, nil
 	case "error":
-		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) failed:\n%s\n", providerName, rawOut)
-		result.Stderr = rawOut
+		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) failed:\n%s\n", providerName, lastStderr)
+		result.Stderr = lastStderr
 		return result, nil
 	}
 
+	rawOut := finalOut.String()
 	if rawOut == "" {
 		fmt.Fprintf(os.Stderr, "[aidw] Adversarial review (%s) returned empty output.\n", providerName)
 		result.Status = "empty"

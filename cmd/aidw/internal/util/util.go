@@ -72,6 +72,35 @@ func TruncateDiff(text string, limit int) (string, bool) {
 	return string(b), true
 }
 
+// ChunkDiff splits text into a slice of strings, each at most chunkSize bytes,
+// preserving valid UTF-8 boundaries.
+func ChunkDiff(text string, chunkSize int) []string {
+	if chunkSize <= 0 {
+		return []string{text}
+	}
+	b := []byte(text)
+	var chunks []string
+	for len(b) > 0 {
+		if len(b) <= chunkSize {
+			chunks = append(chunks, string(b))
+			break
+		}
+		
+		limit := chunkSize
+		for limit > 0 && b[limit-1]&0xC0 == 0x80 {
+			limit--
+		}
+		if limit == 0 {
+			// A single multibyte character exceeds the chunk size. 
+			// Advance by 1 byte to prevent infinite loop, though this breaks UTF-8.
+			limit = 1
+		}
+		chunks = append(chunks, string(b[:limit]))
+		b = b[limit:]
+	}
+	return chunks
+}
+
 // ClampInt returns v clamped to [min, max].
 func ClampInt(v, min, max int) int {
 	if v < min {
