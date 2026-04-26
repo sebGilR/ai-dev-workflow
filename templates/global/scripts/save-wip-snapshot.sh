@@ -26,23 +26,7 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 if [[ -z "$repo_root" ]]; then
-  # Fall back to last known active repo written by start-claude-watch.sh.
-  # Verify it is still a valid git repo before using it.
-  _fallback="$(cat "${HOME}/.claude/.active-repo" 2>/dev/null || true)"
-  if [[ -n "$_fallback" ]] && git -C "$_fallback" rev-parse --show-toplevel >/dev/null 2>&1; then
-    repo_root="$_fallback"
-    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    echo "warn: save-wip-snapshot using .active-repo fallback ($repo_root) — concurrent multi-repo sessions may target the wrong context.md" >&2
-  fi
-fi
-
-if [[ -z "$repo_root" ]]; then
   repo_root="$PWD"
-fi
-
-# Keep the active-repo file current whenever we successfully resolve a git repo.
-if [[ -n "$repo_root" ]] && git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
-  printf '%s\n' "$repo_root" > "${HOME}/.claude/.active-repo" 2>/dev/null || true
 fi
 
 if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
@@ -147,11 +131,18 @@ fi
 printf '%s | level=%s | branch=%s | repo=%s\n' "$timestamp" "$level" "$branch" "$repo_root" >> "$progress_file" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Session end: decrement reference count; stop watcher when last session ends.
+# Session end: unregister repo and conditionally stop watcher
 # ---------------------------------------------------------------------------
 if [[ "$level" == "sessionend" ]]; then
   PID_FILE="${HOME}/.claude/.claude-watch.pid"
   SESSION_COUNT_FILE="${HOME}/.claude/.claude-watch-sessions"
+  ACTIVE_REPOS_DIR="${HOME}/.claude/.active-repos"
+
+  # Unregister this specific repository
+  if [[ -n "$repo_root" ]]; then
+    repo_hash="$(printf '%s' "$repo_root" | md5sum 2>/dev/null | cut -d' ' -f1 || md5 -q -s "$repo_root" 2>/dev/null || echo "default")"
+    rm -f "${ACTIVE_REPOS_DIR}/${repo_hash}" 2>/dev/null || true
+  fi
 
   count="$(cat "$SESSION_COUNT_FILE" 2>/dev/null || echo 1)"
   count=$(( count - 1 ))

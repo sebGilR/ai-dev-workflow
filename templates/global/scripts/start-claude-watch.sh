@@ -10,12 +10,15 @@ set -uo pipefail
 WATCH_SCRIPT="${HOME}/.claude/claude-watch.sh"
 PID_FILE="${HOME}/.claude/.claude-watch.pid"
 SESSION_COUNT_FILE="${HOME}/.claude/.claude-watch-sessions"
-ACTIVE_REPO_FILE="${HOME}/.claude/.active-repo"
+ACTIVE_REPOS_DIR="${HOME}/.claude/.active-repos"
 
 # Record active repo path for emergency save fallback (best-effort).
 active_repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -n "$active_repo" ]]; then
-  printf '%s\n' "$active_repo" > "$ACTIVE_REPO_FILE" 2>/dev/null || true
+  mkdir -p "$ACTIVE_REPOS_DIR" 2>/dev/null || true
+  # Use md5 to create a safe, unique filename for this repo path
+  repo_hash="$(printf '%s' "$active_repo" | md5sum 2>/dev/null | cut -d' ' -f1 || md5 -q -s "$active_repo" 2>/dev/null || echo "default")"
+  printf '%s\n' "$active_repo" > "${ACTIVE_REPOS_DIR}/${repo_hash}" 2>/dev/null || true
 fi
 
 # Guard: check watcher exists before touching the session count.

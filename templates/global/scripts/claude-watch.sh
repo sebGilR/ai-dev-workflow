@@ -208,25 +208,46 @@ while true; do
 
   pct_int="$(awk -v p="$usage_pct" 'BEGIN { printf "%d", p }')"
 
+  ACTIVE_REPOS_DIR="${HOME}/.claude/.active-repos"
+
   if (( pct_int >= 75 )) && (( warn75_sent == 0 )); then
     echo "WARNING: Usage has crossed 75%."
     warn75_sent=1
   fi
 
+  # Helper function to trigger snapshots across all active repos
+  trigger_snapshots() {
+    local level="$1"
+    if [[ ! -d "$ACTIVE_REPOS_DIR" ]]; then
+      return
+    fi
+    
+    # Cleanup stale repo registrations (older than 7 days)
+    find "$ACTIVE_REPOS_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+    
+    for repo_file in "$ACTIVE_REPOS_DIR"/*; do
+      [[ -f "$repo_file" ]] || continue
+      local target_repo
+      target_repo="$(cat "$repo_file" 2>/dev/null || true)"
+      if [[ -d "$target_repo" && -x "$SNAPSHOT_SCRIPT" ]]; then
+        (cd "$target_repo" && "$SNAPSHOT_SCRIPT" "$level" >/dev/null 2>&1) || true
+      else
+        # If directory no longer exists, clean up the stale registration
+        rm -f "$repo_file" 2>/dev/null || true
+      fi
+    done
+  }
+
   if (( pct_int >= 85 )) && (( warn85_sent == 0 )); then
     echo "WARNING: Usage has crossed 85%. Triggering warn snapshot."
-    if [[ -x "$SNAPSHOT_SCRIPT" ]]; then
-      "$SNAPSHOT_SCRIPT" warn >/dev/null 2>&1 || true
-    fi
+    trigger_snapshots "warn"
     warn85_sent=1
   fi
 
   if (( pct_int >= 90 )) && (( warn90_sent == 0 )); then
     echo "CRITICAL: Usage has crossed 90%. Writing emergency save flag and triggering snapshot."
     printf 'emergency' > "$EMERGENCY_FLAG" 2>/dev/null || true
-    if [[ -x "$SNAPSHOT_SCRIPT" ]]; then
-      "$SNAPSHOT_SCRIPT" critical >/dev/null 2>&1 || true
-    fi
+    trigger_snapshots "critical"
     warn90_sent=1
   fi
 
