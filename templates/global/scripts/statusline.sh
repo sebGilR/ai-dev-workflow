@@ -5,8 +5,6 @@
 
 set -u
 
-CLAUDE_USAGE_CACHE="${CLAUDE_USAGE_CACHE:-$HOME/.claude/usage-status.json}"
-
 if ! command -v jq >/dev/null 2>&1; then
   echo "Session: 0%"
   exit 0
@@ -67,19 +65,6 @@ human_tokens() {
   }'
 }
 
-format_usage_pct() {
-  local raw="$1"
-  awk -v value="$raw" 'BEGIN {
-    if (value == "" || value == "null") {
-      print ""
-      exit
-    }
-    formatted = sprintf("%.1f", value)
-    sub(/\.0$/, "", formatted)
-    print formatted
-  }'
-}
-
 # Always emit ANSI color codes — this script is exclusively used for terminal
 # statusline display. Claude Code captures stdout (not a TTY) but renders the
 # ANSI sequences in the status bar, so the TTY check would strip all colors.
@@ -101,22 +86,6 @@ color_pct() {
 }
 
 dim() { printf "${c_dim}%s${c_reset}" "$1"; }
-
-format_reset_time() {
-  local raw="$1"
-  [[ -n "$raw" ]] || return
-  # Strip fractional seconds (.085098) and normalize timezone colon (+00:00 → +0000)
-  local normalized
-  normalized="$(printf '%s' "$raw" | sed -E 's/\.[0-9]+([+-])/\1/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')"
-  # Try macOS/BSD date first; fall back to GNU date; print raw on both failures.
-  if date -j -f "%Y-%m-%dT%H:%M:%S%z" "$normalized" "+%a %H:%M" 2>/dev/null; then
-    return
-  fi
-  if date -d "$normalized" "+%a %H:%M" 2>/dev/null; then
-    return
-  fi
-  printf '%s' "$raw"
-}
 
 used_pct="$(format_session_pct "$used_pct_raw")"
 

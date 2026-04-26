@@ -44,7 +44,7 @@ Claude Code picks up skills and agents natively because they live in the standar
 
 Because skills and agents are symlinks (not copies), any edit you make to files in this repo is picked up immediately — no need to re-run the installer. Re-running install is only needed when you add a new skill or agent directory (to create its symlink), or if a symlink becomes stale.
 
-Managed scripts such as `~/.claude/statusline.sh` and `~/.claude/claude-watch.sh` follow the same rule only when they are installed as symlinks. If one of those files already exists as an unmanaged local file, the installer will not overwrite it; move or rename it and re-run `install.sh` if you want the repo version to take over.
+Managed scripts such as `~/.claude/statusline.sh` follow the same rule only when they are installed as symlinks. If one of those files already exists as an unmanaged local file, the installer will not overwrite it; move or rename it and re-run `install.sh` if you want the repo version to take over.
 
 ### In `~/.copilot`
 
@@ -509,18 +509,14 @@ When resolving the WIP directory for a branch, `aidw` uses a three-phase lookup:
 
 ---
 
-## Known limitations and future improvements
+## Requirements
 
-### Concurrent multi-repo sessions and `.active-repo`
-
-`save-wip-snapshot.sh` uses `~/.claude/.active-repo` as a fallback when `git rev-parse` fails to detect the current repo from the hook's working directory. This file is a single global pointer written on every session start and updated on every successful git resolution.
-
-With two concurrent Claude sessions open in **different repositories**, the pointer races continuously — whichever session most recently triggered a hook owns the file. An emergency autosave fired from session A may read session B's repo path and append the warning to the wrong `context.md`. A stderr warning is emitted whenever the fallback fires.
-
-**For single-session use (the common case) this works correctly.** If you routinely work with multiple concurrent Claude sessions in different repos, avoid relying on the emergency autosave and prefer explicit `/wip-sync` before context resets.
-
-### Review chunking for large diffs
-All diff sources are already truncated to 50 KB each, but very large changes may still stress a single review pass. A future improvement would split the diff into segments and run passes on each chunk, then merge and deduplicate findings.
+| Requirement | Notes |
+|-------------|-------|
+| uv / uvx | Required for Serena. Install: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Node.js / npx | Required for Context7. Install from https://nodejs.org |
+| Claude Code MCP support | Both servers run as MCP processes |
+| Go 1.21+ | Required to build the `aidw` binary. |
 
 ---
 

@@ -21,13 +21,19 @@ func makeVerifyCmd(use, short, filename string) *cobra.Command {
 				os.Exit(1)
 			}
 			ok, msg := wip.VerifyWipFile(state.WipDir, filename)
-			result := map[string]any{
-				"file":     filename,
-				"wip_dir":  state.WipDir,
-				"verified": ok,
+			type VerifyResult struct {
+				File     string `json:"file"`
+				WipDir   string `json:"wip_dir"`
+				Verified bool   `json:"verified"`
+				Error    string `json:"error,omitempty"`
+			}
+			result := VerifyResult{
+				File:     filename,
+				WipDir:   state.WipDir,
+				Verified: ok,
 			}
 			if !ok {
-				result["error"] = msg
+				result.Error = msg
 			}
 			PrintJSON(result)
 			if !ok {

@@ -20,11 +20,17 @@ var startCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
 		}
-		PrintJSON(map[string]any{
-			"repo":    state.Repo,
-			"branch":  state.Branch,
-			"wip_dir": state.WipDir,
-			"status":  state.Status,
+		type StartResult struct {
+			Repo   string     `json:"repo"`
+			Branch string     `json:"branch"`
+			WipDir string     `json:"wip_dir"`
+			Status wip.Status `json:"status"`
+		}
+		PrintJSON(StartResult{
+			Repo:   state.Repo,
+			Branch: state.Branch,
+			WipDir: state.WipDir,
+			Status: state.Status,
 		})
 	},
 }
