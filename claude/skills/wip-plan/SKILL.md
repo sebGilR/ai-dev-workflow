@@ -9,7 +9,7 @@ When this skill is used:
 
 1. Ensure `.wip/<branch>/` exists; if not, run `/wip-start`.
 2. Use the `wip-planner` subagent to **think carefully** and inspect the repo, current branch, repo docs, and current `.wip` state.
-3. Update `plan.md` with a practical, stepwise plan.
+3. Update `plan.md` with an explicit list of core assumptions followed by a practical, stepwise plan.
 4. Verify the write succeeded:
 
 ```bash
@@ -22,4 +22,4 @@ When this skill is used:
 ~/.claude/ai-dev-workflow/bin/aidw set-stage . planned
 ```
 
-6. Summarize the plan.
+6. Summarize the assumptions and the plan, and explicitly ask the user: "Please review these assumptions and the proposed plan. If they look good, we can proceed with implementation (`/wip-implement`), or let me know what needs to change."

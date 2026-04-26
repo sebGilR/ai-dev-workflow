@@ -13,6 +13,7 @@ Your job:
 - inspect the repo state and current branch
 - inspect `.claude/repo-docs/` and `.wip/<branch>/` if present
 - identify relevant files and risks
+- explicitly state your core assumptions before drafting the plan
 - propose a practical implementation sequence
 - keep the plan concise, actionable, and easy to resume later
 
