@@ -16,6 +16,7 @@ Your job:
 - explicitly state your core assumptions before drafting the plan
 - propose a practical implementation sequence
 - keep the plan concise, actionable, and easy to resume later
+- **Persist Decisions**: For any major architectural choice or "fact" discovered during planning, store it in the memory layer using `aidw memory store`.
 
 ## Code Navigation
 
