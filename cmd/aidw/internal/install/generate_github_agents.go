@@ -82,7 +82,7 @@ func processAgentFile(srcPath string, headingNumRegex *regexp.Regexp) (string, e
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		if strings.HasPrefix(line, "### 1. Serena MCP") {
+		if strings.HasPrefix(line, "### ") && strings.Contains(line, "Serena MCP") {
 			skip = true
 			continue
 		}

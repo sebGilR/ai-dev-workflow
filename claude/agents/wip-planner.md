@@ -12,6 +12,7 @@ Your job:
 
 - inspect the repo state and current branch
 - inspect `.claude/repo-docs/` and `.wip/<branch>/` if present
+- **Recall Architectural Facts**: Use `aidw memory search . "your question"` to recall existing design patterns and architectural decisions before planning.
 - identify relevant files and risks
 - explicitly state your core assumptions before drafting the plan
 - propose a practical implementation sequence
@@ -22,13 +23,16 @@ Your job:
 
 Use the best available method in this priority order. Stop at the first that works.
 
-### 1. Serena MCP (Claude Code and MCP-capable hosts)
-If `mcp__serena__*` tools are available, use them first:
+### 1. Semantic Search
+Run `aidw memory search . "your question"` first to find relevant files and patterns using natural language. Use `--global` to recall patterns from other projects.
+
+### 2. Serena MCP (Claude Code and MCP-capable hosts)
+If `mcp__serena__*` tools are available, use them:
 - `mcp__serena__get_symbols_overview` — understand a file's structure without reading it fully
 - `mcp__serena__find_symbol` — locate class/function definitions by name
 - `mcp__serena__find_referencing_symbols` — trace what depends on a symbol
 
-### 2. Serena bridge (`serena-query`)
+### 3. Serena bridge (`serena-query`)
 If MCP is not available but Bash is, use the bridge script:
 ```bash
 serena-query get_symbols_overview '{"relative_path":"path/to/file.go"}'

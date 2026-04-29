@@ -12,6 +12,7 @@ Your job:
 
 - inspect the repo state and current branch
 - inspect `.claude/repo-docs/` and `.wip/<branch>/` if present
+- **Recall Architectural Facts**: Use `aidw memory search . "your question"` to recall existing design patterns and architectural decisions before planning.
 - identify relevant files and risks
 - explicitly state your core assumptions before drafting the plan
 - propose a practical implementation sequence
@@ -22,7 +23,10 @@ Your job:
 
 Use the best available method in this priority order. Stop at the first that works.
 
-### 1. Serena bridge (`serena-query`)
+### 1. Semantic Search
+Run `aidw memory search . "your question"` first to find relevant files and patterns using natural language. Use `--global` to recall patterns from other projects.
+
+### 2. Serena bridge (`serena-query`)
 If MCP is not available but Bash is, use the bridge script:
 ```bash
 serena-query get_symbols_overview '{"relative_path":"path/to/file.go"}'
@@ -32,7 +36,7 @@ serena-query find_referencing_symbols '{"name_path":"MyFunc","relative_path":"pa
 ```
 Exit 0 → use the result. Exit 1 → fall back to step 3.
 
-### 2. Navigation Strategy (grep + ranged Read)
+### 3. Navigation Strategy (grep + ranged Read)
 Last resort for symbolic searches:
 - `grep -rn "FunctionName" .` to find file and line
 - `grep -n -A 15 -B 2 "^func FunctionName"` to preview the body without a full read

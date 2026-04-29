@@ -354,10 +354,11 @@ ensure_go() {
 if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/null 2>&1; then
   echo "→ Building aidw Go binary..."
   ensure_go "$SCRIPT_DIR/.go" || exit 1
-  (cd "$SCRIPT_DIR" && go build -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
+  (cd "$SCRIPT_DIR" && go build -tags sqlite_ext -o "bin/aidw-$(go env GOOS)-$(go env GOARCH)" ./cmd/aidw) || {
     echo "ERROR: 'go build' failed." >&2
     exit 1
   }
+  cp "$SCRIPT_DIR/bin/aidw-$(go env GOOS)-$(go env GOARCH)" "$SCRIPT_DIR/bin/aidw"
 fi
 
 "$SCRIPT_DIR/bin/aidw" merge-claude-md \
