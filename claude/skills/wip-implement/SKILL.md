@@ -29,8 +29,12 @@ agent: implementer
    ~/.claude/ai-dev-workflow/bin/aidw policy check . "<your command>"
    ```
 4. **Autonomous Execution**:
-   - If the verdict is **"allow"**, you may proceed with the command autonomously (if your environment supports it).
-   - If the verdict is **"deny"**, you MUST ask the user for explicit permission before running the command.
+   - If the verdict is **"allow"**, you may proceed with the command autonomously.
+   - If the verdict is **"prompt"**, you MUST ask the user for a decision:
+     - **Allow Once**: Run the command this time only.
+     - **Deny**: Do not run the command.
+     - **Different Action**: Ask the user what they would like to do instead (e.g. "I won't run rm, should I rename it instead?").
+   - If the verdict is **"deny"** (hard block), inform the user why it was blocked.
 5. If errors are found, fix them immediately and update `execution.md`.
 
 ## STEP 4: Finalize

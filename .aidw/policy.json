@@ -6,7 +6,7 @@
       "reason": "Read-only git commands are safe"
     },
     {
-      "pattern": "^(go|npm|cargo|pip|uv|uvx) (test|build|check|clippy|lint|list)",
+      "pattern": "^(go|npm|yarn|pnpm|cargo|pip|uv|uvx|make) (test|build|check|clippy|lint|list|install)",
       "verdict": "allow",
       "reason": "Standard build and test tools are safe"
     },
@@ -22,8 +22,8 @@
     },
     {
       "pattern": "^(rm|sudo|curl|wget|gcloud|aws|ssh|scp)",
-      "verdict": "deny",
-      "reason": "Potentially destructive or network-active commands require approval"
+      "verdict": "prompt",
+      "reason": "Potentially destructive or network-active commands require user decision"
     }
   ]
 }

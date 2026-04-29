@@ -11,7 +11,7 @@ import (
 // Rule represents a single policy rule with a regex pattern and a verdict.
 type Rule struct {
 	Pattern string `json:"pattern"`
-	Verdict string `json:"verdict"` // allow, deny, audit
+	Verdict string `json:"verdict"` // allow, prompt, audit, deny
 	Reason  string `json:"reason,omitempty"`
 }
 
@@ -49,10 +49,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		Rules: []Rule{
 			{Pattern: `^git (status|branch|diff|log|rev-parse|show|remote|symbolic-ref)`, Verdict: "allow", Reason: "Read-only git commands are safe"},
-			{Pattern: `^(go|npm|cargo|pip|uv|uvx) (test|build|check|clippy|lint|list)`, Verdict: "allow", Reason: "Standard build and test tools are safe"},
+			{Pattern: `^(go|npm|yarn|pnpm|cargo|pip|uv|uvx|make) (test|build|check|clippy|lint|list|install)`, Verdict: "allow", Reason: "Standard build and test tools are safe"},
 			{Pattern: `^(ls|cat|pwd|whoami|echo|head|tail|grep|find|find_empty_space_on_canvas)`, Verdict: "allow", Reason: "Standard discovery and read-only utils are safe"},
 			{Pattern: `^aidw (start|status|context|review-bundle|verify|memory list|policy check)`, Verdict: "allow", Reason: "Internal workflow read commands are safe"},
-			{Pattern: `^(rm|sudo|curl|wget|gcloud|aws|ssh|scp)`, Verdict: "deny", Reason: "Potentially destructive or network-active commands require approval"},
+			{Pattern: `^(rm|sudo|curl|wget|gcloud|aws|ssh|scp)`, Verdict: "prompt", Reason: "Potentially destructive or network-active commands require user decision"},
 		},
 	}
 }
@@ -65,7 +65,7 @@ func (cfg *Config) Evaluate(cmd string) Verdict {
 			return Verdict{Verdict: rule.Verdict, Reason: rule.Reason}
 		}
 	}
-	return Verdict{Verdict: "deny", Reason: "No matching policy rule found (default to deny)"}
+	return Verdict{Verdict: "prompt", Reason: "No matching policy rule found (default to user prompt)"}
 }
 
 // Init creates a default policy file in the repo.
