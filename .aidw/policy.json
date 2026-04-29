@@ -1,6 +1,11 @@
 {
   "rules": [
     {
+      "pattern": "^curl -I https://google\\.com",
+      "verdict": "allow",
+      "reason": "Required for diagnostics"
+    },
+    {
       "pattern": "^git (status|branch|diff|log|rev-parse|show|remote|symbolic-ref)",
       "verdict": "allow",
       "reason": "Read-only git commands are safe"

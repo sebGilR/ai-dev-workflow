@@ -46,8 +46,29 @@ var policyCheckCmd = &cobra.Command{
 	},
 }
 
+var policyAllowCmd = &cobra.Command{
+	Use:   "allow <path> <command>",
+	Short: "Permanently whitelist a specific command pattern",
+	Args:  cobra.ExactArgs(2),
+	Run: func(c *cobra.Command, args []string) {
+		repoPath := args[0]
+		cmdStr := args[1]
+		reason, _ := c.Flags().GetString("reason")
+
+		if err := policy.AddRule(repoPath, cmdStr, reason); err != nil {
+			fmt.Fprintln(os.Stderr, "[aidw]", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Command permanently whitelisted: %s\n", cmdStr)
+	},
+}
+
 func init() {
 	policyCmd.AddCommand(policyInitCmd)
 	policyCmd.AddCommand(policyCheckCmd)
+	policyCmd.AddCommand(policyAllowCmd)
+
+	policyAllowCmd.Flags().String("reason", "User authorized always", "Reason for whitelisting")
+
 	Root.AddCommand(policyCmd)
 }

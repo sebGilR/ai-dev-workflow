@@ -68,6 +68,35 @@ func (cfg *Config) Evaluate(cmd string) Verdict {
 	return Verdict{Verdict: "prompt", Reason: "No matching policy rule found (default to user prompt)"}
 }
 
+// AddRule appends a new allow rule for a specific command to the policy file.
+func AddRule(repoPath, cmdStr, reason string) error {
+	cfg, err := Load(repoPath)
+	if err != nil {
+		return err
+	}
+
+	pattern := "^" + regexp.QuoteMeta(cmdStr)
+
+	// Check if already exists
+	for _, r := range cfg.Rules {
+		if r.Pattern == pattern {
+			return nil // already whitelisted
+		}
+	}
+
+	// Prepend specific rules so they take precedence over general ones
+	newRule := Rule{
+		Pattern: pattern,
+		Verdict: "allow",
+		Reason:  reason,
+	}
+	cfg.Rules = append([]Rule{newRule}, cfg.Rules...)
+
+	path := filepath.Join(repoPath, ".aidw", "policy.json")
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
 // Init creates a default policy file in the repo.
 func Init(repoPath string) error {
 	dir := filepath.Join(repoPath, ".aidw")
