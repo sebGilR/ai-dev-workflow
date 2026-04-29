@@ -12,17 +12,19 @@ import (
 // mcpServers contains the hardcoded servers to add/update.
 var mcpServers = map[string]map[string]any{
 	"serena": {
-		"command": "uvx",
+		"command": "serena",
 		"args": []any{
-			"--from",
-			"git+https://github.com/oraios/serena@v0.1.4",
-			"serena",
+			"--context=claude-code",
 			"start-mcp-server",
 		},
 	},
 	"context7": {
 		"command": "npx",
 		"args":    []any{"-y", "@upstash/context7-mcp@2.1.3"},
+	},
+	"sequential-thinking": {
+		"command": "npx",
+		"args":    []any{"-y", "@anthropic-ai/sequential-thinking-mcp"},
 	},
 }
 
