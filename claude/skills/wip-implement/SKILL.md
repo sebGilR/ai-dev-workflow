@@ -1,62 +1,46 @@
 ---
 name: wip-implement
-description: Implement the next planned chunk of work and update execution notes.
-hooks:
-  Stop:
-    - type: command
-      command: ~/.claude/ai-dev-workflow/bin/aidw summarize-context .
+description: 'Executes the implementation tasks defined in the spec.md using a deterministic, artifact-driven sequence.'
+context: fork
+agent: implementer
 ---
 
-When this skill is used:
+# Workflow: Spec-Driven Implementation
 
-1. Read the current `plan.md`, `research.md`, `context.md`, and `status.json`.
-   When implementing against external libraries or APIs, use Context7 to retrieve
-   current documentation before writing integration code.
-   If Serena is available, use it (`mcp__serena__find_symbol`, `mcp__serena__get_symbols_overview`,
-   `mcp__serena__find_referencing_symbols`) to navigate to relevant symbols and
-   understand existing patterns before writing new code.
-2. Implement the next chunk of work.
-3. Append a concise update to `execution.md` describing what changed and why.
-4. Optionally refresh `context.md` if the implementation materially changed the continuation context.
-5. Run:
+**Goal:** Turn the agreed-upon `spec.md` into hardened, working code.
 
-```bash
-~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
-```
+## STEP 1: Load Specification
 
-6. Summarize completed work and remaining work.
+1. Strictly load only `spec.md` and `task-context.md` from the `.wip/<branch>/` directory.
+2. DO NOT rely on previous chat history for the implementation details — the `spec.md` is the final contract.
+
+## STEP 2: Task-by-Task Implementation
+
+1. Execute the implementation tasks **exactly** in the order specified in `spec.md`.
+2. Do not "optimize" the order or combine unrelated tasks.
+3. For every change, append a concise update to `execution.md` describing what was changed and why.
+
+## STEP 3: Self-Review & Verification
+
+1. After completing all tasks, run a self-verification pass.
+2. Check your work against the **Acceptance Criteria (AC)** defined in `spec.md`.
+3. If errors are found, fix them immediately and update `execution.md`.
+
+## STEP 4: Finalize
+
+1. Set the stage:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
+   ```
+2. Summarize the completed work and any remaining tasks (if scope was split).
 
 ## RTK Usage (Token Compression)
 
-When RTK is installed (`rtk init -g`), Bash commands are automatically compressed. For implementation work, this is especially valuable on build/test output:
+When RTK is installed (`rtk init -g`), Bash commands are automatically compressed. This is essential for build/test output:
 
-**Happy path — use RTK:**
-- `rtk cargo build` / `rtk cargo clippy` — 80% reduction on Rust build output
-- `rtk cargo test` — failures only (-90%)
-- `rtk lint` / `rtk tsc` — errors grouped by file
+- `rtk cargo build` / `rtk cargo clippy`
+- `rtk cargo test` — failures only
+- `rtk npm test` / `rtk tsc`
 - `rtk git diff` — condensed diff
 
-**On failure — ask permission to bypass RTK:**
-
-When compressed output is insufficient to diagnose a failure, ask the user first:
-
-> "I need full output from `<cmd>` to [specific reason]. Run without RTK compression? [y/N]"
-
-If the user confirms, use:
-```bash
-rtk proxy <failing-command> 2>&1
-```
-This gives full raw output (passthrough — no compression applied). Do not bypass silently.
-
-**Capturing failure logs to the branch context:**
-
-For persistent debugging context, dump the raw output to the branch `logs/` directory. First look up the actual wip directory from `status.json` (`wip_dir` field), then:
-```bash
-mkdir -p <wip_dir>/logs
-rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log
-```
-Replace `<wip_dir>` with the date-prefixed path from `status.json` (e.g., `.wip/20260322-my-feature/`). The `logs/` directory is automatically cleaned up by `/wip-cleanup` — no manual deletion needed.
-
-**Automatic failure capture (RTK config):**
-
-If RTK's config has `[tee] mode = "failures"`, RTK already saves raw output on non-zero exit codes to its own tee directory (location varies by OS — check `rtk config` for the path). Reference that as a fallback when the agent needs the full output of the previous failed command.
+If a command fails and the compressed output is insufficient, ask the user before running `rtk proxy <cmd>`.

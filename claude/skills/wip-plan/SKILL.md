@@ -1,25 +1,44 @@
 ---
 name: wip-plan
-description: Create or refresh the implementation plan for the current branch.
+description: 'Create or refresh the implementation specification for the current branch using a deterministic 3-step sequence: Clarify, Draft, and Skeptic Review.'
 context: fork
-agent: plan
+agent: analyst
 ---
 
-When this skill is used:
+# Workflow: Spec-Driven Planning
 
-1. Ensure `.wip/<branch>/` exists; if not, run `/wip-start`.
-2. Use the `wip-planner` subagent to **think carefully** and inspect the repo, current branch, repo docs, and current `.wip` state.
-3. Update `plan.md` with an explicit list of core assumptions followed by a practical, stepwise plan.
-4. Verify the write succeeded:
+This workflow enforces a disciplined "Chain-of-Command" to ensure the project is **Ready for Development**.
 
-```bash
-~/.claude/ai-dev-workflow/bin/aidw verify-plan .
-```
+## STEP 1: Clarify & Distill (Analyst)
 
-5. If verification passes, set the stage:
+1. Use the `wip-analyst` subagent to clarify your intent and gather relevant project context.
+2. The agent will read repo docs and inspect code to produce a `task-context.md` in the `.wip/<branch>/` directory.
+3. **Verify** the artifact:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw verify-wip-file . task-context.md
+   ```
 
-```bash
-~/.claude/ai-dev-workflow/bin/aidw set-stage . planned
-```
+## STEP 2: Draft Specification (Planner)
 
-6. Summarize the assumptions and the plan, and explicitly ask the user: "Please review these assumptions and the proposed plan. If they look good, we can proceed with implementation (`/wip-implement`), or let me know what needs to change."
+1. Switch to the `wip-planner` subagent.
+2. Read `task-context.md` and draft a hardened `spec.md`.
+3. **Spec Standard**:
+   - **Actionable**: Every task has a file path and a specific literal action.
+   - **Logical**: Tasks are ordered by dependency.
+   - **Testable**: Acceptance Criteria (AC) use Given/When/Then.
+4. **Verify** the write:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw verify-wip-file . spec.md
+   ```
+
+## STEP 3: Skeptic Review (Skeptic)
+
+1. Switch to the `wip-skeptic` subagent.
+2. Review the `spec.md` and `task-context.md` for blind spots and logic flaws.
+3. Provide adversarial feedback and suggest mitigations.
+4. **Finalize**: Set the stage and summarize.
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw set-stage . spec-reviewed
+   ```
+
+**HALT and Ask User**: "Please review the distilled context (`task-context.md`), the implementation specification (`spec.md`), and the skeptic's feedback. If you approve, we can proceed to implementation (`/wip-implement`), or let me know what needs to change."

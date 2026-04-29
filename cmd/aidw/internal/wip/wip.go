@@ -16,20 +16,22 @@ import (
 )
 
 // wipFiles is the list of standard WIP workflow files.
-var wipFiles = []string{"plan.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"}
+var wipFiles = []string{"plan.md", "spec.md", "task-context.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"}
 
 // keepOnCleanup is the set of files to keep during cleanup-branch.
-var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true}
+var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true, "task-context.md": true, "spec.md": true}
 
 // stages is the set of valid workflow stages.
 var stages = map[string]bool{
-	"started":      true,
-	"planned":      true,
-	"researched":   true,
-	"implementing": true,
-	"reviewed":     true,
-	"review-fixed": true,
-	"pr-prep":      true,
+	"started":       true,
+	"planned":       true,
+	"specified":     true,
+	"spec-reviewed": true,
+	"researched":    true,
+	"implementing":  true,
+	"reviewed":      true,
+	"review-fixed":  true,
+	"pr-prep":       true,
 }
 
 // Status represents the state recorded in status.json.
@@ -361,10 +363,11 @@ type CleanupResult struct {
 	WipDir  string   `json:"wip_dir"`
 	Kept    []string `json:"kept"`
 	Deleted []string `json:"deleted"`
+	DryRun  bool     `json:"dry_run,omitempty"`
 }
 
 // CleanupBranch removes all files in the branch's .wip dir except context.md and pr.md.
-func CleanupBranch(repoPath string) (*CleanupResult, error) {
+func CleanupBranch(repoPath string, dryRun bool) (*CleanupResult, error) {
 	state, err := EnsureBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
@@ -381,13 +384,15 @@ func CleanupBranch(repoPath string) (*CleanupResult, error) {
 			continue
 		}
 		path := filepath.Join(state.WipDir, e.Name())
-		if e.IsDir() {
-			if err := os.RemoveAll(path); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := os.Remove(path); err != nil {
-				return nil, err
+		if !dryRun {
+			if e.IsDir() {
+				if err := os.RemoveAll(path); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := os.Remove(path); err != nil {
+					return nil, err
+				}
 			}
 		}
 		deleted = append(deleted, e.Name())
@@ -404,6 +409,7 @@ func CleanupBranch(repoPath string) (*CleanupResult, error) {
 		WipDir:  state.WipDir,
 		Kept:    kept,
 		Deleted: deleted,
+		DryRun:  dryRun,
 	}, nil
 }
 
@@ -411,6 +417,7 @@ func CleanupBranch(repoPath string) (*CleanupResult, error) {
 type ClearWipResult struct {
 	Kept    *string  `json:"kept"`
 	Deleted []string `json:"deleted"`
+	DryRun  bool     `json:"dry_run,omitempty"`
 }
 
 // MigratedDir describes a single legacy-to-dated rename.
@@ -499,7 +506,7 @@ func MigrateWip(repoPath string) (*MigrateWipResult, error) {
 // dir (alphabetically last) is preserved to avoid data loss. This operates
 // globally across all branches in the repo — it is intended as a workspace
 // cleanup tool, not a per-branch operation.
-func ClearWip(repoPath string) (*ClearWipResult, error) {
+func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
 		return nil, err
@@ -507,7 +514,7 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 
 	wipBase := filepath.Join(top, ".wip")
 	if info, err := os.Stat(wipBase); err != nil || !info.IsDir() {
-		return &ClearWipResult{Kept: nil, Deleted: []string{}}, nil
+		return &ClearWipResult{Kept: nil, Deleted: []string{}, DryRun: dryRun}, nil
 	}
 
 	entries, err := os.ReadDir(wipBase)
@@ -561,8 +568,10 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 
 	var deleted []string
 	for i := 0; i < len(dated)-1; i++ {
-		if err := os.RemoveAll(dated[i].path); err != nil {
-			return nil, err
+		if !dryRun {
+			if err := os.RemoveAll(dated[i].path); err != nil {
+				return nil, err
+			}
 		}
 		deleted = append(deleted, dated[i].name)
 	}
@@ -570,14 +579,16 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 		if keep != nil && name == *keep {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(wipBase, name)); err != nil {
-			return nil, err
+		if !dryRun {
+			if err := os.RemoveAll(filepath.Join(wipBase, name)); err != nil {
+				return nil, err
+			}
 		}
 		deleted = append(deleted, name)
 	}
 
 	sort.Strings(deleted)
-	return &ClearWipResult{Kept: keep, Deleted: deleted}, nil
+	return &ClearWipResult{Kept: keep, Deleted: deleted, DryRun: dryRun}, nil
 }
 
 // ClearOtherBranches deletes all .wip branch dirs except the current branch's
@@ -587,7 +598,7 @@ func ClearWip(repoPath string) (*ClearWipResult, error) {
 //
 // Side effect: calls EnsureBranchState, which creates and seeds the current
 // branch .wip/ directory if it does not already exist.
-func ClearOtherBranches(repoPath string) (*ClearWipResult, error) {
+func ClearOtherBranches(repoPath string, dryRun bool) (*ClearWipResult, error) {
 	state, err := EnsureBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
@@ -609,14 +620,16 @@ func ClearOtherBranches(repoPath string) (*ClearWipResult, error) {
 		if e.Name() == keepDirName {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(wipBase, e.Name())); err != nil {
-			return nil, err
+		if !dryRun {
+			if err := os.RemoveAll(filepath.Join(wipBase, e.Name())); err != nil {
+				return nil, err
+			}
 		}
 		deleted = append(deleted, e.Name())
 	}
 
 	sort.Strings(deleted)
-	return &ClearWipResult{Kept: &keepDirName, Deleted: deleted}, nil
+	return &ClearWipResult{Kept: &keepDirName, Deleted: deleted, DryRun: dryRun}, nil
 }
 
 // EnsureRepoResult is returned by EnsureRepo.

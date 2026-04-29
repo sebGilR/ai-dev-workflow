@@ -14,4 +14,5 @@ When this skill is used:
 
 3. Read the resulting `status.json` and `context.md`.
 4. Summarize what was initialized.
-5. Continue the conversation from the initialized workflow state.
+5. Suggest running `/wip-plan` to begin the spec-driven planning sequence (Clarify -> Draft -> Skeptic Review).
+6. Continue the conversation from the initialized workflow state.

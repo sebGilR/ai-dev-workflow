@@ -247,7 +247,7 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir)
+	result, err := ClearWip(dir, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestClearWip_DeletesLegacyDirs(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir)
+	result, err := ClearWip(dir, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir)
+	result, err := ClearWip(dir, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
 func TestClearWip_EmptyWip(t *testing.T) {
 	dir := initGitRepo(t)
 
-	result, err := ClearWip(dir)
+	result, err := ClearWip(dir, false)
 	if err != nil {
 		t.Fatalf("ClearWip on empty wip: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestClearOtherBranches_KeepsCurrentBranchDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ClearOtherBranches(dir)
+	result, err := ClearOtherBranches(dir, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestClearOtherBranches_PreservesAllFilesInCurrentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ClearOtherBranches(dir); err != nil {
+	if _, err := ClearOtherBranches(dir, false); err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestClearOtherBranches_DeletesLegacyDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ClearOtherBranches(dir)
+	result, err := ClearOtherBranches(dir, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestClearOtherBranches_NothingToDelete(t *testing.T) {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
 
-	result, err := ClearOtherBranches(dir)
+	result, err := ClearOtherBranches(dir, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches on empty wip: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestClearOtherBranches_DeletesMultipleDirsAndSorts(t *testing.T) {
 		}
 	}
 
-	result, err := ClearOtherBranches(dir)
+	result, err := ClearOtherBranches(dir, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 		}
 	}
 
-	result, err := CleanupBranch(dir)
+	result, err := CleanupBranch(dir, false)
 	if err != nil {
 		t.Fatalf("CleanupBranch: %v", err)
 	}
@@ -690,5 +690,46 @@ func TestMigrateWip_SkipsNonWipDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(nonWip); err != nil {
 		t.Error("non-WIP dir should not be touched")
+	}
+}
+
+func TestCleanupBranch_DryRun(t *testing.T) {
+	dir := initGitRepo(t)
+	state, _ := EnsureBranchState(dir, "dry-run-test")
+	dummy := filepath.Join(state.WipDir, "dummy.txt")
+	os.WriteFile(dummy, []byte("content"), 0o644)
+
+	result, err := CleanupBranch(dir, true)
+	if err != nil {
+		t.Fatalf("CleanupBranch dry run: %v", err)
+	}
+
+	if !result.DryRun {
+		t.Error("expected DryRun=true in result")
+	}
+
+	if _, err := os.Stat(dummy); os.IsNotExist(err) {
+		t.Error("file should still exist during dry run")
+	}
+}
+
+func TestClearWip_DryRun(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	os.MkdirAll(wipBase, 0o755)
+	older := filepath.Join(wipBase, "20260101-feat")
+	os.MkdirAll(older, 0o755)
+
+	result, err := ClearWip(dir, true)
+	if err != nil {
+		t.Fatalf("ClearWip dry run: %v", err)
+	}
+
+	if !result.DryRun {
+		t.Error("expected DryRun=true in result")
+	}
+
+	if _, err := os.Stat(older); os.IsNotExist(err) {
+		t.Error("directory should still exist during dry run")
 	}
 }
