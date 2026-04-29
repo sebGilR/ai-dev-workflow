@@ -478,10 +478,15 @@ write_env_file() {
 
 # Adversarial review (optional) — choose a provider: gemini, copilot, codex
 # Set AIDW_ADVERSARIAL_REVIEW=1 to enable
-export AIDW_ADVERSARIAL_REVIEW="0"
-export AIDW_ADVERSARIAL_PROVIDER="gemini"
-export AIDW_ADVERSARIAL_MODEL="gemini-2.5-pro"
+export AIDW_ADVERSARIAL_REVIEW="1"
+export AIDW_ADVERSARIAL_PROVIDER="codex"
+export AIDW_ADVERSARIAL_MODEL="gemini-1.5-pro"
 export AIDW_ADVERSARIAL_TIMEOUT="120"
+
+# Tiered Models (used by agents for routing)
+export AIDW_FRONTIER_MODEL="gemini-1.5-pro"
+export AIDW_EFFICIENT_MODEL="gemini-1.5-flash"
+
 # Legacy aliases (deprecated — kept for backward compatibility):
 # export AIDW_GEMINI_REVIEW="0"
 # export AIDW_GEMINI_MODEL="gemini-2.5-pro"

@@ -16,6 +16,12 @@ When this skill is used:
    - Describe the data flow and core components.
    - Extract and document error handling, testing, and API/CLI patterns.
    - Identify any "gotchas" or environment requirements.
+   
+   **Pro Tip (Model Routing)**: This research pass is token-intensive. If your host supports it, run the analyst with the efficient model:
+   ```bash
+   # Get the efficient model name:
+   ~/.claude/ai-dev-workflow/bin/aidw model route efficient
+   ```
 
 3. **Finalize**: Update `architecture.md`, `patterns.md`, and `gotchas.md` in `.claude/repo-docs/` with the discovered insights.
 

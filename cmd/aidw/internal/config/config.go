@@ -8,12 +8,15 @@ import (
 
 const (
 	// Deprecated: use DefaultAdversarial* constants instead.
-	DefaultGeminiModel   = "gemini-2.5-pro"
+	DefaultGeminiModel   = "gemini-1.5-pro"
 	DefaultGeminiTimeout = 120 // seconds
 
 	DefaultAdversarialProvider = "gemini"
-	DefaultAdversarialModel    = "gemini-2.5-pro"
+	DefaultAdversarialModel    = "gemini-1.5-pro"
 	DefaultAdversarialTimeout  = 120 // seconds
+
+	DefaultFrontierModel  = "gemini-1.5-pro"
+	DefaultEfficientModel = "gemini-1.5-flash"
 )
 
 // Config holds all runtime configuration read from environment variables.
@@ -32,6 +35,10 @@ type Config struct {
 	AdversarialProvider string // "gemini" | "copilot" | "codex"
 	AdversarialModel    string
 	AdversarialTimeout  int // seconds; clamped [10, 600]
+
+	// Tiered model configuration
+	FrontierModel  string // AIDW_FRONTIER_MODEL
+	EfficientModel string // AIDW_EFFICIENT_MODEL
 }
 
 // ResolvedProvider returns the effective adversarial review provider name.
@@ -69,6 +76,16 @@ func Load() Config {
 	advModel := os.Getenv("AIDW_ADVERSARIAL_MODEL")
 	advTimeoutRaw := util.ParseIntEnv("AIDW_ADVERSARIAL_TIMEOUT", 0)
 
+	// Tiered Model vars
+	frontierModel := os.Getenv("AIDW_FRONTIER_MODEL")
+	if frontierModel == "" {
+		frontierModel = DefaultFrontierModel
+	}
+	efficientModel := os.Getenv("AIDW_EFFICIENT_MODEL")
+	if efficientModel == "" {
+		efficientModel = DefaultEfficientModel
+	}
+
 	// Resolve adversarial enabled: new var takes precedence over legacy.
 	var adversarialReview bool
 	var adversarialSet bool
@@ -103,6 +120,9 @@ func Load() Config {
 		AdversarialProvider: advProvider,
 		AdversarialModel:    advModel,
 		AdversarialTimeout:  advTimeoutRaw,
+
+		FrontierModel:  frontierModel,
+		EfficientModel: efficientModel,
 	}
 }
 

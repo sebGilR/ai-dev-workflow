@@ -50,8 +50,17 @@ var geminiReviewCmd = &cobra.Command{
 			os.Exit(0)
 		}
 		model, _ := c.Flags().GetString("model")
+		tier, _ := c.Flags().GetString("tier")
 		timeout, _ := c.Flags().GetInt("timeout")
 		timeout = util.ClampInt(timeout, 10, 600)
+
+		if model == "" {
+			if tier == "efficient" {
+				model = cfg.EfficientModel
+			} else {
+				model = cfg.FrontierModel
+			}
+		}
 
 		result, err := review.GeminiReview(args[0], model, timeout)
 		if err != nil {
@@ -82,8 +91,17 @@ var adversarialReviewCmd = &cobra.Command{
 		}
 		provider, _ := c.Flags().GetString("provider")
 		model, _ := c.Flags().GetString("model")
+		tier, _ := c.Flags().GetString("tier")
 		timeout, _ := c.Flags().GetInt("timeout")
 		timeout = util.ClampInt(timeout, 10, 600)
+
+		if model == "" {
+			if tier == "efficient" {
+				model = cfg.EfficientModel
+			} else {
+				model = cfg.FrontierModel
+			}
+		}
 
 		result, err := review.AdversarialReview(args[0], provider, model, timeout)
 		if err != nil {
@@ -107,10 +125,12 @@ func init() {
 	cfg := config.Load()
 	geminiReviewCmd.Flags().String("model", cfg.GeminiModel, "Gemini model to use (env: AIDW_GEMINI_MODEL)")
 	geminiReviewCmd.Flags().Int("timeout", cfg.GeminiTimeout, "Timeout in seconds (env: AIDW_GEMINI_TIMEOUT)")
+	geminiReviewCmd.Flags().String("tier", "frontier", "Model tier to use: frontier|efficient")
 
 	adversarialReviewCmd.Flags().String("provider", cfg.AdversarialProvider, "Review provider: gemini|copilot|codex (env: AIDW_ADVERSARIAL_PROVIDER)")
 	adversarialReviewCmd.Flags().String("model", cfg.AdversarialModel, "Model name for the provider (env: AIDW_ADVERSARIAL_MODEL)")
 	adversarialReviewCmd.Flags().Int("timeout", cfg.AdversarialTimeout, "Timeout in seconds (env: AIDW_ADVERSARIAL_TIMEOUT)")
+	adversarialReviewCmd.Flags().String("tier", "frontier", "Model tier to use: frontier|efficient")
 
 	Root.AddCommand(reviewBundleCmd)
 	Root.AddCommand(synthesizeReviewCmd)

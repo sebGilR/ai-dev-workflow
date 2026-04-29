@@ -17,9 +17,10 @@ if [[ -z "$ACCESS_TOKEN" ]]; then
   exit 1
 fi
 
-# 2. Project and Location (customize these)
+# 2. Project, Location and Model (customize these)
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "my-project")
 LOCATION="us-central1"
+MODEL_NAME="${AIDW_EMBEDDING_MODEL:-text-embedding-004}"
 
 # 3. Read input text from STDIN
 TEXT=$(cat)
@@ -29,7 +30,7 @@ TEXT=$(cat)
 curl -s -X POST \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json; charset=utf-8" \
-  "https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/text-embedding-004:predict" \
+  "https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL_NAME}:predict" \
   -d "{
     'instances': [
       {'content': '$TEXT'}
