@@ -140,9 +140,17 @@ To continue after a break:
 /wip-resume
 ```
 
----
+### 4. Vendor-Agnostic Memory Layer
 
-## Recommended usage flow
+The workflow includes a persistent memory layer (`aidw memory`) that stores facts and provides semantic search over project documentation. This layer is designed to be **vendor-agnostic**, working identically across Claude, Gemini, Copilot, and Codex.
+
+To support any LLM provider and authentication method (including OAuth), semantic search delegates embedding generation to a customizable bridge script:
+
+- `~/.claude/get-embeddings.sh`
+
+By default, this script is configured for **Gemini (Vertex AI via gcloud OAuth)**. You can easily modify it to use OpenAI, Anthropic, or any local embedding model. The script simply needs to read text from STDIN and output a JSON array of floats to STDOUT.
+
+### 5. Recommended usage flow
 
 ### Happy path
 

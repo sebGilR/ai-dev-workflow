@@ -28,8 +28,16 @@ DO NOT include raw file contents. Include distilled insights and references (fil
 
 ## Code Navigation Strategy
 
-1. **Serena MCP** first (`mcp__serena__*`).
-2. **Grep/Glob** for text patterns.
-3. **Read** with line ranges for confirmation.
+1. **Semantic Search** first (`aidw memory search . "your question"`): Use this to find relevant patterns, architectural notes, and existing logic using natural language.
+2. **Serena MCP** (`mcp__serena__*`): Use for precise symbolic navigation once you have candidate files from search.
+3. **Grep/Glob** for exact text patterns.
+4. **Read** with line ranges for confirmation.
 
-Keep the output concise. Focus only on what is relevant to the *current* task.
+## Instructions
+
+1. **Clarify Intent**: Targeted questions only.
+2. **Semantic Research**: Run `aidw memory search .` with 2-3 queries related to the task to find relevant project documentation and previous decisions.
+3. **Recall Memory**: Use `aidw memory list .` for branch-specific facts.
+4. **Deep Dive**: Use Serena/Read to inspect the candidate code blocks found during search.
+5. **Distill Context**: Produce `task-context.md`.
+

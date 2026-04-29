@@ -74,6 +74,77 @@ install_managed_script() {
 
 install_managed_script "templates/global/scripts/statusline.sh" "statusline.sh"
 install_managed_script "templates/global/scripts/save-wip-snapshot.sh" "save-wip-snapshot.sh"
+install_managed_script "templates/global/scripts/get-embeddings.template.sh" "get-embeddings.sh"
+
+# ---------------------------------------------------------------------------
+# Install sqlite-vec loadable extension for semantic search
+# ---------------------------------------------------------------------------
+install_sqlite_vec() {
+  local lib_dir="$CLAUDE_HOME/lib"
+  local version="v0.1.9"
+  local ver_no_v="0.1.9"
+  local os
+  local arch
+  local url
+  local filename
+
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+
+  case "$os" in
+    darwin)
+      if [ "$arch" = "arm64" ]; then
+        filename="sqlite-vec-${ver_no_v}-loadable-macos-aarch64.tar.gz"
+      else
+        filename="sqlite-vec-${ver_no_v}-loadable-macos-x86_64.tar.gz"
+      fi
+      ;;
+    linux)
+      if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+        filename="sqlite-vec-${ver_no_v}-loadable-linux-aarch64.tar.gz"
+      else
+        filename="sqlite-vec-${ver_no_v}-loadable-linux-x86_64.tar.gz"
+      fi
+      ;;
+    *)
+      echo "WARNING: sqlite-vec semantic search not supported on $os-$arch. Skipping." >&2
+      return 0
+      ;;
+  esac
+
+  local dest_file="$lib_dir/vec0.dylib"
+  if [ "$os" = "linux" ]; then dest_file="$lib_dir/vec0.so"; fi
+
+  # Skip if already present
+  if [ -f "$dest_file" ]; then
+    return 0
+  fi
+
+  echo "→ Downloading sqlite-vec ${version} for semantic search..."
+  mkdir -p "$lib_dir"
+  url="https://github.com/asg017/sqlite-vec/releases/download/${version}/${filename}"
+  
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  if curl -L "$url" -o "$tmp_dir/$filename"; then
+    if [ -s "$tmp_dir/$filename" ]; then
+      tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
+      mv "$tmp_dir"/vec0.* "$dest_file" 2>/dev/null || mv "$tmp_dir"/*/vec0.* "$dest_file" 2>/dev/null || true
+      if [ -f "$dest_file" ]; then
+        echo "  Installed to $dest_file"
+      else
+        echo "WARNING: Could not find vec0 library in the downloaded archive." >&2
+      fi
+    else
+      echo "WARNING: Downloaded sqlite-vec archive is empty." >&2
+    fi
+  else
+    echo "WARNING: Failed to download sqlite-vec. Semantic search will be unavailable." >&2
+  fi
+  rm -rf "$tmp_dir"
+}
+
+install_sqlite_vec
 
 # Install serena log hook (serena-query lives in bin/ and is reachable via the
 # ~/.claude/ai-dev-workflow symlink once PATH is configured in aidw.env.sh).
