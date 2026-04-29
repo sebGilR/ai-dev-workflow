@@ -19,7 +19,7 @@ import (
 const (
 	maxDiffBytes             = 50_000
 	claudeReviewPlaceholder  = "<!-- Claude should add its own review findings here -->"
-	defaultGeminiModel       = "gemini-2.5-pro"
+	defaultGeminiModel       = "gemini-2.5-ultra"
 	defaultGeminiTimeoutSecs = 120
 )
 

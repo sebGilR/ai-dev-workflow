@@ -20,7 +20,7 @@ fi
 # 2. Project, Location and Model (customize these)
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "my-project")
 LOCATION="us-central1"
-MODEL_NAME="${AIDW_EMBEDDING_MODEL:-text-embedding-004}"
+MODEL_NAME="${AIDW_EMBEDDING_MODEL:-text-embedding-006}"
 
 # 3. Read input text from STDIN
 TEXT=$(cat)
