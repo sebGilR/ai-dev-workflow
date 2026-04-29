@@ -1,6 +1,11 @@
 {
   "rules": [
     {
+      "pattern": "^touch",
+      "verdict": "allow",
+      "reason": "Allowing file creation"
+    },
+    {
       "pattern": "^curl -I https://google\\.com",
       "verdict": "allow",
       "reason": "Required for diagnostics"
