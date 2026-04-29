@@ -58,11 +58,26 @@ func parseSpecTasks(path string) ([]Task, error) {
 		}
 
 		if inTasks && (strings.HasPrefix(line, "-") || strings.HasPrefix(line, "Task")) {
+			// BMAD: We only want top-level tasks for the state machine
+			// Look for "Task X:" or "- **Task X:"
+			isTask := strings.HasPrefix(line, "Task") || strings.Contains(line, "**Task")
+			if !isTask || !strings.Contains(line, ":") {
+				continue
+			}
+
 			desc := line
-			desc = strings.TrimPrefix(desc, "- [ ]")
-			desc = strings.TrimPrefix(desc, "- [x]")
 			desc = strings.TrimPrefix(desc, "-")
-			tasks = append(tasks, Task{ID: id, Description: strings.TrimSpace(desc)})
+			desc = strings.TrimSpace(desc)
+			desc = strings.Trim(desc, "*_") // Strip bold/italic
+
+			// Extract everything after the first ":"
+			parts := strings.SplitN(desc, ":", 2)
+			if len(parts) < 2 { continue }
+
+			desc = strings.TrimSpace(parts[1])
+			if desc == "" { continue }
+
+			tasks = append(tasks, Task{ID: id, Description: desc})
 			id++
 		}
 	}
@@ -76,16 +91,20 @@ func parseCompletedTasks(path string) (map[int]bool, error) {
 
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		if strings.Contains(line, "Task") && strings.Contains(line, "complete") {
 			var id int
-			_, err := fmt.Sscanf(strings.TrimSpace(line), "### Task %d complete", &id)
+			// Try matching "### Task %d complete"
+			_, err := fmt.Sscanf(line, "### Task %d complete", &id)
+			if err != nil {
+				// Try matching "Task %d complete" (stripped of markdown)
+				_, err = fmt.Sscanf(line, "Task %d complete", &id)
+			}
 			if err == nil && id > 0 { completed[id] = true }
 		}
 	}
 	return completed, nil
 }
-
 func MarkTaskDone(repoPath string, taskID int, description string) error {
 	state, err := EnsureBranchState(repoPath, "")
 	if err != nil { return err }

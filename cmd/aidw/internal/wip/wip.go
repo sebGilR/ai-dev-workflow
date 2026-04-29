@@ -24,9 +24,9 @@ var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true, "task-con
 // stages is the set of valid workflow stages.
 var stages = map[string]bool{
 	"started":       true,
-	"planned":       true,
-	"specified":     true,
-	"spec-reviewed": true,
+	"planned":       true, // Legacy/Simple
+	"specified":     true, // BMAD: spec.md exists
+	"spec-reviewed": true, // BMAD: skeptic pass done
 	"researched":    true,
 	"implementing":  true,
 	"reviewed":      true,
@@ -238,16 +238,20 @@ func SetStage(repoPath, stage string, skipVerification bool) (SetStageResult, er
 
 	// Verify required files for specific stages
 	if !skipVerification {
-		var requiredFile string
+		var requiredFiles []string
 		switch stage {
 		case "planned":
-			requiredFile = "plan.md"
+			requiredFiles = []string{"plan.md"}
+		case "specified":
+			requiredFiles = []string{"spec.md", "task-context.md"}
+		case "spec-reviewed":
+			requiredFiles = []string{"spec.md", "task-context.md", "review.md"}
 		case "researched":
-			requiredFile = "research.md"
+			requiredFiles = []string{"research.md", "task-context.md"}
 		case "reviewed":
-			requiredFile = "review.md"
+			requiredFiles = []string{"review.md"}
 		}
-		if requiredFile != "" {
+		for _, requiredFile := range requiredFiles {
 			ok, errMsg := VerifyWipFile(state.WipDir, requiredFile)
 			if !ok {
 				return nil, fmt.Errorf("cannot transition to stage '%s': %s\nHint: Ensure %s exists and has content before setting this stage.\n      Use --skip-verification to bypass this check (not recommended).", stage, errMsg, requiredFile)
@@ -309,9 +313,103 @@ func WriteContextSummary(repoPath string) (*ContextSummaryResult, error) {
 		Branch:      branch,
 	}, nil
 }
+// NextAction represents the recommended next step in the workflow.
+type NextAction struct {
+	Stage       string `json:"current_stage"`
+	Action      string `json:"recommended_action"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// GetNextAction identifies the logical next step based on current state.
+func GetNextAction(repoPath string) (*NextAction, error) {
+	state, err := EnsureBranchState(repoPath, "")
+	if err != nil {
+		return nil, err
+	}
+
+	stage := state.Status.Stage
+
+	switch stage {
+	case "started":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Plan",
+			Command:     "/wip-plan",
+			Description: "Research context and draft the implementation specification (spec.md).",
+		}, nil
+	case "planned":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Specify",
+			Command:     "Draft spec.md",
+			Description: "Convert your plan into a hardened specification with Task X headers.",
+		}, nil
+	case "specified":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Review Spec",
+			Command:     "/wip-plan (Skeptic Step)",
+			Description: "Run the Skeptic subagent to find flaws in your spec.md.",
+		}, nil
+	case "spec-reviewed":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Implement",
+			Command:     "/wip-implement",
+			Description: "Start the autonomous implementation loop based on spec.md.",
+		}, nil
+	case "implementing":
+		task, _ := NextTask(repoPath)
+		if task != nil {
+			return &NextAction{
+				Stage:       stage,
+				Action:      "Continue Implementation",
+				Command:     fmt.Sprintf("aidw task next . (Task %d)", task.ID),
+				Description: fmt.Sprintf("Next task: %s", task.Description),
+			}, nil
+		}
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Review",
+			Command:     "/wip-review",
+			Description: "Implementation finished. Build a review bundle and verify changes.",
+		}, nil
+	case "researched":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Specify",
+			Command:     "Draft spec.md",
+			Description: "Use your research to draft a hardened specification.",
+		}, nil
+	case "reviewed":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "Fix Review",
+			Command:     "/wip-fix-review",
+			Description: "Address the findings consolidated in review.md.",
+		}, nil
+	case "review-fixed":
+		return &NextAction{
+			Stage:       stage,
+			Action:      "PR Prep",
+			Command:     "/wip-pr",
+			Description: "Draft the Pull Request content (pr.md).",
+		}, nil
+	}
+
+	return &NextAction{
+		Stage:       stage,
+		Action:      "Continue",
+		Command:     "aidw status .",
+		Description: "Check current branch status for clues.",
+	}, nil
+}
 
 // SummarizeStatus returns a human-readable status summary.
 func SummarizeStatus(repoPath string) (string, error) {
+// ...
+
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
 		return "", err
@@ -341,13 +439,20 @@ func SummarizeStatus(repoPath string) (string, error) {
 	stage := state.Status.Stage
 	updatedAt := state.Status.UpdatedAt
 
+	next, _ := GetNextAction(top)
+	nextStr := ""
+	if next != nil {
+		nextStr = fmt.Sprintf("\nRecommended Next Step:\n- Action: %s\n- Command: %s\n- Why: %s\n", next.Action, next.Command, next.Description)
+	}
+
 	return fmt.Sprintf(`Repo: %s
 Branch: %s
 Stage: %s
 Updated: %s
 WIP directory: %s
-
+%s
 Context preview:
+`, top, branch, stage, updatedAt, state.WipDir, nextStr) + fmt.Sprintf(`
 %s
 
 Plan preview:
@@ -355,7 +460,7 @@ Plan preview:
 
 Execution preview:
 %s
-`, top, branch, stage, updatedAt, state.WipDir, trim(context, 600), trim(plan, 600), trim(execution, 600)), nil
+`, trim(context, 600), trim(plan, 600), trim(execution, 600)), nil
 }
 
 // CleanupResult is returned by CleanupBranch.

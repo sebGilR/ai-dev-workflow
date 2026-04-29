@@ -39,10 +39,13 @@ DO NOT include raw file contents. Include distilled insights and references (fil
 1. **Clarify Intent**: Targeted questions only.
 2. **Semantic Research**: 
    - Run `aidw memory search .` with 2-3 queries related to the task.
-   - **Global Recall**: If you need to understand how common patterns (OAuth, database migrations, CLI structure) were handled in other projects, run `aidw memory search --global "your query"`.
+   - **Global Recall Mandate**: If a local pattern is not found, or if you are implementing a common architecture (e.g., Auth, DB Migrations, MCP Servers), you MUST check the Global Memory to see how this was solved in other projects:
+     ```bash
+     aidw memory search "your query" --global
+     ```
 3. **Recall Memory**: 
    - Use `aidw memory list .` for branch-specific facts.
-   - Use `aidw memory list --global` if you suspect relevant architectural decisions were made in other repositories.
+   - Use `aidw memory list --global` for cross-repo conventions.
 4. **Deep Dive**: Use Serena/Read to inspect the candidate code blocks found during search.
 5. **Distill Context**: Produce `task-context.md`.
 
