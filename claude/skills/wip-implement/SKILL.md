@@ -20,11 +20,18 @@ agent: implementer
 2. Do not "optimize" the order or combine unrelated tasks.
 3. For every change, append a concise update to `execution.md` describing what was changed and why.
 
-## STEP 3: Self-Review & Verification
+## STEP 3: Self-Review & Verification (Tiered Autonomy)
 
 1. After completing all tasks, run a self-verification pass.
 2. Check your work against the **Acceptance Criteria (AC)** defined in `spec.md`.
-3. If errors are found, fix them immediately and update `execution.md`.
+3. **Safety First**: Before running any Bash command (tests, builds, etc.), check its safety:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw policy check . "<your command>"
+   ```
+4. **Autonomous Execution**:
+   - If the verdict is **"allow"**, you may proceed with the command autonomously (if your environment supports it).
+   - If the verdict is **"deny"**, you MUST ask the user for explicit permission before running the command.
+5. If errors are found, fix them immediately and update `execution.md`.
 
 ## STEP 4: Finalize
 
