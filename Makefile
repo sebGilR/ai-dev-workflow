@@ -3,7 +3,7 @@
 INSTALL_ROOT ?= $(HOME)/.claude/ai-dev-workflow
 
 build:
-	go build -o bin/aidw-$(shell go env GOOS)-$(shell go env GOARCH) ./cmd/aidw
+	go build -tags sqlite_ext -o bin/aidw-$(shell go env GOOS)-$(shell go env GOARCH) ./cmd/aidw
 
 build-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build -o bin/aidw-darwin-arm64 ./cmd/aidw
