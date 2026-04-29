@@ -39,6 +39,7 @@ var memoryStoreCmd = &cobra.Command{
 		repoPath := args[0]
 		key := args[1]
 		val := args[2]
+		semantic, _ := c.Flags().GetBool("semantic")
 
 		state, err := wip.EnsureBranchState(repoPath, "")
 		if err != nil {
@@ -51,28 +52,50 @@ var memoryStoreCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		if err := db.StoreFact(state.Repo, state.Branch, key, val); err != nil {
+		var emb []float32
+		if semantic {
+			client, err := memory.NewEmbeddingClient()
+			if err != nil {
+				Die("embedding client: %v", err)
+			}
+			emb, err = client.Embed(fmt.Sprintf("%s: %s", key, val))
+			if err != nil {
+				Die("embed: %v", err)
+			}
+		}
+
+		if err := db.StoreFact(state.Repo, state.Branch, key, val, emb); err != nil {
 			Die("store: %v", err)
 		}
 
 		PrintJSON(map[string]any{
-			"status": "stored",
-			"key":    key,
-			"branch": state.Branch,
+			"status":   "stored",
+			"key":      key,
+			"branch":   state.Branch,
+			"semantic": semantic,
 		})
 	},
 }
 
 var memoryListCmd = &cobra.Command{
-	Use:   "list <path>",
-	Short: "List all persistent facts for the current branch",
-	Args:  cobra.ExactArgs(1),
+	Use:   "list [path]",
+	Short: "List all persistent facts. Defaults to current branch.",
+	Args:  cobra.MaximumNArgs(1),
 	Run: func(c *cobra.Command, args []string) {
-		repoPath := args[0]
-
-		state, err := wip.EnsureBranchState(repoPath, "")
-		if err != nil {
-			Die("wip state: %v", err)
+		isGlobal, _ := c.Flags().GetBool("global")
+		
+		var repoPath, repoName, branch string
+		if !isGlobal {
+			if len(args) == 0 {
+				Die("repo path is required for local listing")
+			}
+			repoPath = args[0]
+			state, err := wip.EnsureBranchState(repoPath, "")
+			if err != nil {
+				Die("wip state: %v", err)
+			}
+			repoName = state.Repo
+			branch = state.Branch
 		}
 
 		db, err := memory.Open()
@@ -81,12 +104,11 @@ var memoryListCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		facts, err := db.ListFacts(state.Repo, state.Branch)
+		facts, err := db.ListFacts(repoName, branch)
 		if err != nil {
 			Die("list: %v", err)
 		}
 
-		// Sort keys for stable output
 		keys := make([]string, 0, len(facts))
 		for k := range facts {
 			keys = append(keys, k)
@@ -103,7 +125,8 @@ var memoryListCmd = &cobra.Command{
 		}
 
 		PrintJSON(map[string]any{
-			"branch": state.Branch,
+			"global": isGlobal,
+			"branch": branch,
 			"facts":  out,
 		})
 	},
@@ -152,8 +175,6 @@ var memoryIndexCmd = &cobra.Command{
 				return nil
 			}
 
-			// Simple chunking for now (one chunk per file for simplicity)
-			// TODO: Add proper chunking logic
 			relPath, _ := filepath.Rel(state.Repo, path)
 			emb, err := client.Embed(content)
 			if err != nil {
@@ -179,16 +200,26 @@ var memoryIndexCmd = &cobra.Command{
 }
 
 var memorySearchCmd = &cobra.Command{
-	Use:   "search <path> <query>",
+	Use:   "search [path] <query>",
 	Short: "Perform semantic search over project knowledge",
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.MinimumNArgs(1),
 	Run: func(c *cobra.Command, args []string) {
-		repoPath := args[0]
-		query := args[1]
-
-		state, err := wip.EnsureBranchState(repoPath, "")
-		if err != nil {
-			Die("wip state: %v", err)
+		isGlobal, _ := c.Flags().GetBool("global")
+		var repoPath, query string
+		
+		if isGlobal {
+			query = args[0]
+		} else {
+			if len(args) < 2 {
+				Die("repo path and query are required for local search")
+			}
+			repoPath = args[0]
+			query = args[1]
+			state, err := wip.EnsureBranchState(repoPath, "")
+			if err != nil {
+				Die("wip state: %v", err)
+			}
+			repoPath = state.Repo
 		}
 
 		db, err := memory.Open()
@@ -207,13 +238,14 @@ var memorySearchCmd = &cobra.Command{
 			Die("embed query: %v", err)
 		}
 
-		results, err := db.Search(state.Repo, queryEmb, 5)
+		results, err := db.Search(repoPath, queryEmb, 5)
 		if err != nil {
 			Die("search: %v", err)
 		}
 
 		PrintJSON(map[string]any{
 			"query":   query,
+			"global":  isGlobal,
 			"results": results,
 		})
 	},
@@ -225,5 +257,10 @@ func init() {
 	memoryCmd.AddCommand(memoryListCmd)
 	memoryCmd.AddCommand(memoryIndexCmd)
 	memoryCmd.AddCommand(memorySearchCmd)
+
+	memoryStoreCmd.Flags().Bool("semantic", false, "Index the fact for semantic search")
+	memoryListCmd.Flags().Bool("global", false, "List facts from all repositories")
+	memorySearchCmd.Flags().Bool("global", false, "Search across all repositories")
+
 	Root.AddCommand(memoryCmd)
 }

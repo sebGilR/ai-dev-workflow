@@ -37,8 +37,12 @@ DO NOT include raw file contents. Include distilled insights and references (fil
 ## Instructions
 
 1. **Clarify Intent**: Targeted questions only.
-2. **Semantic Research**: Run `aidw memory search .` with 2-3 queries related to the task to find relevant project documentation and previous decisions.
-3. **Recall Memory**: Use `aidw memory list .` for branch-specific facts.
+2. **Semantic Research**: 
+   - Run `aidw memory search .` with 2-3 queries related to the task.
+   - **Global Recall**: If you need to understand how common patterns (OAuth, database migrations, CLI structure) were handled in other projects, run `aidw memory search --global "your query"`.
+3. **Recall Memory**: 
+   - Use `aidw memory list .` for branch-specific facts.
+   - Use `aidw memory list --global` if you suspect relevant architectural decisions were made in other repositories.
 4. **Deep Dive**: Use Serena/Read to inspect the candidate code blocks found during search.
 5. **Distill Context**: Produce `task-context.md`.
 

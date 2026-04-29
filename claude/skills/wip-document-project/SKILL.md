@@ -30,4 +30,11 @@ When this skill is used:
    ~/.claude/ai-dev-workflow/bin/aidw memory index . .claude/repo-docs/
    ```
 
-5. Summarize the documentation created and invite the user to review.
+5. **Global Share**: Store a high-level summary of the architecture in the global memory layer:
+   ```bash
+   # Extract the top 500 chars of the system overview
+   ARCH_SUMMARY=$(head -n 20 .claude/repo-docs/architecture.md)
+   ~/.claude/ai-dev-workflow/bin/aidw memory store . "project-architecture" "$ARCH_SUMMARY" --semantic
+   ```
+
+6. Summarize the documentation created and invite the user to review.
