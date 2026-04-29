@@ -13,6 +13,7 @@ import (
 
 	embedfs "aidw"
 	"aidw/cmd/aidw/internal/config"
+	"aidw/cmd/aidw/internal/memory"
 	"aidw/cmd/aidw/internal/wip"
 )
 
@@ -21,9 +22,9 @@ var (
 	copilotSkills = []string{
 		"wip-start", "wip-plan", "wip-research", "wip-implement",
 		"wip-review", "wip-fix-review", "wip-resume", "wip-pr",
-		"wip-install", "wip-cleanup", "wip-clear",
+		"wip-install", "wip-cleanup", "wip-clear", "wip-document-project",
 	}
-	copilotAgents = []string{"wip-planner", "wip-researcher", "wip-reviewer", "wip-tester"}
+	copilotAgents = []string{"wip-planner", "wip-researcher", "wip-reviewer", "wip-tester", "wip-analyst", "wip-skeptic"}
 )
 
 // CheckItem represents a single verification result.
@@ -232,6 +233,14 @@ func Run(workspacePath string) *Results {
 	npxOk := commandExists("npx")
 	warn("mcp: uvx installed (for Serena)", uvxOk)
 	warn("mcp: npx installed (for Context7)", npxOk)
+
+	db, err := memory.Open()
+	if err == nil {
+		warn("mcp: vector extension loaded", db.VectorEnabled())
+		db.Close()
+	} else {
+		warn("mcp: memory db access", false, err.Error())
+	}
 
 	mcpConfig := filepath.Join(claudeHome, "mcp.json")
 	if fileExists(mcpConfig) {
