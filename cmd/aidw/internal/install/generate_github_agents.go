@@ -3,6 +3,7 @@ package install
 import (
 	"bufio"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,26 +12,15 @@ import (
 	"aidw/cmd/aidw/internal/util"
 )
 
-// GenerateGithubAgents reads markdown files from srcDir, strips out the
+// GenerateGithubAgents reads markdown files from srcFS, strips out the
 // "### 1. Serena MCP" section, renumbers subsequent numbered sections,
 // and writes the result to destDir. It is idempotent.
-func GenerateGithubAgents(srcDir, destDir string) error {
-	info, err := os.Stat(srcDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // Nothing to do
-		}
-		return fmt.Errorf("stat src dir: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("src_dir is not a directory: %s", srcDir)
-	}
-
+func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir dest dir: %w", err)
 	}
 
-	entries, err := os.ReadDir(srcDir)
+	entries, err := fs.ReadDir(srcFS, ".")
 	if err != nil {
 		return fmt.Errorf("read src dir: %w", err)
 	}
@@ -42,10 +32,9 @@ func GenerateGithubAgents(srcDir, destDir string) error {
 			continue
 		}
 
-		srcPath := filepath.Join(srcDir, e.Name())
 		destPath := filepath.Join(destDir, e.Name())
 
-		content, err := processAgentFile(srcPath, headingNumRegex)
+		content, err := processAgentFileFS(srcFS, e.Name(), headingNumRegex)
 		if err != nil {
 			return fmt.Errorf("process %s: %w", e.Name(), err)
 		}
@@ -67,8 +56,8 @@ func GenerateGithubAgents(srcDir, destDir string) error {
 	return nil
 }
 
-func processAgentFile(srcPath string, headingNumRegex *regexp.Regexp) (string, error) {
-	file, err := os.Open(srcPath)
+func processAgentFileFS(srcFS fs.FS, name string, headingNumRegex *regexp.Regexp) (string, error) {
+	file, err := srcFS.Open(name)
 	if err != nil {
 		return "", err
 	}
@@ -110,3 +99,4 @@ func processAgentFile(srcPath string, headingNumRegex *regexp.Regexp) (string, e
 
 	return sb.String(), nil
 }
+

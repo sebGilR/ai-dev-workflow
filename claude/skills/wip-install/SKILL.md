@@ -12,10 +12,8 @@ When this skill is used:
 5. If the current repo is missing bootstrap files, suggest running:
 
 ```bash
-~/.claude/ai-dev-workflow/install.sh .
+~/.claude/ai-dev-workflow/bin/aidw bootstrap .
 ```
-
-Use `~/.claude/ai-dev-workflow/bin/aidw ensure-repo .` when you need to seed the current repo only.
 
 For a full verification:
 

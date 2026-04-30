@@ -1,6 +1,6 @@
 ---
 name: wip-upgrade
-description: Re-apply global ai-dev-workflow configs, refresh skill/agent symlinks, and migrate legacy .wip directories to the date-prefixed format.
+description: Re-apply global ai-dev-workflow configs, refresh embedded skills/agents, and migrate legacy .wip directories to the date-prefixed format.
 ---
 
 When this skill is used:
@@ -13,7 +13,7 @@ When this skill is used:
 
 2. Read the JSON result and report:
    - Which global configs were updated (CLAUDE.md, settings.json, mcp.json, gitignore)
-   - Which skills and agents were relinked
+   - Which skills and agents were refreshed from embedded assets
    - Which `.wip/<slug>` directories were renamed to `YYYYMMDD-<slug>` format
    - Any warnings
 

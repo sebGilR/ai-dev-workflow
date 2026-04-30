@@ -14,10 +14,7 @@ import (
 func TestMergeCLAUDEMd_SeedsIfMissing(t *testing.T) {
 	dir := t.TempDir()
 	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	snippet := filepath.Join(dir, "snippet.md")
-	if err := os.WriteFile(snippet, []byte("## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK\nmy snippet\n## END AI-DEV-WORKFLOW MANAGED BLOCK\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	snippet := []byte("## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK\nmy snippet\n## END AI-DEV-WORKFLOW MANAGED BLOCK\n")
 
 	if err := MergeCLAUDEMd(claudeMD, snippet); err != nil {
 		t.Fatal(err)
@@ -35,15 +32,12 @@ func TestMergeCLAUDEMd_SeedsIfMissing(t *testing.T) {
 func TestMergeCLAUDEMd_ReplacesSentinels(t *testing.T) {
 	dir := t.TempDir()
 	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	snippet := filepath.Join(dir, "snippet.md")
 
 	existing := "# Instructions\n\n## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK\nold content\n## END AI-DEV-WORKFLOW MANAGED BLOCK\n\nExtra section.\n"
 	if err := os.WriteFile(claudeMD, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(snippet, []byte("## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK\nnew content\n## END AI-DEV-WORKFLOW MANAGED BLOCK\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	snippet := []byte("## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK\nnew content\n## END AI-DEV-WORKFLOW MANAGED BLOCK\n")
 
 	if err := MergeCLAUDEMd(claudeMD, snippet); err != nil {
 		t.Fatal(err)
@@ -64,14 +58,11 @@ func TestMergeCLAUDEMd_ReplacesSentinels(t *testing.T) {
 func TestMergeCLAUDEMd_AppendIfNoSentinels(t *testing.T) {
 	dir := t.TempDir()
 	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	snippet := filepath.Join(dir, "snippet.md")
 
 	if err := os.WriteFile(claudeMD, []byte("# My Docs\n\nSome text.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(snippet, []byte("Appended content\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	snippet := []byte("Appended content\n")
 
 	if err := MergeCLAUDEMd(claudeMD, snippet); err != nil {
 		t.Fatal(err)
@@ -91,10 +82,7 @@ func TestMergeCLAUDEMd_AppendIfNoSentinels(t *testing.T) {
 func TestMergeSettings_SeedsIfMissing(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
-	tmpl := filepath.Join(dir, "template.json")
-	if err := os.WriteFile(tmpl, []byte(`{"key":"value","permissions":{}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmpl := []byte(`{"key":"value","permissions":{}}`)
 
 	if err := MergeSettings(settings, tmpl); err != nil {
 		t.Fatal(err)
@@ -112,14 +100,11 @@ func TestMergeSettings_SeedsIfMissing(t *testing.T) {
 func TestMergeSettings_UserScalarWins(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
-	tmpl := filepath.Join(dir, "template.json")
 
 	if err := os.WriteFile(settings, []byte(`{"theme":"dark"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tmpl, []byte(`{"theme":"light","newKey":"newVal"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmpl := []byte(`{"theme":"light","newKey":"newVal"}`)
 
 	if err := MergeSettings(settings, tmpl); err != nil {
 		t.Fatal(err)
@@ -139,14 +124,11 @@ func TestMergeSettings_UserScalarWins(t *testing.T) {
 func TestMergeSettings_InvalidJSONBacksUp(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
-	tmpl := filepath.Join(dir, "template.json")
 
 	if err := os.WriteFile(settings, []byte("NOT JSON"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tmpl, []byte(`{"k":"v"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmpl := []byte(`{"k":"v"}`)
 
 	if err := MergeSettings(settings, tmpl); err != nil {
 		t.Fatal(err)
@@ -167,14 +149,11 @@ func TestMergeSettings_InvalidJSONBacksUp(t *testing.T) {
 func TestMergeSettings_ListsDeduplicate(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
-	tmpl := filepath.Join(dir, "template.json")
 
 	if err := os.WriteFile(settings, []byte(`{"items":["a","b"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tmpl, []byte(`{"items":["b","c"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmpl := []byte(`{"items":["b","c"]}`)
 
 	if err := MergeSettings(settings, tmpl); err != nil {
 		t.Fatal(err)
@@ -188,7 +167,6 @@ func TestMergeSettings_ListsDeduplicate(t *testing.T) {
 		t.Errorf("expected 3 deduplicated items, got %d: %v", len(items), items)
 	}
 }
-
 // --- MergeMCPJSON ---
 
 func TestMergeMCPJSON_AddsServers(t *testing.T) {

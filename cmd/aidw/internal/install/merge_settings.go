@@ -10,7 +10,7 @@ import (
 	"aidw/cmd/aidw/internal/util"
 )
 
-// MergeSettings deep-merges the JSON template at templatePath into the
+// MergeSettings deep-merges the JSON template bytes into the
 // settings file at settingsPath.
 //
 // Merge rules (same as the Python implementation):
@@ -20,11 +20,7 @@ import (
 //
 // If settingsPath contains invalid JSON it is backed up and a fresh merge
 // (template only) is written.
-func MergeSettings(settingsPath, templatePath string) error {
-	templateData, err := os.ReadFile(templatePath)
-	if err != nil {
-		return fmt.Errorf("read template: %w", err)
-	}
+func MergeSettings(settingsPath string, templateData []byte) error {
 	var tmpl map[string]any
 	if err := json.Unmarshal(templateData, &tmpl); err != nil {
 		return fmt.Errorf("parse template: %w", err)

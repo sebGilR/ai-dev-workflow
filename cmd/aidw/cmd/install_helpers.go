@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"aidw/cmd/aidw/internal/install"
+	embedfs "aidw"
 )
 
 func init() {
@@ -17,11 +19,11 @@ func init() {
 	Root.AddCommand(generateGithubAgentsCmd)
 
 	mergeCLAUDEMdCmd.Flags().String("claude-md", "", "Path to CLAUDE.md")
-	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file")
+	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file (optional, defaults to embedded)")
 	mergeSettingsCmd.Flags().String("settings", "", "Path to settings.json")
-	mergeSettingsCmd.Flags().String("template", "", "Path to template JSON")
+	mergeSettingsCmd.Flags().String("template", "", "Path to template JSON (optional, defaults to embedded)")
 	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
-	generateGithubAgentsCmd.Flags().String("src", "", "Source directory containing agent markdown files")
+	generateGithubAgentsCmd.Flags().String("src", "", "Source directory containing agent markdown files (optional, defaults to embedded)")
 	generateGithubAgentsCmd.Flags().String("dest", "", "Destination directory for generated agents")
 }
 
@@ -29,12 +31,24 @@ var generateGithubAgentsCmd = &cobra.Command{
 	Use:   "generate-github-agents",
 	Short: "Generate .github/agents/ from claude/agents/ stripping MCP sections",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		src, _ := cmd.Flags().GetString("src")
+		srcPath, _ := cmd.Flags().GetString("src")
 		dest, _ := cmd.Flags().GetString("dest")
-		if src == "" || dest == "" {
-			return fmt.Errorf("--src and --dest are required")
+		if dest == "" {
+			return fmt.Errorf("--dest is required")
 		}
-		if err := install.GenerateGithubAgents(src, dest); err != nil {
+
+		var srcFS fs.FS
+		var err error
+		if srcPath != "" {
+			srcFS = os.DirFS(srcPath)
+		} else {
+			srcFS, err = fs.Sub(embedfs.FS, "claude/agents")
+			if err != nil {
+				return fmt.Errorf("embedded agents: %w", err)
+			}
+		}
+
+		if err := install.GenerateGithubAgents(srcFS, dest); err != nil {
 			fmt.Fprintln(os.Stderr, "generate-github-agents:", err)
 			os.Exit(1)
 		}
@@ -47,11 +61,24 @@ var mergeCLAUDEMdCmd = &cobra.Command{
 	Short: "Insert or replace the managed block in CLAUDE.md",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		claudeMD, _ := cmd.Flags().GetString("claude-md")
-		snippet, _ := cmd.Flags().GetString("snippet")
-		if claudeMD == "" || snippet == "" {
-			return fmt.Errorf("--claude-md and --snippet are required")
+		snippetPath, _ := cmd.Flags().GetString("snippet")
+		if claudeMD == "" {
+			return fmt.Errorf("--claude-md is required")
 		}
-		if err := install.MergeCLAUDEMd(claudeMD, snippet); err != nil {
+
+		var snippetBytes []byte
+		var err error
+		if snippetPath != "" {
+			snippetBytes, err = os.ReadFile(snippetPath)
+		} else {
+			snippetBytes, err = embedfs.FS.ReadFile("templates/global/claude_managed_block.md")
+		}
+
+		if err != nil {
+			return fmt.Errorf("read snippet: %w", err)
+		}
+
+		if err := install.MergeCLAUDEMd(claudeMD, snippetBytes); err != nil {
 			fmt.Fprintln(os.Stderr, "merge-claude-md:", err)
 			os.Exit(1)
 		}
@@ -64,11 +91,24 @@ var mergeSettingsCmd = &cobra.Command{
 	Short: "Deep-merge a JSON template into settings.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		settings, _ := cmd.Flags().GetString("settings")
-		tmpl, _ := cmd.Flags().GetString("template")
-		if settings == "" || tmpl == "" {
-			return fmt.Errorf("--settings and --template are required")
+		tmplPath, _ := cmd.Flags().GetString("template")
+		if settings == "" {
+			return fmt.Errorf("--settings is required")
 		}
-		if err := install.MergeSettings(settings, tmpl); err != nil {
+
+		var tmplBytes []byte
+		var err error
+		if tmplPath != "" {
+			tmplBytes, err = os.ReadFile(tmplPath)
+		} else {
+			tmplBytes, err = embedfs.FS.ReadFile("templates/global/settings.template.json")
+		}
+
+		if err != nil {
+			return fmt.Errorf("read template: %w", err)
+		}
+
+		if err := install.MergeSettings(settings, tmplBytes); err != nil {
 			fmt.Fprintln(os.Stderr, "merge-settings:", err)
 			os.Exit(1)
 		}

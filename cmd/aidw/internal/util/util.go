@@ -3,10 +3,41 @@ package util
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 )
 
+// CopyFS recursively copies srcFS to destDir.
+func CopyFS(srcFS fs.FS, destDir string) error {
+	return fs.WalkDir(srcFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		destPath := filepath.Join(destDir, path)
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0o755)
+		}
+
+		srcFile, err := srcFS.Open(path)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+
+		destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			return err
+		}
+		defer destFile.Close()
+
+		_, err = io.Copy(destFile, srcFile)
+		return err
+	})
+}
 // AtomicWrite writes data to path via a temp file + rename to avoid partial writes.
 func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"

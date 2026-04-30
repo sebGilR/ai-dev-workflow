@@ -1,12 +1,15 @@
-// Package embedfs exposes the embedded templates filesystem.
+// Package embedfs exposes the embedded templates, skills, and agents filesystem.
 // This file lives at the module root so that //go:embed can reference
-// the templates/ directory without using ".." path elements (which are
+// these directories without using ".." path elements (which are
 // forbidden by the Go embed spec).
 package embedfs
 
 import "embed"
 
-// FS contains all files under templates/, accessible as "templates/<name>".
+// FS contains:
+// - templates/
+// - claude/skills/
+// - claude/agents/
 //
-//go:embed templates
+//go:embed templates claude/skills claude/agents bin/serena-query
 var FS embed.FS

@@ -14,14 +14,10 @@ const (
 )
 
 // MergeCLAUDEMd inserts or replaces the managed block in claudeMDPath using
-// the content from snippetPath. If claudeMDPath does not exist it is seeded
+// the content from snippetBytes. If claudeMDPath does not exist it is seeded
 // with a minimal header first. If the sentinels are absent the snippet is
 // appended to the end of the file.
-func MergeCLAUDEMd(claudeMDPath, snippetPath string) error {
-	snippetBytes, err := os.ReadFile(snippetPath)
-	if err != nil {
-		return err
-	}
+func MergeCLAUDEMd(claudeMDPath string, snippetBytes []byte) error {
 	snippet := strings.TrimSpace(string(snippetBytes)) + "\n"
 
 	var content string
