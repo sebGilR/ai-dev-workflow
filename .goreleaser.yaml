@@ -7,25 +7,65 @@ before:
     - go mod tidy
 
 builds:
-  - id: aidw
+  - id: aidw-darwin-amd64
     main: ./cmd/aidw
     binary: aidw
     env:
       - CGO_ENABLED=1
-      # Use Zig as the cross-compiler for CGO
-      - CC=zig cc -target {{ .Arch }}-{{ .Os }}{{ if .Arm }}hf{{ end }}
-      - CXX=zig c++ -target {{ .Arch }}-{{ .Os }}{{ if .Arm }}hf{{ end }}
+      - CC=zig cc -target x86_64-macos
+      - CXX=zig c++ -target x86_64-macos
     flags:
       - -tags=sqlite_ext
     goos:
       - darwin
+    goarch:
+      - amd64
+
+  - id: aidw-darwin-arm64
+    main: ./cmd/aidw
+    binary: aidw
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target aarch64-macos
+      - CXX=zig c++ -target aarch64-macos
+    flags:
+      - -tags=sqlite_ext
+    goos:
+      - darwin
+    goarch:
+      - arm64
+
+  - id: aidw-linux-amd64
+    main: ./cmd/aidw
+    binary: aidw
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target x86_64-linux-gnu
+      - CXX=zig c++ -target x86_64-linux-gnu
+    flags:
+      - -tags=sqlite_ext
+    goos:
       - linux
     goarch:
       - amd64
+
+  - id: aidw-linux-arm64
+    main: ./cmd/aidw
+    binary: aidw
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target aarch64-linux-gnu
+      - CXX=zig c++ -target aarch64-linux-gnu
+    flags:
+      - -tags=sqlite_ext
+    goos:
+      - linux
+    goarch:
       - arm64
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     # GoReleaser v2: archives.name_template is fine
     name_template: >-
       {{ .ProjectName }}_
