@@ -24,9 +24,6 @@ Go beyond basic code generation. The workflow enforces:
 *   **Context Distillation**: Automatic summarization of branch state into compact `<2KB` digests, drastically reducing token usage and cost.
 *   **Hardened Sandbox**: Pre-configured permission rules to protect sensitive files (`.env`, `secrets/`) from AI tools.
 
-### 4. 🚀 Zero-Config Onboarding
-Fully "cloneless" installation via Homebrew. Get a professional AI engineering environment set up in seconds, with intelligent defaults for model routing (Frontier vs. Efficient tiers).
-
 ---
 
 ## 🚀 Quick Start
@@ -69,6 +66,11 @@ Curated skills that automate the "boring stuff" so you can focus on architecture
 | `/wip-review` | **Validate** | Multi-source review pass including adversarial auditing. |
 | `/wip-pr` | **Deliver** | Synthesize professional PR drafts from your branch's WIP history. |
 | `/wip-resume` | **Continuity**| Zero-latency session resumption using distilled context summaries. |
+| `/wip-auto` | **Automation** | Autonomous execution mode for small, low-risk tasks (Analyst -> Implementer). |
+| `/wip-document-project` | **Intelligence** | Generate high-fidelity documentation in `.claude/repo-docs/`. |
+| `/wip-cleanup` | **Housekeeping** | Delete stale `.wip/` branch folders (keeping current). |
+| `/wip-clear` | **Housekeeping** | Delete all `.wip/` folders except the most recent. |
+| `/wip-upgrade` | **Maintenance** | Refresh global configs and repair skill/agent symlinks. |
 
 ---
 
@@ -79,6 +81,8 @@ Curated skills that automate the "boring stuff" so you can focus on architecture
 *   🔍 **`wip-researcher`**: High-precision discovery. "Find where we handle X and tell me the pattern."
 *   📐 **`wip-planner`**: Strategic reasoning. "I need to migrate Y to Z. Propose a 5-step path."
 *   🛡️ **`wip-reviewer`**: Adversarial audit. "Review this diff like a senior security engineer."
+*   🧠 **`wip-analyst`**: Documentation & Architecture. "Analyze this project and document the core pillars."
+*   🧐 **`wip-skeptic`**: Adversarial planning. Review plans for flaws and edge cases before execution.
 *   🧪 **`wip-tester`**: Quality assurance. "Write edge-case tests for this logic and verify coverage."
 
 ---
