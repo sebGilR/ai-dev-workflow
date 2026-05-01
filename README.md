@@ -88,13 +88,22 @@ During installation you'll also be prompted how to handle the files seeded per-r
 
 ## Quick start
 
-### 1. Clone the repo
+### 1. Install via Homebrew (Recommended)
+
+```bash
+brew tap sebGilR/homebrew-tap
+brew install aidw
+```
+
+### 2. Clone the repo
+
+Even when using Homebrew for the CLI, you must clone the repository as it contains the source for skills and agents.
 
 ```bash
 git clone <your-fork-or-local-path> ai-dev-workflow
 ```
 
-### 2. Run the installer
+### 3. Run the installer
 
 From a VS Code workspace root (single repo or parent of multiple repos):
 
@@ -186,6 +195,7 @@ By default, this script is configured for **Gemini (Vertex AI via gcloud OAuth)*
 | `/wip-fix-review` | Fix review issues, update `execution.md` |
 | `/wip-resume` | Summarize current state and continue from the right stage |
 | `/wip-pr` | Draft PR content into `pr.md` |
+| `/wip-setup-brew` | Migrate manual installation to Homebrew |
 
 Action skills can be invoked explicitly with `/wip-*` slash commands, or Claude will infer the right skill to invoke based on your conversation context (e.g. saying "plan this out" or "let's implement").
 
