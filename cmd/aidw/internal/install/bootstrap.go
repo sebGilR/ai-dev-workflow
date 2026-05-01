@@ -25,9 +25,16 @@ type BootstrapResult struct {
 	Warnings    []string `json:"warnings,omitempty"`
 }
 
+// BootstrapOptions configures the bootstrap process.
+type BootstrapOptions struct {
+	RepoPath    string // Path to a specific repository to bootstrap.
+	SourcePath  string // If provided, symlink skills/agents from this repo instead of copying from embedded FS.
+	Interactive bool   // If true, prompt for optional features (Adversarial Review, RTK).
+	SetupShell  bool   // If true, patch shell profile and create aidw.env.sh.
+}
+
 // Bootstrap initializes the global aidw environment (~/.claude).
-// If a repoPath is provided, it also bootstraps that repository.
-func Bootstrap(repoPath string, w io.Writer) (*BootstrapResult, error) {
+func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 	result := &BootstrapResult{}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -42,13 +49,27 @@ func Bootstrap(repoPath string, w io.Writer) (*BootstrapResult, error) {
 	os.MkdirAll(copilotHome, 0o755)
 
 	// 2. Extract Skills and Agents
-	fmt.Fprintln(w, "→ Extracting embedded skills and agents...")
-	skills, agents, err := extractEmbedded(claudeHome, copilotHome, w)
-	if err != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("extract: %v", err))
+	if opts.SourcePath != "" {
+		src, err := filepath.Abs(opts.SourcePath)
+		if err != nil {
+			return nil, fmt.Errorf("source path: %w", err)
+		}
+		fmt.Fprintf(w, "→ Symlinking skills and agents from: %s\n", src)
+		skills, agents, err := linkFromSource(src, claudeHome, copilotHome, w)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("symlink: %v", err))
+		}
+		result.Skills = skills
+		result.Agents = agents
+	} else {
+		fmt.Fprintln(w, "→ Extracting embedded skills and agents...")
+		skills, agents, err := extractEmbedded(claudeHome, copilotHome, w)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("extract: %v", err))
+		}
+		result.Skills = skills
+		result.Agents = agents
 	}
-	result.Skills = skills
-	result.Agents = agents
 
 	// 3. Install sqlite-vec
 	if err := InstallSqliteVec(w); err != nil {
@@ -106,17 +127,66 @@ func Bootstrap(repoPath string, w io.Writer) (*BootstrapResult, error) {
 		result.Gitignore = "updated"
 	}
 
-	// 8. Repo-specific bootstrap
-	if repoPath != "" {
-		fmt.Fprintf(w, "→ Bootstrapping repository: %s\n", repoPath)
-		if _, err := wip.EnsureRepo(repoPath); err != nil {
+	// 8. Setup Shell and Environment
+	if opts.SetupShell {
+		fmt.Fprintln(w, "→ Setting up shell profile and environment...")
+		if err := SetupShell(opts.Interactive, w); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("shell-setup: %v", err))
+		}
+	}
+
+	// 9. Repo-specific bootstrap
+	if opts.RepoPath != "" {
+		fmt.Fprintf(w, "→ Bootstrapping repository: %s\n", opts.RepoPath)
+		if _, err := wip.EnsureRepo(opts.RepoPath); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("repo bootstrap: %v", err))
 		} else {
-			result.RepoPath = repoPath
+			result.RepoPath = opts.RepoPath
 		}
 	}
 
 	return result, nil
+}
+
+func linkFromSource(src, claudeHome, copilotHome string, w io.Writer) ([]string, []string, error) {
+	var skills, agents []string
+
+	// Skills
+	srcSkills := filepath.Join(src, "claude", "skills")
+	destClaude := filepath.Join(claudeHome, "skills")
+	destCopilot := filepath.Join(copilotHome, "skills")
+
+	entries, err := os.ReadDir(srcSkills)
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				name := e.Name()
+				skills = append(skills, name)
+				util.SafeLink(filepath.Join(srcSkills, name), filepath.Join(destClaude, name))
+				util.SafeLink(filepath.Join(srcSkills, name), filepath.Join(destCopilot, name))
+			}
+		}
+	}
+
+	// Agents
+	srcAgents := filepath.Join(src, "claude", "agents")
+	destAgents := filepath.Join(claudeHome, "agents")
+
+	entries, err = os.ReadDir(srcAgents)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".md" {
+				name := e.Name()
+				agents = append(agents, name)
+				util.SafeLink(filepath.Join(srcAgents, name), filepath.Join(destAgents, name))
+			}
+		}
+	}
+
+	// Managed link back to repo
+	util.SafeLink(src, filepath.Join(claudeHome, "ai-dev-workflow"))
+
+	return skills, agents, nil
 }
 
 func extractEmbedded(claudeHome, copilotHome string, w io.Writer) ([]string, []string, error) {

@@ -147,7 +147,7 @@ if [ ! -x "$SCRIPT_DIR/bin/aidw" ] || ! "$SCRIPT_DIR/bin/aidw" --version &>/dev/
 fi
 
 # Delegate to Go binary for most installation tasks
-"$SCRIPT_DIR/bin/aidw" bootstrap "$WORKSPACE_ROOT"
+"$SCRIPT_DIR/bin/aidw" bootstrap --setup-shell --interactive "$WORKSPACE_ROOT"
 
 # Serena LSP setup — detect workspace language and install required LSP binary
 # ---------------------------------------------------------------------------

@@ -88,7 +88,31 @@ func ParseIntEnv(key string, defaultVal int) int {
 	return v
 }
 
-// TruncateDiff truncates text to at most limit bytes, preserving valid UTF-8.
+// SafeLink creates a symlink from src to dest. 
+// If dest already points to src, it does nothing.
+// If dest exists and is NOT a symlink, it returns an error.
+// If dest is a stale symlink, it updates it.
+func SafeLink(src, dest string) error {
+	os.MkdirAll(filepath.Dir(dest), 0o755)
+
+	info, err := os.Lstat(dest)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			current, err := os.Readlink(dest)
+			if err == nil && current == src {
+				return nil
+			}
+			// Stale or different symlink - remove it to update
+			os.Remove(dest)
+		} else {
+			return fmt.Errorf("%s exists and is not a managed symlink", dest)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	return os.Symlink(src, dest)
+}
 // Returns the (possibly truncated) string and whether truncation occurred.
 func TruncateDiff(text string, limit int) (string, bool) {
 	b := []byte(text)

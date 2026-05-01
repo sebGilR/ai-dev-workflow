@@ -23,7 +23,7 @@
 
 ## 🚀 Quick Start
 
-### 1. Install the CLI (Recommended)
+### 1. Install the CLI
 
 ```bash
 brew tap sebGilR/homebrew-tap
@@ -32,21 +32,30 @@ brew install aidw
 
 ### 2. Setup the Workspace
 
-Clone the repository to a stable location (the CLI uses this as a source for skills and agents) and run the installer:
+Initialize the global environment and bootstrap your current repository in one command:
 
 ```bash
-git clone https://github.com/sebGilR/ai-dev-workflow.git
-./ai-dev-workflow/install.sh .
+aidw bootstrap --setup-shell --interactive .
 ```
 
 ### 3. Start Engineering
 
-Open Claude Code in any repo and initialize your workflow:
+Open Claude Code and initialize your branch:
 
 ```bash
 /wip-start
 ```
 
+---
+
+## 🛠 For Developers (Optional)
+
+If you want to contribute to the skills or agents, clone the repository and use the `--source-path` flag to symlink them:
+
+```bash
+git clone https://github.com/sebGilR/ai-dev-workflow.git
+aidw bootstrap --setup-shell --source-path ./ai-dev-workflow .
+```
 ---
 
 ## 🛠 The Skill Library

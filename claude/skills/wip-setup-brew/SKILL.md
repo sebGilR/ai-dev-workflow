@@ -16,25 +16,20 @@ When this skill is used:
    brew install aidw
    ```
 
-3. Locate the environment file. It is typically at:
-   `~/.claude/ai-dev-workflow/aidw.env.sh`
-
-4. Comment out the local PATH modification to favor the Homebrew binary:
-   - **Search for**: `[[ ":$PATH:" != *":$HOME/.claude/ai-dev-workflow/bin:"* ]] && export PATH="$HOME/.claude/ai-dev-workflow/bin:$PATH"`
-   - **Replace with**: `# [[ ":$PATH:" != *":$HOME/.claude/ai-dev-workflow/bin:"* ]] && export PATH="$HOME/.claude/ai-dev-workflow/bin:$PATH"`
-
-5. Verify the migration:
+3. Run the new bootstrap command to refresh the environment and use the Homebrew binary:
    ```bash
-   source ~/.claude/ai-dev-workflow/aidw.env.sh
+   aidw bootstrap --setup-shell --interactive .
+   ```
+
+4. Verify the migration:
+   ```bash
    which aidw
    aidw version
    ```
    *The path should point to `/opt/homebrew/bin/aidw` or `/usr/local/bin/aidw`.*
 
-6. Clean up the local repository's built binary directory:
-   ```bash
-   # In the root of the ai-dev-workflow repo:
-   rm -rf bin/
-   ```
+5. Clean up the old manual installation artifacts:
+   - If the user had a local clone, they can remove the `bin/` directory within it.
+   - If they want to switch to a fully "cloneless" setup, they can delete the local repository entirely *after* confirming the Homebrew version is working (the `bootstrap` command above extracted the skills/agents into `~/.claude`).
 
-7. Confirm success to the user. Explain that the `aidw` binary is now managed by Homebrew (`brew upgrade aidw`), but the local repository must be kept because it contains the source for skills and agents.
+6. Confirm success to the user. Explain that the `aidw` binary is now managed by Homebrew (`brew upgrade aidw`).

@@ -26,7 +26,11 @@ Pass a repo path to also run ensure-repo and migrate-wip for that directory.`,
 			repoPath = args[0]
 		}
 
-		result, err := install.Bootstrap(repoPath, os.Stderr)
+		opts := install.BootstrapOptions{
+			RepoPath: repoPath,
+		}
+
+		result, err := install.Bootstrap(opts, os.Stderr)
 		if err != nil {
 			Die("upgrade: %v", err)
 		}

@@ -18,7 +18,18 @@ var bootstrapCmd = &cobra.Command{
 			repoPath = args[0]
 		}
 
-		result, err := install.Bootstrap(repoPath, os.Stderr)
+		sourcePath, _ := c.Flags().GetString("source-path")
+		interactive, _ := c.Flags().GetBool("interactive")
+		setupShell, _ := c.Flags().GetBool("setup-shell")
+
+		opts := install.BootstrapOptions{
+			RepoPath:    repoPath,
+			SourcePath:  sourcePath,
+			Interactive: interactive,
+			SetupShell:  setupShell,
+		}
+
+		result, err := install.Bootstrap(opts, os.Stderr)
 		if err != nil {
 			Die("bootstrap: %v", err)
 		}
@@ -27,5 +38,8 @@ var bootstrapCmd = &cobra.Command{
 }
 
 func init() {
+	bootstrapCmd.Flags().String("source-path", "", "If provided, symlink skills/agents from this repo")
+	bootstrapCmd.Flags().Bool("interactive", false, "Prompt for optional features (Adversarial Review, RTK)")
+	bootstrapCmd.Flags().Bool("setup-shell", false, "Patch shell profile and create aidw.env.sh")
 	Root.AddCommand(bootstrapCmd)
 }
