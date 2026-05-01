@@ -26,6 +26,18 @@ Go beyond basic code generation. The workflow enforces:
 
 ---
 
+## 🛠 Technical Deep Dive
+
+Built by engineers for engineers, `aidw` leverages a modern local-first stack:
+
+*   **⚡️ Core**: A high-performance CLI written in **Go 1.25**, ensuring zero-dependency execution and fast startup.
+*   **🔍 Vector Search**: Powered by an integrated **SQLite** database with the **`sqlite-vec`** extension. It enables semantic search over project documentation without requiring a cloud-hosted vector store.
+*   **🔌 MCP Ecosystem**: Native support for the **Model Context Protocol**. It automatically configures and manages local MCP servers to extend Claude's capabilities.
+*   **🔭 Semantic Navigation**: Deep integration with **Serena**, a custom LSP-based bridge that provides the AI with true semantic understanding (symbol definitions, references, call-graphs) rather than just text matching.
+*   **📉 Token Optimization**: Uses **RTK** for intelligent terminal output compression and automated **Context Distillation** to keep conversation windows lean and cost-effective.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Install the CLI
