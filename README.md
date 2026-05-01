@@ -66,6 +66,7 @@ Curated skills that automate the "boring stuff" so you can focus on architecture
 | `/wip-review` | **Validate** | Multi-source review pass including adversarial auditing. |
 | `/wip-pr` | **Deliver** | Synthesize professional PR drafts from your branch's WIP history. |
 | `/wip-resume` | **Continuity**| Zero-latency session resumption using distilled context summaries. |
+| `/wip-sync` | **Continuity**| Save current "brain state" and git status to the WIP context. |
 | `/wip-auto` | **Automation** | Autonomous execution mode for small, low-risk tasks (Analyst -> Implementer). |
 | `/wip-document-project` | **Intelligence** | Generate high-fidelity documentation in `.claude/repo-docs/`. |
 | `/wip-cleanup` | **Housekeeping** | Delete stale `.wip/` branch folders (keeping current). |

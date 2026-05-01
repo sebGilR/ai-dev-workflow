@@ -23,7 +23,7 @@ var (
 		"wip-start", "wip-plan", "wip-research", "wip-implement",
 		"wip-review", "wip-fix-review", "wip-resume", "wip-pr",
 		"wip-install", "wip-cleanup", "wip-clear", "wip-document-project",
-		"wip-setup-brew",
+		"wip-setup-brew", "wip-sync",
 	}
 	copilotAgents = []string{"wip-planner", "wip-researcher", "wip-reviewer", "wip-tester", "wip-analyst", "wip-skeptic"}
 )
