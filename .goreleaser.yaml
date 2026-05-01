@@ -38,8 +38,8 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
-# GoReleaser v2: homebrews instead of brews
-homebrews:
+# GoReleaser v2: brews instead of homebrews
+brews:
   - name: aidw
     repository:
       owner: sebGilR
