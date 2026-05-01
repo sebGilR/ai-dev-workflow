@@ -7,20 +7,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
-	"sync"
-
-	"github.com/mattn/go-sqlite3"
 )
 
 const (
 	// VectorDimensions matches the default Google text-embedding-004 model.
 	VectorDimensions = 768
-	driverName       = "sqlite3_with_vec"
-)
-
-var (
-	registerOnce sync.Once
 )
 
 // DB manages the local memory database.
@@ -40,24 +31,7 @@ func Open() (*DB, error) {
 		return nil, err
 	}
 
-	// Register the custom driver once to avoid "driver already registered" panics.
-	registerOnce.Do(func() {
-		sql.Register(driverName, &sqlite3.SQLiteDriver{
-			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-				libName := "vec0.dylib"
-				if runtime.GOOS == "linux" {
-					libName = "vec0.so"
-				}
-
-				libPath := filepath.Join(home, ".claude", "lib", libName)
-				if _, err := os.Stat(libPath); err != nil {
-					return nil // Skip if lib not found, fallback to standard sqlite
-				}
-
-				return conn.LoadExtension(libPath, "sqlite3_vec_init")
-			},
-		})
-	})
+	registerDriver(home)
 
 	conn, err := sql.Open(driverName, dbPath)
 	if err != nil {

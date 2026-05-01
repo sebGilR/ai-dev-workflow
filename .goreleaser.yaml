@@ -11,11 +11,7 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=1
-      - CC=zig cc -target x86_64-macos
-      - CXX=zig c++ -target x86_64-macos
-    flags:
-      - -tags=sqlite_ext
+      - CGO_ENABLED=0
     goos:
       - darwin
     goarch:
@@ -25,11 +21,7 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=1
-      - CC=zig cc -target aarch64-macos
-      - CXX=zig c++ -target aarch64-macos
-    flags:
-      - -tags=sqlite_ext
+      - CGO_ENABLED=0
     goos:
       - darwin
     goarch:
@@ -39,11 +31,7 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=1
-      - CC=zig cc -target x86_64-linux-gnu
-      - CXX=zig c++ -target x86_64-linux-gnu
-    flags:
-      - -tags=sqlite_ext
+      - CGO_ENABLED=0
     goos:
       - linux
     goarch:
@@ -53,11 +41,7 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=1
-      - CC=zig cc -target aarch64-linux-gnu
-      - CXX=zig c++ -target aarch64-linux-gnu
-    flags:
-      - -tags=sqlite_ext
+      - CGO_ENABLED=0
     goos:
       - linux
     goarch:
