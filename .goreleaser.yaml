@@ -11,7 +11,10 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=1 # Required for mattn/go-sqlite3
+      - CGO_ENABLED=1
+      # Use Zig as the cross-compiler for CGO
+      - CC=zig cc -target {{ .Arch }}-{{ .Os }}{{ if .Arm }}hf{{ end }}
+      - CXX=zig c++ -target {{ .Arch }}-{{ .Os }}{{ if .Arm }}hf{{ end }}
     flags:
       - -tags=sqlite_ext
     goos:
@@ -23,7 +26,7 @@ builds:
 
 archives:
   - format: tar.gz
-    # this name template makes the result look like: aidw_v1.2.3_darwin_arm64.tar.gz
+    # GoReleaser v2: archives.name_template is fine
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -31,25 +34,12 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
-    # use zip for windows archives
-    format_overrides:
-      - goos: windows
-        format: zip
 
 checksum:
   name_template: 'checksums.txt'
 
-snapshot:
-  name_template: "{{ incpatch .Version }}-next"
-
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-
-brews:
+# GoReleaser v2: homebrews instead of brews
+homebrews:
   - name: aidw
     repository:
       owner: sebGilR
