@@ -5,14 +5,7 @@ import (
 )
 
 func TestLoad_AdversarialDefaults(t *testing.T) {
-	t.Setenv("AIDW_ADVERSARIAL_REVIEW", "")
-	t.Setenv("AIDW_ADVERSARIAL_PROVIDER", "")
-	t.Setenv("AIDW_ADVERSARIAL_MODEL", "")
-	t.Setenv("AIDW_ADVERSARIAL_TIMEOUT", "")
-	t.Setenv("AIDW_GEMINI_REVIEW", "")
-	t.Setenv("AIDW_GEMINI_MODEL", "")
-	t.Setenv("AIDW_GEMINI_TIMEOUT", "")
-
+	clearEnv(t)
 	cfg := Load()
 
 	if cfg.AdversarialProvider != DefaultAdversarialProvider {
@@ -29,6 +22,23 @@ func TestLoad_AdversarialDefaults(t *testing.T) {
 	}
 	if cfg.AdversarialSet {
 		t.Error("AdversarialSet should be false when unset")
+	}
+}
+
+func clearEnv(t *testing.T) {
+	vars := []string{
+		"AIDW_ADVERSARIAL_REVIEW",
+		"AIDW_ADVERSARIAL_PROVIDER",
+		"AIDW_ADVERSARIAL_MODEL",
+		"AIDW_ADVERSARIAL_TIMEOUT",
+		"AIDW_GEMINI_REVIEW",
+		"AIDW_GEMINI_MODEL",
+		"AIDW_GEMINI_TIMEOUT",
+		"AIDW_FRONTIER_MODEL",
+		"AIDW_EFFICIENT_MODEL",
+	}
+	for _, v := range vars {
+		t.Setenv(v, "")
 	}
 }
 

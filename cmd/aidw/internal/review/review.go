@@ -314,7 +314,8 @@ func (codexProvider) run(diffText, prompt, model string, timeoutSecs int) (strin
 		return "", "not_installed", nil
 	}
 	// codex reads prompt from args; diff is passed via stdin.
-	args := []string{prompt}
+	// We MUST use the 'exec' subcommand for non-interactive execution to avoid TTY errors.
+	args := []string{"exec", prompt}
 	if model != "" {
 		args = append([]string{"--model", model}, args...)
 	}

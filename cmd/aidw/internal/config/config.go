@@ -80,10 +80,10 @@ func Load() Config {
 
 	var adversarialReview bool
 	var adversarialSet bool
-	if advReviewSet {
+	if advReviewSet && advReviewRaw != "" {
 		adversarialReview = advReviewRaw == "1"
 		adversarialSet = true
-	} else if geminiReviewSet {
+	} else if geminiReviewSet && geminiReviewRaw != "" {
 		adversarialReview = geminiReviewRaw == "1"
 		adversarialSet = false
 	}

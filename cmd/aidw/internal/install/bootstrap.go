@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"aidw/cmd/aidw/internal/git"
 	"aidw/cmd/aidw/internal/util"
 	"aidw/cmd/aidw/internal/wip"
 	embedfs "aidw"
@@ -15,6 +16,7 @@ import (
 // BootstrapResult summarises what the bootstrap/upgrade process applied.
 type BootstrapResult struct {
 	ClaudeMD    string   `json:"claude_md"`
+	GeminiMD    string   `json:"gemini_md"`
 	Settings    string   `json:"settings"`
 	MCPJSON     string   `json:"mcp_json"`
 	Gitignore   string   `json:"gitignore"`
@@ -118,7 +120,24 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("claude.md snippet missing: %v", err))
 	}
 
-	// 7. Update global gitignore
+	// 7. Merge GEMINI.md (Global)
+	fmt.Fprintln(w, "→ Updating global GEMINI.md...")
+	geminiHome := filepath.Join(home, ".gemini")
+	os.MkdirAll(geminiHome, 0o755)
+	geminiMDPath := filepath.Join(geminiHome, "GEMINI.md")
+	gSnippet, err := embedfs.FS.ReadFile("templates/global/gemini_managed_block.md")
+	if err == nil {
+		if err := MergeGEMINIMd(geminiMDPath, gSnippet); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("gemini-md: %v", err))
+			result.GeminiMD = "failed"
+		} else {
+			result.GeminiMD = geminiMDPath
+		}
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("gemini.md snippet missing: %v", err))
+	}
+
+	// 8. Update global gitignore
 	fmt.Fprintln(w, "→ Updating global gitignore...")
 	if err := UpdateGlobalGitignore(); err != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("gitignore: %v", err))
@@ -127,7 +146,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Gitignore = "updated"
 	}
 
-	// 8. Setup Shell and Environment
+	// 9. Setup Shell and Environment
 	if opts.SetupShell {
 		fmt.Fprintln(w, "→ Setting up shell profile and environment...")
 		if err := SetupShell(opts.Interactive, w); err != nil {
@@ -135,17 +154,66 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		}
 	}
 
-	// 9. Repo-specific bootstrap
+	// 10. Repo-specific bootstrap
 	if opts.RepoPath != "" {
 		fmt.Fprintf(w, "→ Bootstrapping repository: %s\n", opts.RepoPath)
 		if _, err := wip.EnsureRepo(opts.RepoPath); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("repo bootstrap: %v", err))
 		} else {
 			result.RepoPath = opts.RepoPath
+			if err := SeedRepo(opts.RepoPath, w); err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("repo seeding: %v", err))
+			}
 		}
 	}
 
 	return result, nil
+}
+
+// SeedRepo copies workflow templates (Copilot instructions, Gemini.md, skills, agents)
+// into the repository so they can be committed and used by non-Claude models.
+func SeedRepo(repoPath string, w io.Writer) error {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return err
+	}
+
+	// 1. .github/copilot-instructions.md
+	fmt.Fprintln(w, "  → Seeding .github/copilot-instructions.md...")
+	copilotDest := filepath.Join(top, ".github", "copilot-instructions.md")
+	os.MkdirAll(filepath.Dir(copilotDest), 0o755)
+	if data, err := embedfs.FS.ReadFile("templates/github/copilot-instructions.md"); err == nil {
+		if err := util.AtomicWrite(copilotDest, data, 0o644); err != nil {
+			return fmt.Errorf("write copilot instructions: %w", err)
+		}
+	}
+
+	// 2. GEMINI.md
+	fmt.Fprintln(w, "  → Seeding GEMINI.md...")
+	geminiDest := filepath.Join(top, "GEMINI.md")
+	if gSnippet, err := embedfs.FS.ReadFile("templates/global/gemini_managed_block.md"); err == nil {
+		if err := MergeGEMINIMd(geminiDest, gSnippet); err != nil {
+			return fmt.Errorf("merge gemini.md: %w", err)
+		}
+	}
+
+	// 3. .github/skills/
+	fmt.Fprintln(w, "  → Seeding .github/skills/...")
+	skillsFS, err := fs.Sub(embedfs.FS, "claude/skills")
+	if err == nil {
+		util.CopyFS(skillsFS, filepath.Join(top, ".github", "skills"))
+	}
+
+	// 4. .github/agents/ (stripped of MCP sections)
+	fmt.Fprintln(w, "  → Seeding .github/agents/...")
+	agentsFS, err := fs.Sub(embedfs.FS, "claude/agents")
+	if err == nil {
+		if err := GenerateGithubAgents(agentsFS, filepath.Join(top, ".github", "agents")); err != nil {
+			return fmt.Errorf("generate github agents: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func linkFromSource(src, claudeHome, copilotHome string, w io.Writer) ([]string, []string, error) {

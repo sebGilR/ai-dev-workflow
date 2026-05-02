@@ -44,7 +44,7 @@ This should be 2. Final Step.
 		t.Fatal(err)
 	}
 
-	if err := GenerateGithubAgents(srcDir, destDir); err != nil {
+	if err := GenerateGithubAgents(os.DirFS(srcDir), destDir); err != nil {
 		t.Fatalf("GenerateGithubAgents failed: %v", err)
 	}
 

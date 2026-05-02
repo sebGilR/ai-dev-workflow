@@ -1,27 +1,61 @@
 ---
 name: wip-implement
-description: Implement the next planned chunk of work and update execution notes.
-hooks:
-  Stop:
-    - type: command
-      command: ~/.claude/ai-dev-workflow/bin/aidw summarize-context .
+description: 'Executes the implementation tasks defined in the spec.md using a deterministic, artifact-driven sequence.'
+context: fork
+agent: implementer
 ---
 
-When this skill is used:
+# Workflow: Spec-Driven Implementation
 
-1. Read the current `plan.md`, `research.md`, `context.md`, and `status.json`.
-   When implementing against external libraries or APIs, use Context7 to retrieve
-   current documentation before writing integration code.
-   If Serena is available, use it (`mcp__serena__find_symbol`, `mcp__serena__get_symbols_overview`,
-   `mcp__serena__find_referencing_symbols`) to navigate to relevant symbols and
-   understand existing patterns before writing new code.
-2. Implement the next chunk of work.
-3. Append a concise update to `execution.md` describing what changed and why.
-4. Optionally refresh `context.md` if the implementation materially changed the continuation context.
-5. Run:
+**Goal:** Turn the agreed-upon `spec.md` into hardened, working code.
 
-```bash
-~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
-```
+## STEP 1: Load Specification
 
-6. Summarize completed work and remaining work.
+1. Strictly load only `spec.md` and `task-context.md` from the `.wip/<branch>/` directory.
+2. DO NOT rely on previous chat history for the implementation details — the `spec.md` is the final contract.
+
+## STEP 2: Task-by-Task Implementation
+
+1. Execute the implementation tasks **exactly** in the order specified in `spec.md`.
+2. Do not "optimize" the order or combine unrelated tasks.
+3. For every change, append a concise update to `execution.md` describing what was changed and why.
+
+## STEP 3: Self-Review & Verification (Tiered Autonomy)
+
+1. After completing all tasks, run a self-verification pass.
+2. Check your work against the **Acceptance Criteria (AC)** defined in `spec.md`.
+3. **Safety First**: Before running any Bash command (tests, builds, etc.), check its safety:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw policy check . "<your command>"
+   ```
+4. **Autonomous Execution**:
+   - If the verdict is **"allow"**, you may proceed with the command autonomously.
+   - If the verdict is **"prompt"**, you MUST ask the user for a decision:
+     - **Allow Once**: Run the command this time only.
+     - **Allow Always**: Run the command and whitelist it permanently for this project:
+       ```bash
+       ~/.claude/ai-dev-workflow/bin/aidw policy allow . "<the command>"
+       ```
+     - **Deny**: Do not run the command.
+     - **Different Action**: Ask the user what they would like to do instead.
+   - If the verdict is **"deny"** (hard block), inform the user why it was blocked.
+5. If errors are found, fix them immediately and update `execution.md`.
+
+## STEP 4: Finalize
+
+1. Set the stage:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
+   ```
+2. Summarize the completed work and any remaining tasks (if scope was split).
+
+## RTK Usage (Token Compression)
+
+When RTK is installed (`rtk init -g`), Bash commands are automatically compressed. This is essential for build/test output:
+
+- `rtk cargo build` / `rtk cargo clippy`
+- `rtk cargo test` — failures only
+- `rtk npm test` / `rtk tsc`
+- `rtk git diff` — condensed diff
+
+If a command fails and the compressed output is insufficient, ask the user before running `rtk proxy <cmd>`.

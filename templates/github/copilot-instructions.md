@@ -8,6 +8,7 @@ This repository uses the `ai-dev-workflow` model with branch-scoped WIP files.
 - Use the committed skills in `.github/skills/` and agents in `.github/agents/` for Copilot lifecycle actions.
   - These are seeded from shared source files in `claude/skills/` and `claude/agents/` during repo bootstrap.
   - The `claude/` source is canonical; `.github/` copies are committed for Copilot's use.
+  - **Execution (Non-Agentic)**: Since GitHub Copilot does not support the `/wip-*` slash command mechanism natively, **you must execute the `bash` commands described in each `SKILL.md` file yourself** (or instruct the user to run them in the terminal) and then update the WIP state accordingly.
 - Keep edits minimal, non-destructive, and aligned with existing repository conventions.
 - Keep bootstrap surfaces synchronized (`README.md`, `install.sh`, `cmd/aidw/`).
 

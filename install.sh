@@ -526,6 +526,7 @@ configure_repo_gitignore() {
     ".github/agents/"
     ".claude/repo-docs/"
     ".claude/settings.local.json"
+    "GEMINI.md"
   )
 
   # Idempotency: skip if all seeded entries are already present in either location
