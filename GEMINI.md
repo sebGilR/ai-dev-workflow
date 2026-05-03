@@ -7,7 +7,7 @@ Use the workflow skills in `.github/skills/` as the default process for code tas
 Workflow conventions:
 
 - Every repo uses a gitignored `.wip/` directory for branch-scoped workflow state.
-- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDD-<branch-slug>/`.
+- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDDHHMMSS-<branch-slug>/`.
   - **Never create or reference `.wip/<branch>/` paths directly.** Always use `aidw start .` to initialize a branch session. The CLI resolves the correct directory.
 - The canonical branch folder files are: `plan.md`, `review.md`, `research.md`, `context.md`, `execution.md`, `pr.md`, `status.json`.
 - When a task fits, refer to the skills in `.github/skills/` and execute the described `bash` commands.

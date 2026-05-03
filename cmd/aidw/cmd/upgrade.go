@@ -16,8 +16,7 @@ var upgradeCmd = &cobra.Command{
 	Long: `upgrade re-applies all global configuration merges (CLAUDE.md managed block,
 settings.json permissions, mcp.json MCP servers, global gitignore), refreshes the
 embedded skills and agents under ~/.claude/, and optionally migrates legacy un-timestamped
-.wip/<slug> directories to the YYYYMMDD-<slug> format.
-
+.wip/<slug> directories to the YYYYMMDDHHMMSS-<slug> format.
 Pass a repo path to also run ensure-repo and migrate-wip for that directory.`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(c *cobra.Command, args []string) {

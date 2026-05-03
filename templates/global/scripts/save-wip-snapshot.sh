@@ -54,18 +54,18 @@ _branch_slug() {
 }
 branch_slug="$(_branch_slug "$branch")"
 
-# Phase 1: find existing dated dir (YYYYMMDD-<branch_slug>); pick the newest.
+# Phase 1: find existing dated dir (YYYYMMDD or YYYYMMDDHHMMSS prefix); pick the newest.
 # Must match ensure_branch_state resolution order in cmd/aidw/internal/wip/.
 # Uses find+sort rather than a glob loop so selection is deterministic across
 # all filesystems (glob expansion order is not guaranteed to be lexicographic).
-wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -E '/[0-9]{8}-'"$branch_slug"'$' | sort | tail -1)"
+wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -E '/[0-9]{8}([0-9]{6})?-'"$branch_slug"'$' | sort | tail -1)"
 # Phase 2: legacy unprefixed dir
 if [[ -z "$wip_dir" && -d "$repo_root/.wip/$branch_slug" ]]; then
   wip_dir="$repo_root/.wip/$branch_slug"
 fi
 # Phase 3: create new dated dir
 if [[ -z "$wip_dir" ]]; then
-  wip_dir="$repo_root/.wip/$(date '+%Y%m%d')-$branch_slug"
+  wip_dir="$repo_root/.wip/$(date '+%Y%m%d%H%M%S')-$branch_slug"
 fi
 legacy_wip_dir="$repo_root/wip/$branch_slug"
 handoff_file="$wip_dir/handoff.md"

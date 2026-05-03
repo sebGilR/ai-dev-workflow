@@ -82,11 +82,11 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 		return nil, err
 	}
 
-	// Phase 1: find existing dated dir (YYYYMMDD-<branch_name>); pick the newest
+	// Phase 1: find existing dated dir (YYYYMMDD or YYYYMMDDHHMMSS prefix); pick the newest
 	// Note: check-then-create is not atomic; concurrent invocations for the same branch
 	// could both see no existing dir and each create one. In practice this tool runs once
 	// per CLI invocation so the race is not reachable under normal use.
-	datePattern := regexp.MustCompile(`^(\d{8})-` + regexp.QuoteMeta(branchName) + `$`)
+	datePattern := regexp.MustCompile(`^(\d{8}(?:\d{6})?)-` + regexp.QuoteMeta(branchName) + `$`)
 	var candidates []string
 	entries, err := os.ReadDir(wipBase)
 	if err != nil {
@@ -100,8 +100,10 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 		if m == nil {
 			continue
 		}
-		if _, err := time.Parse("20060102", m[1]); err != nil {
-			continue
+		if _, err := time.Parse("20060102150405", m[1]); err != nil {
+			if _, err := time.Parse("20060102", m[1]); err != nil {
+				continue
+			}
 		}
 		candidates = append(candidates, e.Name())
 	}
@@ -122,7 +124,7 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 
 	// Phase 3: create new dated dir
 	if wipDir == "" {
-		datePrefix := time.Now().Format("20060102")
+		datePrefix := time.Now().Format("20060102150405")
 		wipDir = filepath.Join(wipBase, datePrefix+"-"+branchName)
 	}
 
@@ -561,8 +563,8 @@ func MigrateWip(repoPath string) (*MigrateWipResult, error) {
 		return nil, fmt.Errorf("read wip directory: %w", err)
 	}
 
-	datedPattern := regexp.MustCompile(`^\d{8}-`)
-	today := time.Now().Format("20060102")
+	datedPattern := regexp.MustCompile(`^\d{8}(?:\d{6})?-`)
+	today := time.Now().Format("20060102150405")
 
 	// Canonical files that identify a WIP branch directory.
 	wipMarkers := []string{"status.json", "plan.md", "context.md", "review.md", "research.md", "execution.md", "pr.md"}
@@ -627,7 +629,7 @@ func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 		return nil, err
 	}
 
-	datedPattern := regexp.MustCompile(`^(\d{8})-(.+)$`)
+	datedPattern := regexp.MustCompile(`^(\d{8}(?:\d{6})?)-(.+)$`)
 	type datedDir struct {
 		date string
 		path string
@@ -642,6 +644,10 @@ func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 		}
 		m := datedPattern.FindStringSubmatch(e.Name())
 		if m != nil {
+			if _, err := time.Parse("20060102150405", m[1]); err == nil {
+				dated = append(dated, datedDir{date: m[1], path: filepath.Join(wipBase, e.Name()), name: e.Name()})
+				continue
+			}
 			if _, err := time.Parse("20060102", m[1]); err == nil {
 				dated = append(dated, datedDir{date: m[1], path: filepath.Join(wipBase, e.Name()), name: e.Name()})
 				continue

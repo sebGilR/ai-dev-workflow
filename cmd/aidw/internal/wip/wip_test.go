@@ -46,12 +46,12 @@ func TestEnsureBranchState_CreatesDatedDir(t *testing.T) {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
 
-	// WipDir must exist and match YYYYMMDD-my-feature pattern
+	// WipDir must exist and match YYYYMMDDHHMMSS-my-feature pattern
 	if _, err := os.Stat(state.WipDir); err != nil {
 		t.Fatalf("WipDir does not exist: %v", err)
 	}
 	base := filepath.Base(state.WipDir)
-	pattern := regexp.MustCompile(`^\d{8}-my-feature$`)
+	pattern := regexp.MustCompile(`^\d{14}-my-feature$`)
 	if !pattern.MatchString(base) {
 		t.Errorf("WipDir name %q does not match dated pattern", base)
 	}
@@ -238,10 +238,11 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create two dated dirs — older and newer
-	older := filepath.Join(wipBase, "20260101-feat")
-	newer := filepath.Join(wipBase, "20260312-feat")
-	for _, d := range []string{older, newer} {
+	// Create three dated dirs — older 8-digit, newer 8-digit, and newest 14-digit
+	oldest := filepath.Join(wipBase, "20260101-feat")
+	older := filepath.Join(wipBase, "20260312-feat")
+	newest := filepath.Join(wipBase, "20260312150000-feat")
+	for _, d := range []string{oldest, older, newest} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -252,17 +253,19 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 		t.Fatalf("ClearWip: %v", err)
 	}
 
-	if result.Kept == nil || *result.Kept != "20260312-feat" {
-		t.Errorf("expected kept=20260312-feat, got %v", result.Kept)
+	if result.Kept == nil || *result.Kept != "20260312150000-feat" {
+		t.Errorf("expected kept=20260312150000-feat, got %v", result.Kept)
 	}
 
-	// Older dir must be gone
-	if _, err := os.Stat(older); !os.IsNotExist(err) {
-		t.Errorf("older dir should have been deleted")
+	// Older dirs must be gone
+	for _, d := range []string{oldest, older} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("dir %s should have been deleted", d)
+		}
 	}
-	// Newer dir must remain
-	if _, err := os.Stat(newer); err != nil {
-		t.Errorf("newer dir should still exist: %v", err)
+	// Newest dir must remain
+	if _, err := os.Stat(newest); err != nil {
+		t.Errorf("newest dir should still exist: %v", err)
 	}
 }
 
@@ -607,10 +610,10 @@ func TestMigrateWip_RenamesLegacyDirs(t *testing.T) {
 		t.Errorf("expected no warnings, got: %v", result.Warnings)
 	}
 	// Originals should be gone; dated dirs should exist.
-	datedRe := regexp.MustCompile(`^\d{8}-`)
+	datedRe := regexp.MustCompile(`^\d{14}-`)
 	for _, m := range result.Migrated {
 		if !datedRe.MatchString(m.New) {
-			t.Errorf("migrated dir %q does not match YYYYMMDD- pattern", m.New)
+			t.Errorf("migrated dir %q does not match YYYYMMDDHHMMSS- pattern", m.New)
 		}
 		if _, err := os.Stat(filepath.Join(wipBase, m.New)); err != nil {
 			t.Errorf("expected %s to exist after migration: %v", m.New, err)

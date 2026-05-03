@@ -5,7 +5,7 @@ Use the installed `/wip-*` skills as the default workflow for code tasks when ap
 Workflow conventions:
 
 - Every repo uses a gitignored `.wip/` directory for branch-scoped workflow state.
-- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDD-<branch-slug>/` (e.g., `.wip/20260313-main/`). The branch name is slugified by the CLI, so special characters are replaced.
+- Branch directories use a **date-prefixed format**: `.wip/YYYYMMDDHHMMSS-<branch-slug>/` (e.g., `.wip/20260313150405-main/`). The branch name is slugified by the CLI, so special characters are replaced.
   - **Never create or reference `.wip/<branch>/` paths directly.** Always use `aidw start .` to initialize a branch session. The CLI resolves the correct directory; use `aidw upgrade .` or `aidw migrate-wip .` to rename legacy un-prefixed dirs.
 - The canonical branch folder files are:
   - `plan.md`
@@ -84,7 +84,7 @@ Only proceed with `rtk proxy <command>` after the user confirms.
 
 ### Failure log convention
 
-When a command fails during implementation and the agent needs to preserve the raw output for reference, dump it to the branch logs directory. Look up the actual wip path from `status.json` (`wip_dir` field — e.g., `.wip/20260322-my-feature/`), then:
+When a command fails during implementation and the agent needs to preserve the raw output for reference, dump it to the branch logs directory. Look up the actual wip path from `status.json` (`wip_dir` field — e.g., `.wip/20260322150405-my-feature/`), then:
 ```bash
 mkdir -p <wip_dir>/logs
 rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log

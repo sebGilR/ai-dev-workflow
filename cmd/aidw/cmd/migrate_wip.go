@@ -11,7 +11,7 @@ import (
 
 var migrateWipCmd = &cobra.Command{
 	Use:   "migrate-wip <path>",
-	Short: "Rename legacy un-timestamped .wip/<slug> dirs to YYYYMMDD-<slug> format",
+	Short: "Rename legacy un-timestamped .wip/<slug> dirs to YYYYMMDDHHMMSS-<slug> format",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		result, err := wip.MigrateWip(args[0])
