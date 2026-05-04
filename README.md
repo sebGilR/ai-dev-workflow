@@ -10,6 +10,69 @@ The core idea: the LLM is treated as an unreliable executor. Workflow integrity 
 
 ---
 
+## Install
+
+```bash
+brew tap sebGilR/homebrew-tap
+brew install aidw
+
+aidw bootstrap --setup-shell --interactive .
+exec $SHELL
+```
+
+`bootstrap` is idempotent: it creates `~/.claude/`, extracts the embedded skills/agents, downloads `sqlite-vec`, deep-merges JSON into `~/.claude/{settings,mcp}.json`, patches `CLAUDE.md` / `GEMINI.md` / your shell profile via managed sentinels, and seeds `.wip/` + `.github/{skills,agents,copilot-instructions.md}` in the repo. See [Bootstrap mechanics](#bootstrap-mechanics) for the full breakdown.
+
+### Hacking on skills and agents
+
+Clone the repo and re-bootstrap with `--source-path` to symlink `claude/skills/*` and `claude/agents/*.md` from the checkout — edits go live without a rebuild:
+
+```bash
+git clone https://github.com/sebGilR/ai-dev-workflow.git
+cd ai-dev-workflow
+make install              # builds bin/aidw-<os>-<arch> and copies to ~/.claude/ai-dev-workflow/bin/
+./bin/aidw-darwin-arm64 bootstrap --setup-shell --source-path . ~/some/repo
+```
+
+---
+
+## Quick start
+
+In Claude Code (or Copilot CLI, Gemini CLI, Codex — same skill files):
+
+```
+/wip-start         # seed .wip/<dated-slug>/, refresh repo-docs index
+/wip-plan          # Analyst → Planner → Skeptic; produces task-context.md + spec.md
+/wip-implement     # iterate spec.md tasks with policy-gated Bash
+/wip-review        # diff bundle → Claude review → optional adversarial pass (gemini/copilot/codex)
+/wip-pr            # draft pr.md, open the PR
+```
+
+After a `/clear` or compaction:
+
+```
+/wip-resume        # reads context-summary.md + handoff.md, picks up at the current stage
+```
+
+For low-risk work (docs, boilerplate, isolated refactors), one shot:
+
+```
+/wip-auto          # autonomous Start → Plan → Implement loop, gated by .aidw/policy.json
+```
+
+Useful CLI invocations from your shell:
+
+```bash
+aidw status .                              # current stage + recommended next action
+aidw next .                                # JSON: {stage, action, command}
+aidw memory search . "auth middleware"     # semantic recall against indexed repo-docs
+aidw policy check . "go test ./..."        # allow | prompt | deny
+aidw review-bundle .                       # rebuild diff bundle (sha256-cached)
+```
+
+The full skill catalogue is in [Skill catalogue](#skill-catalogue); the full CLI surface is in [CLI reference](#cli-reference-sketched).
+
+---
+
 ## What this actually is
 
 Three things, glued together:
@@ -278,35 +341,6 @@ export AIDW_EMBEDDING_MODEL=text-embedding-006
 ```
 
 The repo-local policy file lives at `<repo>/.aidw/policy.json`. The MCP config and skills/agents are global (`~/.claude/`).
-
----
-
-## Install
-
-```bash
-brew tap sebGilR/homebrew-tap
-brew install aidw
-
-aidw bootstrap --setup-shell --interactive .
-exec $SHELL
-```
-
-Then in Claude Code:
-
-```
-/wip-start
-```
-
-To hack on the skills/agents themselves, clone the repo and re-bootstrap with symlinks so edits are live:
-
-```bash
-git clone https://github.com/sebGilR/ai-dev-workflow.git
-cd ai-dev-workflow
-make install              # builds ./bin/aidw-<os>-<arch> and copies to ~/.claude/ai-dev-workflow/bin/
-./bin/aidw-darwin-arm64 bootstrap --setup-shell --source-path . ~/some/repo
-```
-
-`--source-path .` symlinks `claude/skills/*` and `claude/agents/*.md` from the checkout into `~/.claude/{skills,agents}/`, so edits there reflect immediately in Claude Code.
 
 ---
 
