@@ -62,6 +62,20 @@ func TestRepoName(t *testing.T) {
 	}
 }
 
+func TestResolveProvider(t *testing.T) {
+	known := []string{"gemini", "copilot", "codex", "agy", "antigravity"}
+	for _, name := range known {
+		if p, ok := resolveProvider(name); !ok || p == nil {
+			t.Errorf("resolveProvider(%q) = (%v, %v), want a non-nil provider", name, p, ok)
+		}
+	}
+	for _, name := range []string{"", "openai", "claude", "gpt"} {
+		if p, ok := resolveProvider(name); ok || p != nil {
+			t.Errorf("resolveProvider(%q) = (%v, %v), want (nil, false)", name, p, ok)
+		}
+	}
+}
+
 func TestExtractSection(t *testing.T) {
 	text := "## Claude Review\n\nsome content\n\n## Adversarial Review\n\nadv\n"
 
@@ -425,6 +439,7 @@ func TestAdversarialReview_NotInstalled(t *testing.T) {
 		"gemini":  "gemini",
 		"copilot": "copilot", // github/copilot-cli: https://github.com/github/copilot-cli
 		"codex":   "codex",
+		"agy":     "agy", // Antigravity CLI
 	}
 
 	var tested int
