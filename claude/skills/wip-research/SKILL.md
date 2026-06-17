@@ -5,14 +5,7 @@ description: Gather relevant implementation research and save it into .wip files
 
 When this skill is used:
 
-1. Initialize the branch session and resolve the canonical WIP directory:
-
-```bash
-~/.claude/ai-dev-workflow/bin/aidw start .
-```
-
-   Read the `wip_dir` field from the JSON output. All subsequent file writes (`research.md`, `context.md`) MUST go into that directory. Never infer the path from the listing of `.wip/` or from prior session memory — always use the path returned by `aidw start .`.
-
+1. Ensure the repo is initialized for the current branch.
 2. Use the `wip-researcher` subagent to gather codebase findings. The subagent uses Serena MCP tools as its primary navigation layer — do not attempt code navigation in the main context before dispatching the subagent. The subagent may expand scope as needed based on the task.
 3. Update `research.md` with concrete findings.
 4. Update `context.md` with a concise distilled context snapshot for continuation.
