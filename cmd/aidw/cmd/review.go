@@ -127,7 +127,7 @@ func init() {
 	geminiReviewCmd.Flags().Int("timeout", cfg.GeminiTimeout, "Timeout in seconds (env: AIDW_GEMINI_TIMEOUT)")
 	geminiReviewCmd.Flags().String("tier", "frontier", "Model tier to use: frontier|efficient")
 
-	adversarialReviewCmd.Flags().String("provider", cfg.AdversarialProvider, "Review provider: gemini|copilot|codex (env: AIDW_ADVERSARIAL_PROVIDER)")
+	adversarialReviewCmd.Flags().String("provider", cfg.AdversarialProvider, "Review provider: gemini|copilot|codex|agy (env: AIDW_ADVERSARIAL_PROVIDER)")
 	adversarialReviewCmd.Flags().String("model", cfg.AdversarialModel, "Model name for the provider (env: AIDW_ADVERSARIAL_MODEL)")
 	adversarialReviewCmd.Flags().Int("timeout", cfg.AdversarialTimeout, "Timeout in seconds (env: AIDW_ADVERSARIAL_TIMEOUT)")
 	adversarialReviewCmd.Flags().String("tier", "frontier", "Model tier to use: frontier|efficient")

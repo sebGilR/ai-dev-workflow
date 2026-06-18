@@ -243,7 +243,9 @@ write_env_file() {
 # Add Go bin/ to PATH (provides gopls for Serena Go LSP support).
 [[ ":$PATH:" != *":$HOME/go/bin:"* ]] && export PATH="$HOME/go/bin:$PATH"
 
-# Adversarial review (optional) — choose a provider: gemini, copilot, codex
+# Adversarial review (optional) — choose a provider: gemini, copilot, codex, agy
+#   agy = Antigravity CLI (binary: `agy`). Leave AIDW_ADVERSARIAL_MODEL empty to
+#   use agy's own default model, or set a name from `agy models`.
 # Set AIDW_ADVERSARIAL_REVIEW=1 to enable
 export AIDW_ADVERSARIAL_REVIEW="1"
 export AIDW_ADVERSARIAL_PROVIDER="codex"
