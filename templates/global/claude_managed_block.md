@@ -2,6 +2,8 @@
 
 Use the installed `/wip-*` skills as the default workflow for code tasks when appropriate.
 
+If a repository ships its own multi-step workflow (for example, a `.bmad/` setup or another project-managed orchestration), that repo's workflow owns the multi-step flow — planning, implementation, review, and PR — and `/wip-*` is reserved for ad-hoc, non-managed fixes only. On plain repositories with no such workflow installed, `/wip-*` remains the default for code tasks. When unsure, check whether the repo declares its own workflow before reaching for `/wip-*`.
+
 Workflow conventions:
 
 - Every repo uses a gitignored `.wip/` directory for branch-scoped workflow state.

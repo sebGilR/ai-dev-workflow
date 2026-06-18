@@ -28,10 +28,10 @@ When this skill is used:
    Show the output to the user.
 
    b. Check the `AIDW_REVIEW_MODEL` environment variable:
-   - If set to `"opus"` → use `claude-opus-4.6` (CI override, no prompt)
-   - If set to `"sonnet"` → use `claude-sonnet-4.6` (CI override, no prompt)
-   - If unset → ask the user: **"Escalate to Opus 4.6 for deeper analysis? [y/N]"**
-     Default (no answer / N) → `claude-sonnet-4.6`
+   - If set to `"opus"` → use the deepest-analysis model tier (CI override, no prompt)
+   - If set to `"sonnet"` → use the default model tier (CI override, no prompt)
+   - If unset → ask the user: **"Escalate to a deeper-analysis model for this review? [y/N]"**
+     Default (no answer / N) → the default model tier
 
 5. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
 
