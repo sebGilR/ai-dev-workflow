@@ -334,6 +334,45 @@ func (codexProvider) run(diffText, prompt, model string, timeoutSecs int) (strin
 	return strings.TrimSpace(out.stdout), "ok", nil
 }
 
+// agyProvider runs adversarial review via the Antigravity CLI (binary: `agy`).
+type agyProvider struct{}
+
+func (agyProvider) run(diffText, prompt, model string, timeoutSecs int) (string, string, error) {
+	agyPath, err := exec.LookPath("agy")
+	if err != nil {
+		return "", "not_installed", nil
+	}
+	// agy is an agentic CLI: --print runs a single prompt non-interactively.
+	// It takes its prompt via --prompt and does not treat stdin as prompt
+	// content, so embed the diff in the prompt (mirrors the copilot provider).
+	// This also avoids needing any file-read tool permission.
+	fullPrompt := prompt + "\n\n=== DIFF ===\n" + diffText
+	// --dangerously-skip-permissions auto-approves tool requests so the run is
+	// non-interactive; --print-timeout bounds agy's own print-mode wait to our
+	// outer timeout so it never waits longer than runWithTimeout allows.
+	args := []string{
+		"--print", fullPrompt,
+		"--dangerously-skip-permissions",
+		"--print-timeout", fmt.Sprintf("%ds", timeoutSecs),
+	}
+	// Only pass --model when explicitly set; otherwise agy uses its own default.
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	cmd := exec.Command(agyPath, args...)
+	out, exitCode, runErr := runWithTimeout(cmd, timeoutSecs)
+	if runErr != nil {
+		if strings.Contains(runErr.Error(), "timeout") {
+			return "", "timeout", nil
+		}
+		return "", "error", runErr
+	}
+	if exitCode != 0 {
+		return out.stderr, "error", nil
+	}
+	return strings.TrimSpace(out.stdout), "ok", nil
+}
+
 // resolveProvider returns the provider implementation for the given name.
 // Returns (provider, true) for known providers; (nil, false) for unknown ones.
 func resolveProvider(name string) (provider, bool) {
@@ -344,6 +383,8 @@ func resolveProvider(name string) (provider, bool) {
 		return copilotProvider{}, true
 	case "codex":
 		return codexProvider{}, true
+	case "agy", "antigravity":
+		return agyProvider{}, true
 	default:
 		return nil, false
 	}
@@ -416,7 +457,7 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 
 	p, ok := resolveProvider(providerName)
 	if !ok {
-		return nil, fmt.Errorf("unknown adversarial review provider %q — valid values: gemini, copilot, codex", providerName)
+		return nil, fmt.Errorf("unknown adversarial review provider %q — valid values: gemini, copilot, codex, agy", providerName)
 	}
 
 	chunks := util.ChunkDiff(diffText, maxDiffBytes)
