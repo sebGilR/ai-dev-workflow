@@ -14,3 +14,7 @@ When this skill is used:
 ```
 
 4. Present a concise PR-ready summary.
+
+## Commit hygiene
+
+Never pass `--no-verify`, `--no-gpg-sign`, or otherwise skip git hooks when committing or pushing, unless the user explicitly asks for it in the current request. Hooks exist to catch problems before they land, and skipping them silently hides failures the user expects to be caught. If a hook fails, surface the failure and fix the underlying issue rather than bypassing it.

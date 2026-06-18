@@ -322,7 +322,7 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 		}
 	default:
 		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
-			"valid values: gemini, copilot, codex")
+			"valid values: gemini, copilot, codex, agy")
 		return
 	}
 
