@@ -129,4 +129,3 @@ func processAgentFileFS(srcFS fs.FS, name string, headingNumRegex *regexp.Regexp
 
 	return sb.String(), nil
 }
-

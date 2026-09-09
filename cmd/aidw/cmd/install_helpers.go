@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"aidw/cmd/aidw/internal/install"
 	embedfs "aidw"
+	"aidw/cmd/aidw/internal/install"
 )
 
 func init() {
