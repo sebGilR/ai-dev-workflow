@@ -41,7 +41,7 @@ var memoryStoreCmd = &cobra.Command{
 		val := args[2]
 		semantic, _ := c.Flags().GetBool("semantic")
 
-		state, err := wip.EnsureBranchState(repoPath, "")
+		state, err := wip.FindBranchState(repoPath, "")
 		if err != nil {
 			Die("wip state: %v", err)
 		}
@@ -90,7 +90,7 @@ var memoryListCmd = &cobra.Command{
 				Die("repo path is required for local listing")
 			}
 			repoPath = args[0]
-			state, err := wip.EnsureBranchState(repoPath, "")
+			state, err := wip.FindBranchState(repoPath, "")
 			if err != nil {
 				Die("wip state: %v", err)
 			}
@@ -143,7 +143,7 @@ var memoryIndexCmd = &cobra.Command{
 			target = args[1]
 		}
 
-		state, err := wip.EnsureBranchState(repoPath, "")
+		state, err := wip.FindBranchState(repoPath, "")
 		if err != nil {
 			Die("wip state: %v", err)
 		}
@@ -215,7 +215,7 @@ var memorySearchCmd = &cobra.Command{
 			}
 			repoPath = args[0]
 			query = args[1]
-			state, err := wip.EnsureBranchState(repoPath, "")
+			state, err := wip.FindBranchState(repoPath, "")
 			if err != nil {
 				Die("wip state: %v", err)
 			}

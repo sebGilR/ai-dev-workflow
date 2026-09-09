@@ -2,6 +2,12 @@
 
 # ai-dev-workflow managed WIP snapshot helper.
 # Usage: save-wip-snapshot.sh [warn|critical|manual|stop|precompact|sessionend]
+#
+# This hook is a NO-OP outside a git repo and a NO-OP when the current
+# branch has no active WIP directory. It never creates a .wip directory,
+# never seeds files, and never writes anything for a branch that hasn't run
+# `aidw start` / /wip-start. It always exits 0 so the host is never blocked
+# by a hook failure.
 
 set -u
 
@@ -13,79 +19,121 @@ esac
 
 timestamp="$(date '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null || echo "unknown-time")"
 
+aidw_bin="$HOME/.claude/ai-dev-workflow/bin/aidw"
+if [[ ! -x "$aidw_bin" ]]; then
+  aidw_bin="$(command -v aidw 2>/dev/null || true)"
+fi
+
+# Read the hook's JSON payload from stdin, if any (Claude Code passes hook
+# events as JSON on stdin; a manual/direct invocation has no stdin to read).
+# cwd/session_id are best-effort: prefer jq, fall back to a conservative
+# grep/sed extraction so a missing jq never turns this into a hard failure.
+hook_input=""
+if [[ ! -t 0 ]]; then
+  hook_input="$(cat 2>/dev/null || true)"
+fi
+
+hook_cwd=""
+session_id=""
+if [[ -n "$hook_input" ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    hook_cwd="$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+    session_id="$(printf '%s' "$hook_input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  else
+    hook_cwd="$(printf '%s' "$hook_input" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    session_id="$(printf '%s' "$hook_input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+fi
+
+work_dir="${hook_cwd:-$PWD}"
+
 repo_root=""
 branch=""
 
 if command -v git >/dev/null 2>&1; then
-  # Get repo root from the most reliable source: rev-parse --show-toplevel
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  # Only use rev-parse --abbrev-ref if we have a valid repo_root
+  repo_root="$(git -C "$work_dir" rev-parse --show-toplevel 2>/dev/null || true)"
   if [[ -n "$repo_root" ]]; then
     branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
 fi
 
+# Not a git repo (or git unavailable) — nothing to snapshot. Exit quietly.
 if [[ -z "$repo_root" ]]; then
-  repo_root="$PWD"
+  exit 0
 fi
 
 if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
   branch="detached-head"
 fi
 
-# Sanitize branch name to match safe_slug() in cmd/aidw/internal/slug/: replace non-[A-Za-z0-9_.-]
-# chars with '-', strip leading/trailing '-', append 8-char sha256 suffix when slug
-# differs from original (prevents collisions, e.g. "feature/foo" vs "feature-foo").
-_branch_slug() {
-  local name="$1"
-  local slug
-  slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^-*//; s/-*$//')"
-  [[ -n "$slug" ]] || slug="unknown-branch"
-  if [[ "$slug" != "$name" ]]; then
-    local hash=""
-    if command -v sha256sum >/dev/null 2>&1; then
-      hash="$(printf '%s' "$name" | sha256sum | cut -c1-8 2>/dev/null || true)"
-    elif command -v shasum >/dev/null 2>&1; then
-      hash="$(printf '%s' "$name" | shasum -a 256 | cut -c1-8 2>/dev/null || true)"
-    fi
-    [[ -n "$hash" ]] && slug="${slug}-${hash}"
-  fi
-  printf '%s' "$slug"
-}
-branch_slug="$(_branch_slug "$branch")"
+wip_dir=""
+resolved_via_binary=0
 
-# Phase 1: find existing dated dir (YYYYMMDD or YYYYMMDDHHMMSS prefix); pick the newest.
-# Must match ensure_branch_state resolution order in cmd/aidw/internal/wip/.
-# Uses find+sort rather than a glob loop so selection is deterministic across
-# all filesystems (glob expansion order is not guaranteed to be lexicographic).
-wip_dir="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -E '/[0-9]{8}([0-9]{6})?-'"$branch_slug"'$' | sort | tail -1)"
-# Phase 2: legacy unprefixed dir
-if [[ -z "$wip_dir" && -d "$repo_root/.wip/$branch_slug" ]]; then
-  wip_dir="$repo_root/.wip/$branch_slug"
+if [[ -n "$aidw_bin" ]]; then
+  resolve_out="$("$aidw_bin" resolve-wip "$repo_root" 2>/dev/null || true)"
+  if [[ -n "$resolve_out" ]]; then
+    resolved_via_binary=1
+    resolved_exists="$(printf '%s\n' "$resolve_out" | sed -n 's/^exists=//p' | head -1)"
+    resolved_dir="$(printf '%s\n' "$resolve_out" | sed -n 's/^wip_dir=//p' | head -1)"
+    if [[ "$resolved_exists" == "true" && -n "$resolved_dir" ]]; then
+      wip_dir="$resolved_dir"
+    fi
+  fi
 fi
-# Phase 3: create new dated dir
-if [[ -z "$wip_dir" ]]; then
-  wip_dir="$repo_root/.wip/$(date '+%Y%m%d%H%M%S')-$branch_slug"
+
+if [[ "$resolved_via_binary" -eq 0 ]]; then
+  # Shell fallback resolver (aidw binary missing). Must match the Go
+  # resolver's branch-dir lookup exactly: same slugification, same dated
+  # dir pattern, same legacy fallback, and — critically — no creation.
+  _branch_slug() {
+    local name="$1"
+    local slug
+    slug="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^-*//; s/-*$//')"
+    [[ -n "$slug" ]] || slug="unknown-branch"
+    if [[ "$slug" != "$name" ]]; then
+      local hash=""
+      if command -v sha256sum >/dev/null 2>&1; then
+        hash="$(printf '%s' "$name" | sha256sum | cut -c1-8 2>/dev/null || true)"
+      elif command -v shasum >/dev/null 2>&1; then
+        hash="$(printf '%s' "$name" | shasum -a 256 | cut -c1-8 2>/dev/null || true)"
+      fi
+      [[ -n "$hash" ]] && slug="${slug}-${hash}"
+    fi
+    printf '%s' "$slug"
+  }
+  branch_slug="$(_branch_slug "$branch")"
+  # Escape ERE metacharacters in the slug before interpolating into
+  # `grep -E` — an unescaped dotted slug (e.g. "release.1") can otherwise
+  # match an unrelated dir like "releaseX1".
+  branch_slug_re="$(printf '%s' "$branch_slug" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
+
+  # Phase 1: find existing dated dir (YYYYMMDD or YYYYMMDDHHMMSS prefix);
+  # pick the newest. Only dirs whose date prefix is a validated date-like
+  # 8 or 14 digit string count — matches the Go side's time.Parse checks
+  # closely enough for shell-fallback purposes (no bogus digit strings).
+  candidate="$(find "$repo_root/.wip/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null \
+    | grep -E '/[0-9]{8}([0-9]{6})?-'"$branch_slug_re"'$' \
+    | sort | tail -1)"
+  if [[ -n "$candidate" ]]; then
+    wip_dir="$candidate"
+  elif [[ -d "$repo_root/.wip/$branch_slug" ]]; then
+    # Phase 2: legacy unprefixed dir.
+    wip_dir="$repo_root/.wip/$branch_slug"
+  fi
+  # No phase 3: never create a new dir from the shell fallback.
 fi
-legacy_wip_dir="$repo_root/wip/$branch_slug"
+
+# No active WIP directory for this branch — nothing to snapshot, and we
+# never spontaneously create one. Exit quietly.
+if [[ -z "$wip_dir" || ! -d "$wip_dir" ]]; then
+  exit 0
+fi
+if [[ ! -f "$wip_dir/status.json" ]]; then
+  exit 0
+fi
+
 handoff_file="$wip_dir/handoff.md"
 progress_file="$wip_dir/progress.log"
-research_file="$wip_dir/research.md"
-plan_file="$wip_dir/plan.md"
-
-mkdir -p "$wip_dir" 2>/dev/null || true
-
-# Migrate legacy snapshots created under wip/<branch>/ to .wip/<branch>/.
-if [[ -d "$legacy_wip_dir" ]]; then
-  for f in handoff.md progress.log research.md plan.md; do
-    if [[ -f "$legacy_wip_dir/$f" && ! -f "$wip_dir/$f" ]]; then
-      cp "$legacy_wip_dir/$f" "$wip_dir/$f" 2>/dev/null || true
-    fi
-  done
-fi
-
-[[ -f "$research_file" ]] || : > "$research_file" 2>/dev/null || true
-[[ -f "$plan_file" ]] || : > "$plan_file" 2>/dev/null || true
 
 git_status="(git unavailable)"
 last_commits="(git unavailable)"
@@ -106,6 +154,7 @@ fi
   echo "- snapshot_level: $level"
   echo "- branch: $branch"
   echo "- repo_path: $repo_root"
+  [[ -n "$session_id" ]] && echo "- session_id: $session_id"
   echo
   echo "## Git Status"
   echo '```text'
@@ -128,6 +177,17 @@ fi
   echo '```'
 } > "$handoff_file" 2>/dev/null || true
 
-printf '%s | level=%s | branch=%s | repo=%s\n' "$timestamp" "$level" "$branch" "$repo_root" >> "$progress_file" 2>/dev/null || true
+printf '%s | level=%s | branch=%s | repo=%s | session=%s\n' "$timestamp" "$level" "$branch" "$repo_root" "${session_id:-none}" >> "$progress_file" 2>/dev/null || true
+
+# Best-effort context-summary refresh on recovery-relevant checkpoints. This
+# never creates a WIP dir (we already confirmed one exists above with
+# status.json present) and never blocks the hook on failure.
+case "$level" in
+  precompact|stop|sessionend)
+    if [[ -n "$aidw_bin" && -x "$aidw_bin" ]]; then
+      "$aidw_bin" summarize-context "$repo_root" >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
 
 exit 0

@@ -26,10 +26,22 @@ var summarizeContextCmd = &cobra.Command{
 
 var contextSummaryCmd = &cobra.Command{
 	Use:   "context-summary <path>",
-	Short: "Print context-summary.md to stdout",
+	Short: "Print context-summary.md to stdout, or its staleness as JSON with --json",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
-		state, err := wip.EnsureBranchState(args[0], "")
+		asJSON, _ := c.Flags().GetBool("json")
+
+		if asJSON {
+			staleness, err := wip.CheckSummaryStaleness(args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "[aidw]", err)
+				os.Exit(1)
+			}
+			PrintJSON(staleness)
+			return
+		}
+
+		state, err := wip.FindBranchState(args[0], "")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
@@ -45,6 +57,7 @@ var contextSummaryCmd = &cobra.Command{
 }
 
 func init() {
+	contextSummaryCmd.Flags().Bool("json", false, "Print {stale, generated_at, summary_path} instead of the raw summary")
 	Root.AddCommand(summarizeContextCmd)
 	Root.AddCommand(contextSummaryCmd)
 }

@@ -1,6 +1,7 @@
 package wip
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,7 +249,7 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir, false)
+	result, err := ClearWip(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
@@ -257,10 +258,16 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 		t.Errorf("expected kept=20260312150000-feat, got %v", result.Kept)
 	}
 
-	// Older dirs must be gone
+	// Older dirs must be moved out of place (archived), not deleted
 	for _, d := range []string{oldest, older} {
 		if _, err := os.Stat(d); !os.IsNotExist(err) {
-			t.Errorf("dir %s should have been deleted", d)
+			t.Errorf("dir %s should have been archived out of place", d)
+		}
+	}
+	// ... but still recoverable under .wip/.archive/
+	for _, name := range []string{"20260101-feat", "20260312-feat"} {
+		if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, name)); err != nil {
+			t.Errorf("expected %s to be archived under .archive/: %v", name, err)
 		}
 	}
 	// Newest dir must remain
@@ -269,7 +276,7 @@ func TestClearWip_KeepsMostRecentDatedDir(t *testing.T) {
 	}
 }
 
-func TestClearWip_DeletesLegacyDirs(t *testing.T) {
+func TestClearWip_ArchivesLegacyDirs(t *testing.T) {
 	dir := initGitRepo(t)
 	wipBase := filepath.Join(dir, ".wip")
 	if err := os.MkdirAll(wipBase, 0o755); err != nil {
@@ -284,22 +291,25 @@ func TestClearWip_DeletesLegacyDirs(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir, false)
+	result, err := ClearWip(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
 
 	found := false
-	for _, del := range result.Deleted {
-		if del == "old-branch-name" {
+	for _, a := range result.Archived {
+		if a == "old-branch-name" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected legacy dir to be in Deleted list")
+		t.Error("expected legacy dir to be in Archived list")
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Error("legacy dir should have been deleted")
+		t.Error("legacy dir should have been moved out of place")
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, "old-branch-name")); err != nil {
+		t.Errorf("expected old-branch-name to be recoverable under .archive/: %v", err)
 	}
 }
 
@@ -319,7 +329,7 @@ func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
 		}
 	}
 
-	result, err := ClearWip(dir, false)
+	result, err := ClearWip(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearWip: %v", err)
 	}
@@ -329,7 +339,7 @@ func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
 		t.Errorf("expected kept=zzz-branch, got %v", result.Kept)
 	}
 	if _, err := os.Stat(older); !os.IsNotExist(err) {
-		t.Error("older legacy dir should have been deleted")
+		t.Error("older legacy dir should have been moved out of place")
 	}
 	if _, err := os.Stat(newer); err != nil {
 		t.Errorf("newer legacy dir should still exist: %v", err)
@@ -339,15 +349,49 @@ func TestClearWip_PreservesLastLegacyDirWhenNoDated(t *testing.T) {
 func TestClearWip_EmptyWip(t *testing.T) {
 	dir := initGitRepo(t)
 
-	result, err := ClearWip(dir, false)
+	result, err := ClearWip(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearWip on empty wip: %v", err)
 	}
 	if result.Kept != nil {
 		t.Errorf("expected Kept=nil, got %v", *result.Kept)
 	}
-	if len(result.Deleted) != 0 {
-		t.Errorf("expected no deletions, got %v", result.Deleted)
+	if len(result.Archived) != 0 || len(result.Deleted) != 0 {
+		t.Errorf("expected no archives/deletions, got archived=%v deleted=%v", result.Archived, result.Deleted)
+	}
+}
+
+func TestClearWip_Purge_DeletesArchiveToo(t *testing.T) {
+	dir := initGitRepo(t)
+	wipBase := filepath.Join(dir, ".wip")
+	if err := os.MkdirAll(wipBase, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldest := filepath.Join(wipBase, "20260101-feat")
+	newest := filepath.Join(wipBase, "20260312150000-feat")
+	for _, d := range []string{oldest, newest} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// First archive, then purge — the archived content must also be gone after purge.
+	if _, err := ClearWip(dir, false, false); err != nil {
+		t.Fatalf("archive pass: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, "20260101-feat")); err != nil {
+		t.Fatalf("expected archived content before purge: %v", err)
+	}
+
+	result, err := ClearWip(dir, false, true)
+	if err != nil {
+		t.Fatalf("ClearWip purge: %v", err)
+	}
+	if !result.Purge {
+		t.Error("expected Purge=true in result")
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName)); !os.IsNotExist(err) {
+		t.Error(".archive/ should be gone after purge")
 	}
 }
 
@@ -369,7 +413,7 @@ func TestClearOtherBranches_KeepsCurrentBranchDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ClearOtherBranches(dir, false)
+	result, err := ClearOtherBranches(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
@@ -383,12 +427,15 @@ func TestClearOtherBranches_KeepsCurrentBranchDir(t *testing.T) {
 	if _, err := os.Stat(state.WipDir); err != nil {
 		t.Errorf("current branch dir should still exist: %v", err)
 	}
-	// Other dir must be gone
+	// Other dir must be moved out of place (archived)
 	if _, err := os.Stat(other); !os.IsNotExist(err) {
-		t.Error("other branch dir should have been deleted")
+		t.Error("other branch dir should have been moved out of place")
 	}
-	if len(result.Deleted) != 1 || result.Deleted[0] != "20260101-other-branch" {
-		t.Errorf("expected Deleted=[20260101-other-branch], got %v", result.Deleted)
+	if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, "20260101-other-branch")); err != nil {
+		t.Errorf("expected other branch dir recoverable under .archive/: %v", err)
+	}
+	if len(result.Archived) != 1 || result.Archived[0] != "20260101-other-branch" {
+		t.Errorf("expected Archived=[20260101-other-branch], got %v", result.Archived)
 	}
 }
 
@@ -415,7 +462,7 @@ func TestClearOtherBranches_PreservesAllFilesInCurrentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ClearOtherBranches(dir, false); err != nil {
+	if _, err := ClearOtherBranches(dir, false, false); err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
 
@@ -428,7 +475,7 @@ func TestClearOtherBranches_PreservesAllFilesInCurrentDir(t *testing.T) {
 	}
 }
 
-func TestClearOtherBranches_DeletesLegacyDirs(t *testing.T) {
+func TestClearOtherBranches_ArchivesLegacyDirs(t *testing.T) {
 	dir := initGitRepo(t)
 
 	state, err := EnsureBranchState(dir, "")
@@ -443,22 +490,25 @@ func TestClearOtherBranches_DeletesLegacyDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ClearOtherBranches(dir, false)
+	result, err := ClearOtherBranches(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
 
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Error("legacy dir should have been deleted")
+		t.Error("legacy dir should have been moved out of place")
+	}
+	if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, "old-branch-name")); err != nil {
+		t.Errorf("expected old-branch-name recoverable under .archive/: %v", err)
 	}
 	found := false
-	for _, d := range result.Deleted {
-		if d == "old-branch-name" {
+	for _, a := range result.Archived {
+		if a == "old-branch-name" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected old-branch-name in Deleted, got %v", result.Deleted)
+		t.Errorf("expected old-branch-name in Archived, got %v", result.Archived)
 	}
 }
 
@@ -471,7 +521,7 @@ func TestClearOtherBranches_NothingToDelete(t *testing.T) {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
 
-	result, err := ClearOtherBranches(dir, false)
+	result, err := ClearOtherBranches(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches on empty wip: %v", err)
 	}
@@ -480,12 +530,12 @@ func TestClearOtherBranches_NothingToDelete(t *testing.T) {
 	if result.Kept == nil || *result.Kept != keepName {
 		t.Errorf("expected kept=%s, got %v", keepName, result.Kept)
 	}
-	if len(result.Deleted) != 0 {
-		t.Errorf("expected no deletions, got %v", result.Deleted)
+	if len(result.Archived) != 0 || len(result.Deleted) != 0 {
+		t.Errorf("expected no archives/deletions, got archived=%v deleted=%v", result.Archived, result.Deleted)
 	}
 }
 
-func TestClearOtherBranches_DeletesMultipleDirsAndSorts(t *testing.T) {
+func TestClearOtherBranches_ArchivesMultipleDirsAndSorts(t *testing.T) {
 	dir := initGitRepo(t)
 
 	state, err := EnsureBranchState(dir, "")
@@ -501,20 +551,23 @@ func TestClearOtherBranches_DeletesMultipleDirsAndSorts(t *testing.T) {
 		}
 	}
 
-	result, err := ClearOtherBranches(dir, false)
+	result, err := ClearOtherBranches(dir, false, false)
 	if err != nil {
 		t.Fatalf("ClearOtherBranches: %v", err)
 	}
 
-	if len(result.Deleted) != len(stale) {
-		t.Fatalf("expected %d deletions, got %d: %v", len(stale), len(result.Deleted), result.Deleted)
+	if len(result.Archived) != len(stale) {
+		t.Fatalf("expected %d archived, got %d: %v", len(stale), len(result.Archived), result.Archived)
 	}
 	for i, name := range stale {
-		if result.Deleted[i] != name {
-			t.Errorf("Deleted[%d]: expected %s, got %s", i, name, result.Deleted[i])
+		if result.Archived[i] != name {
+			t.Errorf("Archived[%d]: expected %s, got %s", i, name, result.Archived[i])
 		}
 		if _, err := os.Stat(filepath.Join(wipBase, name)); !os.IsNotExist(err) {
-			t.Errorf("dir %s should have been deleted", name)
+			t.Errorf("dir %s should have been moved out of place", name)
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, globalArchiveDirName, name)); err != nil {
+			t.Errorf("dir %s should be recoverable under .archive/: %v", name, err)
 		}
 	}
 
@@ -524,12 +577,19 @@ func TestClearOtherBranches_DeletesMultipleDirsAndSorts(t *testing.T) {
 	}
 }
 
+func TestClearOtherBranches_NoActiveWorkErrors(t *testing.T) {
+	dir := initGitRepo(t)
+	if _, err := ClearOtherBranches(dir, false, false); !errors.Is(err, ErrNoActiveWork) {
+		t.Errorf("expected ErrNoActiveWork, got %v", err)
+	}
+}
+
 // ── CleanupBranch ─────────────────────────────────────────────────────────────
 
 func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 	dir := initGitRepo(t)
 
-	state, err := EnsureBranchState(dir, "cleanup-test")
+	state, err := EnsureBranchState(dir, "")
 	if err != nil {
 		t.Fatalf("EnsureBranchState: %v", err)
 	}
@@ -541,7 +601,7 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 		}
 	}
 
-	result, err := CleanupBranch(dir, false)
+	result, err := CleanupBranch(dir, false, false)
 	if err != nil {
 		t.Fatalf("CleanupBranch: %v", err)
 	}
@@ -553,10 +613,232 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 		}
 	}
 
-	for _, del := range result.Deleted {
-		if keepOnCleanup[del] {
-			t.Errorf("file %q should not have been deleted", del)
+	for _, a := range result.Archived {
+		if keepOnCleanup[a] {
+			t.Errorf("file %q should not have been archived away", a)
 		}
+		if _, err := os.Stat(filepath.Join(state.WipDir, a)); !os.IsNotExist(err) {
+			t.Errorf("archived file %q should no longer be at its original path", a)
+		}
+	}
+	if result.ArchiveDir == "" {
+		t.Fatal("expected a non-empty ArchiveDir when files were archived")
+	}
+	for _, a := range result.Archived {
+		if _, err := os.Stat(filepath.Join(result.ArchiveDir, a)); err != nil {
+			t.Errorf("expected %q under archive dir %q: %v", a, result.ArchiveDir, err)
+		}
+	}
+}
+
+func TestCleanupBranch_ArchiveSurvivesSecondRun(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CleanupBranch(dir, false, false); err != nil {
+		t.Fatalf("first CleanupBranch: %v", err)
+	}
+	archiveRoot := filepath.Join(state.WipDir, branchArchiveDirName)
+	if _, err := os.Stat(archiveRoot); err != nil {
+		t.Fatalf("expected archive dir after first run: %v", err)
+	}
+
+	// Note: EnsureBranchState (called internally by CleanupBranch to resolve
+	// the branch dir) re-seeds any missing wipFiles placeholders on every
+	// call — including the ones just archived. That reseed-then-archive
+	// cycle is pre-existing EnsureBranchState behavior, not something this
+	// test exercises; what matters here is that running cleanup again does
+	// not fail trying to re-archive archive/ into itself, and does not
+	// touch (let alone lose) the first run's archived content.
+	result2, err := CleanupBranch(dir, false, false)
+	if err != nil {
+		t.Fatalf("second CleanupBranch: %v", err)
+	}
+	for _, a := range result2.Archived {
+		if a == branchArchiveDirName {
+			t.Errorf("archive/ must never sweep itself, got Archived=%v", result2.Archived)
+		}
+	}
+	// The first run's archived batch must still be present and recoverable
+	// after the second run, whether or not the two timestamps collided.
+	found := 0
+	_ = filepath.Walk(archiveRoot, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && info.Name() == "research.md" {
+			found++
+		}
+		return nil
+	})
+	if found == 0 {
+		t.Error("expected research.md to remain recoverable under archive/ after second run")
+	}
+}
+
+func TestCleanupBranch_Purge_DeletesArchiveToo(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CleanupBranch(dir, false, false); err != nil {
+		t.Fatalf("archive pass: %v", err)
+	}
+	archiveRoot := filepath.Join(state.WipDir, branchArchiveDirName)
+	if _, err := os.Stat(archiveRoot); err != nil {
+		t.Fatalf("expected archive dir before purge: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("more content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CleanupBranch(dir, false, true)
+	if err != nil {
+		t.Fatalf("CleanupBranch purge: %v", err)
+	}
+	if !result.Purge {
+		t.Error("expected Purge=true")
+	}
+	if _, err := os.Stat(archiveRoot); !os.IsNotExist(err) {
+		t.Error("archive/ should be gone after purge")
+	}
+	if _, err := os.Stat(filepath.Join(state.WipDir, "research.md")); !os.IsNotExist(err) {
+		t.Error("research.md should be gone after purge")
+	}
+	// status.json must always survive — cleanup (even purge) must never reset workflow state.
+	if _, err := os.Stat(filepath.Join(state.WipDir, "status.json")); err != nil {
+		t.Errorf("status.json must survive purge: %v", err)
+	}
+}
+
+// ── FindBranchState / lookup-only commands (Cluster B, E3#1) ────────────────
+
+func TestFindBranchState_NoActiveWork(t *testing.T) {
+	dir := initGitRepo(t)
+
+	if _, err := FindBranchState(dir, ""); !errors.Is(err, ErrNoActiveWork) {
+		t.Errorf("expected ErrNoActiveWork, got %v", err)
+	}
+	// Must create nothing.
+	if _, err := os.Stat(filepath.Join(dir, ".wip")); !os.IsNotExist(err) {
+		t.Error("FindBranchState must not create .wip")
+	}
+}
+
+func TestFindBranchState_FindsExistingDatedDir(t *testing.T) {
+	dir := initGitRepo(t)
+	created, err := EnsureBranchState(dir, "feat-x")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	found, err := FindBranchState(dir, "feat-x")
+	if err != nil {
+		t.Fatalf("FindBranchState: %v", err)
+	}
+	if found.WipDir != created.WipDir {
+		t.Errorf("expected %q, got %q", created.WipDir, found.WipDir)
+	}
+}
+
+func TestStatusNextContextSummary_DoNotCreateState(t *testing.T) {
+	dir := initGitRepo(t)
+
+	if _, err := SummarizeStatus(dir); !errors.Is(err, ErrNoActiveWork) {
+		t.Errorf("SummarizeStatus: expected ErrNoActiveWork, got %v", err)
+	}
+	if _, err := GetNextAction(dir); !errors.Is(err, ErrNoActiveWork) {
+		t.Errorf("GetNextAction: expected ErrNoActiveWork, got %v", err)
+	}
+	if _, err := WriteContextSummary(dir); !errors.Is(err, ErrNoActiveWork) {
+		t.Errorf("WriteContextSummary: expected ErrNoActiveWork, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".wip")); !os.IsNotExist(err) {
+		t.Error("no .wip directory should have been created by lookup-only calls")
+	}
+}
+
+// ── Summary generation (Cluster A, E3#5) ────────────────────────────────────
+
+func TestSummaryIncludesTailAndSpec(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	long := strings.Repeat("x", 400) + "TAIL-MARKER"
+	if err := os.WriteFile(filepath.Join(state.WipDir, "execution.md"), []byte(long), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "spec.md"), []byte("# Spec\nSPEC-MARKER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "task-context.md"), []byte("TASK-CONTEXT-MARKER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := WriteContextSummary(dir)
+	if err != nil {
+		t.Fatalf("WriteContextSummary: %v", err)
+	}
+	data, err := os.ReadFile(result.SummaryPath)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "TAIL-MARKER") {
+		t.Error("expected execution.md's tail (append-mode) to be included, not truncated head")
+	}
+	if !strings.Contains(content, "## Specification") || !strings.Contains(content, "SPEC-MARKER") {
+		t.Error("expected a ## Specification section with spec.md content")
+	}
+	if !strings.Contains(content, "## Task Context") || !strings.Contains(content, "TASK-CONTEXT-MARKER") {
+		t.Error("expected a ## Task Context section with task-context.md content")
+	}
+	if !strings.HasPrefix(content, "<!-- aidw:summary generated_at=") {
+		t.Error("expected a provenance header on the first line")
+	}
+}
+
+func TestSummaryStalenessFlag(t *testing.T) {
+	dir := initGitRepo(t)
+	if _, err := EnsureBranchState(dir, ""); err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	if _, err := WriteContextSummary(dir); err != nil {
+		t.Fatalf("WriteContextSummary: %v", err)
+	}
+
+	staleness, err := CheckSummaryStaleness(dir)
+	if err != nil {
+		t.Fatalf("CheckSummaryStaleness: %v", err)
+	}
+	if staleness.Stale {
+		t.Error("expected fresh summary to report stale=false")
+	}
+
+	state, _ := FindBranchState(dir, "")
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("new findings"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staleness2, err := CheckSummaryStaleness(dir)
+	if err != nil {
+		t.Fatalf("CheckSummaryStaleness after edit: %v", err)
+	}
+	if !staleness2.Stale {
+		t.Error("expected summary to report stale=true after editing a source file")
 	}
 }
 
@@ -698,11 +980,11 @@ func TestMigrateWip_SkipsNonWipDirs(t *testing.T) {
 
 func TestCleanupBranch_DryRun(t *testing.T) {
 	dir := initGitRepo(t)
-	state, _ := EnsureBranchState(dir, "dry-run-test")
+	state, _ := EnsureBranchState(dir, "")
 	dummy := filepath.Join(state.WipDir, "dummy.txt")
 	os.WriteFile(dummy, []byte("content"), 0o644)
 
-	result, err := CleanupBranch(dir, true)
+	result, err := CleanupBranch(dir, true, false)
 	if err != nil {
 		t.Fatalf("CleanupBranch dry run: %v", err)
 	}
@@ -723,7 +1005,7 @@ func TestClearWip_DryRun(t *testing.T) {
 	older := filepath.Join(wipBase, "20260101-feat")
 	os.MkdirAll(older, 0o755)
 
-	result, err := ClearWip(dir, true)
+	result, err := ClearWip(dir, true, false)
 	if err != nil {
 		t.Fatalf("ClearWip dry run: %v", err)
 	}

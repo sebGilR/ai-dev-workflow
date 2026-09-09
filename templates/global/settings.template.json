@@ -36,6 +36,26 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/session-start-context.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/session-start-context.sh"
+          }
+        ]
+      }
     ]
   },
   "permissions": {
