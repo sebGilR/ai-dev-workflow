@@ -36,7 +36,6 @@ func SetupShell(interactive bool, w io.Writer) error {
 
 	// 3. Optional Configurations
 	if interactive {
-		configureAdversarialReview(envFile, w)
 		configureRTK(w)
 	}
 
@@ -103,38 +102,6 @@ func patchShellProfile(home string, w io.Writer) error {
 	managedBlock := fmt.Sprintf("\n# BEGIN ai-dev-workflow managed block\n%s\n# END ai-dev-workflow managed block\n", sourceLine)
 	_, err = f.WriteString(managedBlock)
 	return err
-}
-
-func configureAdversarialReview(envFile string, w io.Writer) {
-	fmt.Fprintln(w, "\nAdversarial review (optional) helps Claude Code catch more issues.")
-	fmt.Print("Enable adversarial review? [y/N]: ")
-	
-	reader := bufio.NewReader(os.Stdin)
-	ans, _ := reader.ReadString('\n')
-	ans = strings.TrimSpace(strings.ToLower(ans))
-	
-	if ans != "y" && ans != "yes" {
-		return
-	}
-
-	fmt.Fprintln(w, "Select provider:")
-	fmt.Fprintln(w, " 1) gemini")
-	fmt.Fprintln(w, " 2) copilot")
-	fmt.Fprintln(w, " 3) codex")
-	fmt.Print("Choice [1-3]: ")
-	
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
-	
-	provider := "gemini"
-	switch choice {
-	case "2": provider = "copilot"
-	case "3": provider = "codex"
-	}
-
-	// Update env file - simplified for now
-	fmt.Fprintf(w, "  Setting adversarial provider to: %s\n", provider)
-	// (Actual file update logic omitted for brevity in this step)
 }
 
 func configureRTK(w io.Writer) {

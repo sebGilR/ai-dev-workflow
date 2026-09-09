@@ -168,7 +168,10 @@
       "Bash(docker compose down*)",
       "Bash(docker compose restart*)",
       "Bash(shopify theme push*)",
-      "Bash(shopify app deploy*)"
+      "Bash(shopify app deploy*)",
+
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw adversarial-review*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw gemini-review*)"
     ],
     "deny": [
       "Read(./.env)",
