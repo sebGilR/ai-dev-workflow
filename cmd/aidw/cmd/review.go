@@ -83,12 +83,12 @@ var adversarialReviewCmd = &cobra.Command{
 	Use:   "adversarial-review <path>",
 	Short: "Run adversarial review pass using the configured provider",
 	Args:  cobra.ExactArgs(1),
+	// Note: this command is intentionally NOT gated by AIDW_ADVERSARIAL_REVIEW.
+	// It runs only when explicitly invoked, and each run is approved by the
+	// human through the Claude Code permission prompt — see the
+	// `permissions.ask` entries in templates/global/settings.template.json.
 	Run: func(c *cobra.Command, args []string) {
 		cfg := config.Load()
-		if !cfg.AdversarialReview {
-			fmt.Fprintln(os.Stderr, "[aidw] Adversarial review disabled (AIDW_ADVERSARIAL_REVIEW != 1).")
-			os.Exit(0)
-		}
 		provider, _ := c.Flags().GetString("provider")
 		model, _ := c.Flags().GetString("model")
 		tier, _ := c.Flags().GetString("tier")
