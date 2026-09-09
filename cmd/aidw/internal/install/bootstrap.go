@@ -208,7 +208,10 @@ func SeedRepo(repoPath string, w io.Writer) error {
 	fmt.Fprintln(w, "  → Seeding .github/agents/...")
 	agentsFS, err := fs.Sub(embedfs.FS, "claude/agents")
 	if err == nil {
-		if err := GenerateGithubAgents(agentsFS, filepath.Join(top, ".github", "agents")); err != nil {
+		// prune=false: this seeds an arbitrary user repo, so we never
+		// delete files that aren't ours just because they share the .md
+		// extension (see GenerateGithubAgents's prune doc comment).
+		if err := GenerateGithubAgents(agentsFS, filepath.Join(top, ".github", "agents"), false); err != nil {
 			return fmt.Errorf("generate github agents: %w", err)
 		}
 	}

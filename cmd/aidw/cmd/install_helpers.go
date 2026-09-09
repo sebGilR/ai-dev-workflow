@@ -51,7 +51,10 @@ var generateGithubSkillsCmd = &cobra.Command{
 			}
 		}
 
-		if err := install.GenerateGithubSkills(srcFS, dest); err != nil {
+		// prune=true: this is the checkout's own mirror-generation entry
+		// point (make mirrors), so keeping .github/skills exactly in
+		// sync with claude/skills (no orphans) is the goal, not a risk.
+		if err := install.GenerateGithubSkills(srcFS, dest, true); err != nil {
 			fmt.Fprintln(os.Stderr, "generate-github-skills:", err)
 			os.Exit(1)
 		}
@@ -80,7 +83,8 @@ var generateGithubAgentsCmd = &cobra.Command{
 			}
 		}
 
-		if err := install.GenerateGithubAgents(srcFS, dest); err != nil {
+		// prune=true: same rationale as generate-github-skills above.
+		if err := install.GenerateGithubAgents(srcFS, dest, true); err != nil {
 			fmt.Fprintln(os.Stderr, "generate-github-agents:", err)
 			os.Exit(1)
 		}

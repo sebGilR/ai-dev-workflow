@@ -14,11 +14,19 @@ import (
 
 // GenerateGithubAgents reads markdown files from srcFS, strips out the
 // "### 1. Serena MCP" section, renumbers subsequent numbered sections,
-// and writes the result to destDir. It is idempotent, and removes any
-// generated .md file in destDir that no longer has a corresponding source
-// file (so a deleted/renamed agent doesn't leave an orphaned mirror copy
-// behind — the mirror always reflects exactly the current source set).
-func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
+// and writes the result to destDir. It is idempotent.
+//
+// prune controls whether generated .md files in destDir with no
+// corresponding source file are removed. This MUST be false when destDir
+// is an arbitrary user repository (e.g. SeedRepo's per-repo bootstrap) —
+// pruning there would silently delete files the user put in their own
+// .github/agents/ that happen to share the .md extension, which is exactly
+// the "archive, never delete" rail phase 1 is trying to hold everywhere
+// else. Pass true only for this checkout's own mirror-generation entry
+// points (the generate-github-agents CLI command / `make mirrors`), where
+// destDir is .github/agents/ in this same repo and staying in lockstep
+// with claude/agents/ (no orphans left behind) is exactly the point.
+func GenerateGithubAgents(srcFS fs.FS, destDir string, prune bool) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir dest dir: %w", err)
 	}
@@ -58,6 +66,9 @@ func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 		}
 	}
 
+	if !prune {
+		return nil
+	}
 	return removeOrphanFiles(destDir, wanted)
 }
 

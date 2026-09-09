@@ -11,13 +11,21 @@ import (
 
 // GenerateGithubSkills mirrors srcFS (claude/skills/) into destDir
 // (.github/skills/) verbatim — unlike agents, skills carry no MCP-specific
-// sections to strip. It removes any file under destDir that no longer
-// exists in srcFS first, so the mirror never accumulates orphaned copies
-// of deleted/renamed skills, then copies srcFS over it. The result is
+// sections to strip.
+//
+// prune controls whether files under destDir with no corresponding source
+// file are removed first. As with GenerateGithubAgents, this MUST be false
+// when destDir is an arbitrary user repository — pruning there would
+// delete files a user added to their own .github/skills/ that this
+// checkout's claude/skills/ knows nothing about. Pass true only for this
+// checkout's own mirror-generation entry points (the generate-github-skills
+// CLI command / `make mirrors`), where the result is meant to be exactly
 // byte-identical to srcFS, which is what the mirrors drift test asserts.
-func GenerateGithubSkills(srcFS fs.FS, destDir string) error {
-	if err := removeOrphanTree(srcFS, destDir); err != nil {
-		return fmt.Errorf("clean dest dir: %w", err)
+func GenerateGithubSkills(srcFS fs.FS, destDir string, prune bool) error {
+	if prune {
+		if err := removeOrphanTree(srcFS, destDir); err != nil {
+			return fmt.Errorf("clean dest dir: %w", err)
+		}
 	}
 	if err := util.CopyFS(srcFS, destDir); err != nil {
 		return fmt.Errorf("copy skills: %w", err)

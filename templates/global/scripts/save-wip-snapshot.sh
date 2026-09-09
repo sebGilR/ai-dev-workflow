@@ -71,10 +71,18 @@ resolved_via_binary=0
 
 if [[ -n "$aidw_bin" ]]; then
   resolve_out="$("$aidw_bin" resolve-wip "$repo_root" 2>/dev/null || true)"
-  if [[ -n "$resolve_out" ]]; then
+  resolved_exists="$(printf '%s\n' "$resolve_out" | sed -n 's/^exists=//p' | head -1)"
+  resolved_dir="$(printf '%s\n' "$resolve_out" | sed -n 's/^wip_dir=//p' | head -1)"
+  # Only trust this as a real answer from a binary that understands
+  # resolve-wip: it must have printed a recognized exists= value. An older
+  # aidw with no resolve-wip subcommand exits non-zero and (on this repo's
+  # cobra setup) writes its "unknown command" error to stderr, which is
+  # already discarded above — but even if some future/wrapped `aidw` were
+  # to leak something to stdout on failure, requiring an unambiguous
+  # exists=true/false keeps us from misreading that as "no active work"
+  # and silently skipping the shell fallback below.
+  if [[ "$resolved_exists" == "true" || "$resolved_exists" == "false" ]]; then
     resolved_via_binary=1
-    resolved_exists="$(printf '%s\n' "$resolve_out" | sed -n 's/^exists=//p' | head -1)"
-    resolved_dir="$(printf '%s\n' "$resolve_out" | sed -n 's/^wip_dir=//p' | head -1)"
     if [[ "$resolved_exists" == "true" && -n "$resolved_dir" ]]; then
       wip_dir="$resolved_dir"
     fi

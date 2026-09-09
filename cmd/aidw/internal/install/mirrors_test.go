@@ -52,7 +52,7 @@ func TestMirrorAgentsMatchGeneratedOutput(t *testing.T) {
 
 	scratch := t.TempDir()
 	srcFS := os.DirFS(src)
-	if err := GenerateGithubAgents(srcFS, scratch); err != nil {
+	if err := GenerateGithubAgents(srcFS, scratch, true); err != nil {
 		t.Fatalf("GenerateGithubAgents: %v", err)
 	}
 

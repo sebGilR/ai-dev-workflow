@@ -187,6 +187,43 @@ func TestHookDottedSlugNoCollision(t *testing.T) {
 	}
 }
 
+// TestHookFallsBackToShellResolver_WhenBinaryLacksResolveWip guards against
+// exactly the failure mode an old (pre-B1b) `aidw` binary would hit: no
+// `resolve-wip` subcommand, so cobra reports "unknown command" and exits
+// non-zero. The hook must still recognize this as "binary resolution
+// failed" and fall through to the shell resolver — not silently treat an
+// empty/garbled answer as "no active work" and skip the snapshot.
+func TestHookFallsBackToShellResolver_WhenBinaryLacksResolveWip(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, ".claude", "ai-dev-workflow", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A stub that mimics cobra's behavior for an unrecognized subcommand:
+	// error text on stderr, non-zero exit, nothing on stdout.
+	stub := "#!/bin/sh\necho \"Error: unknown command \\\"$1\\\" for \\\"aidw\\\"\" >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "aidw"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := initHookGitRepo(t, "")
+	wipDir := filepath.Join(repo, ".wip", "20260101120000-main")
+	if err := os.MkdirAll(wipDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wipDir, "status.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, code := runHookScript(t, home, repo, "stop", ""); code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+
+	if _, err := os.Stat(filepath.Join(wipDir, "progress.log")); err != nil {
+		t.Errorf("expected the shell fallback to still write progress.log when the binary can't resolve-wip: %v", err)
+	}
+}
+
 func TestHookWritesSnapshot_WhenActiveWorkExists(t *testing.T) {
 	home := hookTestEnv(t)
 	repo := initHookGitRepo(t, "")
