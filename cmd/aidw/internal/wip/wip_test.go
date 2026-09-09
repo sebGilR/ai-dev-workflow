@@ -629,6 +629,21 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 			t.Errorf("expected %q under archive dir %q: %v", a, result.ArchiveDir, err)
 		}
 	}
+
+	// An unrecognised attachment (not one of the standard wipFiles) must be
+	// preserved (archived), never silently dropped.
+	if _, err := os.Stat(filepath.Join(result.ArchiveDir, "extra.md")); err != nil {
+		t.Errorf("expected unknown attachment extra.md to be archived, not lost: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(result.ArchiveDir, "extra.md")); err != nil || string(data) != "content" {
+		t.Errorf("expected extra.md's content to survive archiving unchanged, got %q (err=%v)", data, err)
+	}
+
+	// status.json must always survive cleanup (not just purge) — it is the
+	// workflow's stage/state record.
+	if _, err := os.Stat(filepath.Join(state.WipDir, "status.json")); err != nil {
+		t.Errorf("status.json must survive cleanup: %v", err)
+	}
 }
 
 func TestCleanupBranch_ArchiveSurvivesSecondRun(t *testing.T) {
@@ -840,6 +855,48 @@ func TestSummaryStalenessFlag(t *testing.T) {
 	if !staleness2.Stale {
 		t.Error("expected summary to report stale=true after editing a source file")
 	}
+}
+
+// ── Known limitations fixed only in phase 2 (Cluster E3 item 9) ────────────
+//
+// These capture repro recipes for gaps the Astra evaluation found that
+// phase 1 does not (and should not try to) fix — they require the work-ID
+// store from Cluster G/I. Keeping them here, skipped, means the recipe
+// stays in-tree instead of living only in evaluation-assessment.md.
+
+func TestKnownLimitation_WorktreeRemovalLosesWipState(t *testing.T) {
+	t.Skip("fixed in phase 2 — work-ID store; see spec Cluster G/I. " +
+		"Repro: .wip/<branch>/ lives inside the worktree's own checkout " +
+		"(git.Toplevel resolves to the worktree path, not the main repo), " +
+		"so `git worktree remove` deletes all WIP state for that branch " +
+		"with it — nothing external survives removal.")
+}
+
+func TestKnownLimitation_StartBranchFlagIsNotPersisted(t *testing.T) {
+	t.Skip("fixed in phase 2 — work-ID store; see spec Cluster G/I. " +
+		"Repro: `aidw start . --branch foo` (cmd/start.go) resolves and " +
+		"seeds .wip/<date>-foo/ for one call, but nothing records that " +
+		"this session is bound to branch \"foo\" rather than the actual " +
+		"current git branch — the next command resolves via the real git " +
+		"branch again and can land in a different .wip dir.")
+}
+
+func TestKnownLimitation_SetStageImplementingIsUngated(t *testing.T) {
+	t.Skip("fixed in phase 2 — work-ID store; see spec Cluster G/I. " +
+		"Repro: unlike \"planned\"/\"specified\"/\"spec-reviewed\"/\"researched\"/" +
+		"\"reviewed\", the \"implementing\" stage has no required-files entry " +
+		"in SetStage's switch (wip.go), so `aidw set-stage . implementing` " +
+		"succeeds even with an empty or missing spec.md — there is no task " +
+		"list to actually implement against.")
+}
+
+func TestKnownLimitation_NoTaskSpecReportsFalseCompletion(t *testing.T) {
+	t.Skip("fixed in phase 2 — work-ID store; see spec Cluster G/I. " +
+		"Repro: NextTask (task.go) returns (nil, nil) both when every " +
+		"parsed task is complete AND when spec.md has zero parseable " +
+		"\"Task N\" headers — GetNextAction's \"implementing\" case " +
+		"(wip.go) treats both as \"finished, go to /wip-review\", so a " +
+		"spec that was never broken into tasks reads as falsely complete.")
 }
 
 // ── titleCase helper ─────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ func init() {
 	Root.AddCommand(mergeMCPJSONCmd)
 	Root.AddCommand(updateGlobalGitignoreCmd)
 	Root.AddCommand(generateGithubAgentsCmd)
+	Root.AddCommand(generateGithubSkillsCmd)
 
 	mergeCLAUDEMdCmd.Flags().String("claude-md", "", "Path to CLAUDE.md")
 	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file (optional, defaults to embedded)")
@@ -25,6 +26,37 @@ func init() {
 	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
 	generateGithubAgentsCmd.Flags().String("src", "", "Source directory containing agent markdown files (optional, defaults to embedded)")
 	generateGithubAgentsCmd.Flags().String("dest", "", "Destination directory for generated agents")
+	generateGithubSkillsCmd.Flags().String("src", "", "Source directory containing skill subdirectories (optional, defaults to embedded)")
+	generateGithubSkillsCmd.Flags().String("dest", "", "Destination directory for generated skills")
+}
+
+var generateGithubSkillsCmd = &cobra.Command{
+	Use:   "generate-github-skills",
+	Short: "Generate .github/skills/ from claude/skills/ (byte-identical mirror)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		srcPath, _ := cmd.Flags().GetString("src")
+		dest, _ := cmd.Flags().GetString("dest")
+		if dest == "" {
+			return fmt.Errorf("--dest is required")
+		}
+
+		var srcFS fs.FS
+		var err error
+		if srcPath != "" {
+			srcFS = os.DirFS(srcPath)
+		} else {
+			srcFS, err = fs.Sub(embedfs.FS, "claude/skills")
+			if err != nil {
+				return fmt.Errorf("embedded skills: %w", err)
+			}
+		}
+
+		if err := install.GenerateGithubSkills(srcFS, dest); err != nil {
+			fmt.Fprintln(os.Stderr, "generate-github-skills:", err)
+			os.Exit(1)
+		}
+		return nil
+	},
 }
 
 var generateGithubAgentsCmd = &cobra.Command{

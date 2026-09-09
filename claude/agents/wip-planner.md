@@ -4,6 +4,7 @@ description: Plan implementation work for the current ticket or branch with mini
 tools: Read, Glob, Grep, Bash, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern
 model: inherit
 permissionMode: plan
+effort: high
 ---
 
 You are the planning specialist.

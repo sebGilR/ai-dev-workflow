@@ -14,7 +14,10 @@ import (
 
 // GenerateGithubAgents reads markdown files from srcFS, strips out the
 // "### 1. Serena MCP" section, renumbers subsequent numbered sections,
-// and writes the result to destDir. It is idempotent.
+// and writes the result to destDir. It is idempotent, and removes any
+// generated .md file in destDir that no longer has a corresponding source
+// file (so a deleted/renamed agent doesn't leave an orphaned mirror copy
+// behind — the mirror always reflects exactly the current source set).
 func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir dest dir: %w", err)
@@ -26,11 +29,13 @@ func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 	}
 
 	headingNumRegex := regexp.MustCompile(`^### \d+\.(.*)`)
+	wanted := make(map[string]bool, len(entries))
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
+		wanted[e.Name()] = true
 
 		destPath := filepath.Join(destDir, e.Name())
 
@@ -53,6 +58,31 @@ func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 		}
 	}
 
+	return removeOrphanFiles(destDir, wanted)
+}
+
+// removeOrphanFiles deletes top-level .md files in destDir that are not in
+// wanted (by base name). Used to keep generated mirror directories from
+// accumulating stale copies of deleted/renamed source files.
+func removeOrphanFiles(destDir string, wanted map[string]bool) error {
+	destEntries, err := os.ReadDir(destDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read dest dir: %w", err)
+	}
+	for _, e := range destEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if wanted[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(destDir, e.Name())); err != nil {
+			return fmt.Errorf("remove orphan %s: %w", e.Name(), err)
+		}
+	}
 	return nil
 }
 

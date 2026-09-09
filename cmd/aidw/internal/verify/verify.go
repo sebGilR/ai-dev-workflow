@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -270,8 +271,61 @@ func Run(workspacePath string) *Results {
 	// Adversarial review provider check
 	checkAdversarialProvider(warn)
 
+	// Claude Code host version — SKILL.md/agent `effort`/`model` frontmatter
+	// requires a modern host to be honored (reliable interactive support
+	// from 2.1.259; silently ignored below that).
+	checkClaudeCodeVersion(warn)
+
 	r.OK = r.Failed == 0
 	return r
+}
+
+// minFrontmatterEffortVersion is the lowest Claude Code version known to
+// reliably honor SKILL.md/agent `effort:`/`model:` frontmatter interactively.
+// Below this, the frontmatter is silently ignored (not an error — the
+// `## Model guidance` prose blocks in the wip-* skills are the fallback).
+var minFrontmatterEffortVersion = [3]int{2, 1, 259}
+
+// claudeCodeVersionPattern extracts a dotted version number (e.g. "2.1.266")
+// from `claude --version` output, whose exact wording is not a stable
+// contract to depend on.
+var claudeCodeVersionPattern = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// checkClaudeCodeVersion warns (never hard-fails — this is host tooling, not
+// an aidw install defect) when the `claude` CLI can't be found, its version
+// can't be parsed, or it is older than minFrontmatterEffortVersion.
+func checkClaudeCodeVersion(warn func(string, bool, ...string)) {
+	name := "host: Claude Code version supports SKILL.md effort/model frontmatter"
+
+	if !commandExists("claude") {
+		warn(name, false, "claude CLI not found on PATH — could not check version")
+		return
+	}
+
+	out, err := exec.Command("claude", "--version").Output()
+	if err != nil {
+		warn(name, false, fmt.Sprintf("claude --version failed: %v", err))
+		return
+	}
+
+	m := claudeCodeVersionPattern.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if m == nil {
+		warn(name, false, fmt.Sprintf("could not parse version from: %q", strings.TrimSpace(string(out))))
+		return
+	}
+
+	var v [3]int
+	for i := 0; i < 3; i++ {
+		fmt.Sscanf(m[i+1], "%d", &v[i])
+	}
+
+	ok := v[0] > minFrontmatterEffortVersion[0] ||
+		(v[0] == minFrontmatterEffortVersion[0] && v[1] > minFrontmatterEffortVersion[1]) ||
+		(v[0] == minFrontmatterEffortVersion[0] && v[1] == minFrontmatterEffortVersion[1] && v[2] >= minFrontmatterEffortVersion[2])
+
+	detail := fmt.Sprintf("detected %d.%d.%d (need >= %d.%d.%d) — skill effort/model frontmatter is silently ignored below this; the ## Model guidance prose blocks still apply",
+		v[0], v[1], v[2], minFrontmatterEffortVersion[0], minFrontmatterEffortVersion[1], minFrontmatterEffortVersion[2])
+	warn(name, ok, detail)
 }
 
 func fileExists(path string) bool {

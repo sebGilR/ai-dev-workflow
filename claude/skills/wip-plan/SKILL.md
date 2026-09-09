@@ -3,11 +3,24 @@ name: wip-plan
 description: 'Create or refresh the implementation specification for the current branch using a deterministic 3-step sequence: Clarify, Draft, and Skeptic Review.'
 context: fork
 agent: analyst
+effort: high
 ---
 
 # Workflow: Spec-Driven Planning
 
 This workflow enforces a disciplined "Chain-of-Command" to ensure the project is **Ready for Development**.
+
+## Model guidance
+
+Planning and spec review benefit most from the frontier tier — mistakes
+here are expensive to unwind later. `effort: high` above requests that tier
+where the host honors SKILL.md frontmatter (Claude Code >= 2.1.259); on
+older hosts it is silently ignored, so escalate manually if the plan is
+unusually large or the spec review keeps missing things. `aidw model route
+<tier>` prints the configured model name for the frontier/efficient tiers
+(env `AIDW_FRONTIER_MODEL` / `AIDW_EFFICIENT_MODEL`). Respect an explicit
+user model choice without re-prompting, and never claim a model switch
+happened unless the host actually performed it.
 
 ## STEP 1: Clarify & Distill (Analyst)
 

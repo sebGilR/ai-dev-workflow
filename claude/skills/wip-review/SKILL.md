@@ -1,7 +1,23 @@
 ---
 name: wip-review
 description: Prepare a review bundle and consolidate review notes.
+effort: high
 ---
+
+## Model guidance
+
+Review benefits most from the frontier tier — this is the last line of
+defense before a PR, and missed findings are expensive. `effort: high`
+above requests that tier where the host honors SKILL.md frontmatter
+(Claude Code >= 2.1.259); on older hosts it is silently ignored, which is
+exactly what step 4 below exists to handle explicitly via
+`AIDW_REVIEW_MODEL` / the escalation prompt. `aidw model route <tier>`
+prints the configured name for either tier (env `AIDW_FRONTIER_MODEL` /
+`AIDW_EFFICIENT_MODEL`) — this is a separate, general-purpose mechanism
+from the review-specific `AIDW_REVIEW_MODEL` override in step 4, which
+stays as-is. Respect an explicit user model choice without re-prompting,
+and never claim a model switch happened unless the host actually
+performed it.
 
 When this skill is used:
 
