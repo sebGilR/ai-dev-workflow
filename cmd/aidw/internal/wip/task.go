@@ -15,8 +15,12 @@ type Task struct {
 	Description string `json:"description"`
 }
 
+// NextTask returns the first uncompleted task in the branch's spec.md.
+// It is a read-only lookup: on a repo/branch with no active work it returns
+// ErrNoActiveWork rather than seeding a .wip directory (which would create an
+// empty spec.md and then report "all tasks completed" against it).
 func NextTask(repoPath string) (*Task, error) {
-	state, err := EnsureBranchState(repoPath, "")
+	state, err := FindBranchState(repoPath, "")
 	if err != nil { return nil, err }
 
 	specPath := filepath.Join(state.WipDir, "spec.md")
