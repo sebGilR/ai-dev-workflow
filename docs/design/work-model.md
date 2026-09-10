@@ -1,6 +1,6 @@
 # Work Model Design (Cluster F)
 
-Status: **draft, awaiting sign-off**. This document is the contract for
+Status: **approved (Seb, 2026-09-10)**. This document is the contract for
 Clusters G-I (Phase 2) and the gate for Cluster J (Phase 3 — freeform mode).
 Per spec `AC-F`, every G-I task below maps to a section here, and every open
 choice carries a recorded rationale.
@@ -161,16 +161,15 @@ not evict the first session's binding.
    its own explicit binding or gets a forced disambiguation prompt, never a
    silent wrong-record write.
 
-**Open question (recorded, not yet resolved — needs Seb's input during G
-implementation, not blocking this doc's sign-off):** what identifies "this
-session" outside of a Claude Code hook context (e.g. a bare terminal
-invocation of `aidw work status` with no hook JSON on stdin)? Candidates:
-shell PID + start time, a `$AIDW_SESSION_ID` env var the user sets manually,
-or falling straight to step 3 (worktree association) whenever no session
-context is available at all. Recommend the last option for G1/G2 — it's the
-simplest correct behavior and doesn't block G3's command surface — revisit
-if real usage shows session-less ambiguity is common enough to need its own
-UX.
+**Decision (Seb, 2026-09-10) — outside a Claude Code hook context (e.g. a
+bare terminal invocation of `aidw work status` with no hook JSON on stdin),
+skip session-level binding entirely and fall straight to step 3 (worktree
+association).** No shell-PID/start-time derivation, no `$AIDW_SESSION_ID`
+env var, in G1/G2's initial implementation. *Rationale:* simplest correct
+behavior, doesn't block G3's command surface, and there's no usage evidence
+yet that session-less ambiguity (two work items truly indistinguishable by
+worktree alone, with no session context) is common enough to justify the
+added complexity. Revisit if real usage says otherwise.
 
 ## 5. Resolver contract — three distinct concepts, never conflated
 
@@ -328,17 +327,18 @@ blocked re-deriving them:
 These don't block signing off on the schema/resolver/lifecycle contract
 above, but need a decision before or during G's implementation:
 
-1. **Session identity outside hook contexts** (§4) — recommend defaulting to
-   worktree-association-only until real usage data says otherwise.
-2. **Exact flag name for showing archived work in `list`** (§7) —
+1. **Exact flag name for showing archived work in `list`** (§7) —
    implementer's choice, not architecturally significant.
-3. **`repos.json` alias-merge UX** — what happens when a user manually moves
+2. **`repos.json` alias-merge UX** — what happens when a user manually moves
    or renames a repo directory and `aidw` needs to notice the old path no
    longer resolves. Not needed for G's initial implementation (repos.json
    can start append-only, no alias pruning), but worth flagging so it's not
    forgotten before this ships broadly.
 
+(Session identity outside hook contexts, previously open here, is resolved
+in §4.)
+
 ---
 
-*Sign-off: pending. Once approved, Cluster G implementation starts on a new
-branch stacked on this one.*
+*Approved 2026-09-10. Cluster G implementation starts on a new branch
+stacked on this one.*
