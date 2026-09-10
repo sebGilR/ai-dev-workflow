@@ -311,3 +311,120 @@ func TestAdversarialStalenessOnExplicitInvocationPath(t *testing.T) {
 		}
 	})
 }
+
+// runGit runs a git command in dir and fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	full := append([]string{"-C", dir}, args...)
+	if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestTrackedWipDirDoesNotChurnFingerprint is the regression guard for the
+// repo shape stripWipStatusLines was written for but did not fully cover: a
+// repo where `.wip/` is TRACKED in git rather than gitignored.
+//
+// In that shape the workflow's own writes into `.wip/` (review-bundle.json,
+// adversarial-review.md, review.md) appear in `git diff`, not just in
+// `git status --short`. Before the pathspec exclusion those diffs churned the
+// fingerprint on every computation — including the "current" one recomputed at
+// synthesis time — so the adversarial findings were permanently and
+// unclearably labelled stale, no matter how many bundle -> review -> synthesize
+// cycles were run.
+func TestTrackedWipDirDoesNotChurnFingerprint(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		fake := t.TempDir()
+		script := filepath.Join(fake, "gemini")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho 'FAKE FINDINGS'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		dir := t.TempDir()
+		initGitRepo(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("original\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, dir, "add", "foo.txt")
+		runGit(t, dir, "commit", "-m", "add foo")
+
+		// A real working-tree change so the adversarial pass has something to
+		// review, and so the fingerprint is not trivially empty.
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("changed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// One full cycle to populate .wip/, then TRACK it. -f defeats any
+		// gitignore entry the workflow may have written.
+		if _, err := ReviewBundle(dir); err != nil {
+			t.Fatalf("ReviewBundle (seed): %v", err)
+		}
+		if _, err := AdversarialReview(dir, "gemini", "test-model", 30); err != nil {
+			t.Fatalf("AdversarialReview (seed): %v", err)
+		}
+		if _, err := SynthesizeReview(dir); err != nil {
+			t.Fatalf("SynthesizeReview (seed): %v", err)
+		}
+		runGit(t, dir, "add", "-f", ".wip")
+		runGit(t, dir, "commit", "-m", "track .wip")
+		return dir
+	}
+
+	cycle := func(t *testing.T, dir string) string {
+		t.Helper()
+		if _, err := ReviewBundle(dir); err != nil {
+			t.Fatalf("ReviewBundle: %v", err)
+		}
+		if _, err := AdversarialReview(dir, "gemini", "test-model", 30); err != nil {
+			t.Fatalf("AdversarialReview: %v", err)
+		}
+		result, err := SynthesizeReview(dir)
+		if err != nil {
+			t.Fatalf("SynthesizeReview: %v", err)
+		}
+		data, _ := os.ReadFile(result.ReviewPath)
+		return string(data)
+	}
+
+	t.Run("modified tracked .wip files do not move the fingerprint", func(t *testing.T) {
+		dir := setup(t)
+		before := diffFingerprint(dir)
+
+		// Stand in for the workflow's own write into a tracked .wip file.
+		matches, err := filepath.Glob(filepath.Join(dir, ".wip", "*", "review.md"))
+		if err != nil || len(matches) == 0 {
+			t.Fatalf("no tracked review.md under .wip: %v %v", matches, err)
+		}
+		if err := os.WriteFile(matches[0], []byte("mutated by the workflow\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if after := diffFingerprint(dir); after != before {
+			t.Errorf("a tracked .wip/ edit changed the fingerprint:\n before=%s\n after =%s", before, after)
+		}
+
+		// A real source edit must still move it, or the exclusion is too broad.
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("changed again\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if after := diffFingerprint(dir); after == before {
+			t.Error("a real source edit must change the fingerprint")
+		}
+	})
+
+	t.Run("repeated cycles never falsely report stale", func(t *testing.T) {
+		dir := setup(t)
+		for i, name := range []string{"first", "second"} {
+			content := cycle(t, dir)
+			if strings.Contains(content, "_Stale:") {
+				t.Fatalf("%s cycle (#%d) falsely reported stale with .wip tracked; got:\n%s",
+					name, i+1, content)
+			}
+			if !strings.Contains(content, "FAKE FINDINGS") {
+				t.Fatalf("%s cycle: findings missing from review.md:\n%s", name, content)
+			}
+		}
+	})
+}

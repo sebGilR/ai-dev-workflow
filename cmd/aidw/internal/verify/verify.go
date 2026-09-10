@@ -397,6 +397,16 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 			checkCmd = exec.Command("codex", "ping")
 			checkCmd.Stdin = strings.NewReader("pong")
 		}
+	case "agy", "antigravity":
+		// Mirrors review.resolveProvider, which accepts both spellings and
+		// runs the Antigravity CLI under the binary name `agy`.
+		installed = commandExists("agy")
+		warn("adversarial: agy CLI installed", installed,
+			"install the Antigravity CLI (provides the `agy` binary)")
+		if installed {
+			checkCmd = exec.Command("agy", "--print", "ping pong",
+				"--dangerously-skip-permissions", "--print-timeout", "15s")
+		}
 	default:
 		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
 			"valid values: gemini, copilot, codex, agy")

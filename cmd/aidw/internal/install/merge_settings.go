@@ -45,11 +45,59 @@ func MergeSettings(settingsPath string, templateData []byte) error {
 	}
 
 	merged := mergeDict(existing, tmpl)
+	retractStaleAllowRules(merged)
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		return err
 	}
 	out, _ := json.MarshalIndent(merged, "", "  ")
 	return util.AtomicWrite(settingsPath, append(out, '\n'), 0o644)
+}
+
+// retractedAllowPatterns are `permissions.allow` entries that earlier versions
+// of settings.template.json shipped and that must NOT survive an upgrade.
+//
+// mergeLists is union-only: it adds new entries but never removes old ones, so
+// without an explicit retraction step every already-installed user keeps the
+// blanket `aidw *` allow rule forever. That rule prefix-matches
+// `aidw adversarial-review` / `aidw gemini-review` and therefore shadows the
+// `permissions.ask` gate those commands rely on.
+//
+// Keep this list minimal and exact-match only. It is a migration for specific
+// known-bad legacy entries, not a general pattern-removal engine.
+var retractedAllowPatterns = []string{
+	"Bash(~/.claude/ai-dev-workflow/bin/aidw *)",
+}
+
+// retractStaleAllowRules removes retractedAllowPatterns from
+// merged["permissions"]["allow"] in place. It runs after the merge so the
+// written file never contains a retracted pattern regardless of whether it
+// came from the user's existing settings or from the template.
+//
+// Every shape mismatch (missing keys, wrong types, non-string entries) is a
+// no-op: this must never corrupt a settings file it does not understand.
+func retractStaleAllowRules(merged map[string]any) {
+	perms, ok := merged["permissions"].(map[string]any)
+	if !ok {
+		return
+	}
+	allow, ok := perms["allow"].([]any)
+	if !ok {
+		return
+	}
+	retract := make(map[string]bool, len(retractedAllowPatterns))
+	for _, p := range retractedAllowPatterns {
+		retract[p] = true
+	}
+	// Non-nil empty start: a nil slice marshals to `null`, not `[]`, which
+	// would be an invalid permissions block if every entry got retracted.
+	kept := []any{}
+	for _, item := range allow {
+		if s, isStr := item.(string); isStr && retract[s] {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	perms["allow"] = kept
 }
 
 func mergeDict(existing, incoming map[string]any) map[string]any {

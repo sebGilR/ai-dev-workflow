@@ -94,13 +94,21 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	// cache key. Status changes (new untracked files, renames, mode changes)
 	// that don't affect diffs would otherwise produce a stale bundle.
 	status := gitOutput(top, "status", "--short")
-	changedFiles := parseChangedFiles(status)
+	// Derive the changed-file list from the same `.wip/`-free view of the
+	// status that feeds the fingerprint, so a cache hit and the recorded
+	// ChangedFiles can never disagree about what changed.
+	changedFiles := parseChangedFiles(stripWipStatusLines(status))
 
-	// Compute fingerprint from raw diffs + status; skip rebuild if unchanged.
-	// Note: rawBranchDiff is empty when no merge base could be found (i.e.,
-	// neither main nor master exists, or git merge-base failed). The
-	// fingerprint still covers working-tree and staged changes in that case.
-	fingerprint := fingerprintOf(rawBranchDiff, rawDiff, rawStaged, status)
+	// Compute the fingerprint from a `.wip/`-excluded re-read of the diffs
+	// (see fingerprintDiffs) plus the stripped status; skip rebuild if
+	// unchanged. These are deliberately separate git calls from the ones above:
+	// what gets stored in the bundle and sent to the adversarial provider stays
+	// the full, unfiltered diff. Note the branch diff is empty when no merge
+	// base could be found (i.e. neither main nor master exists, or git
+	// merge-base failed); the fingerprint still covers working-tree and staged
+	// changes in that case.
+	fpBranch, fpWorking, fpStaged := fingerprintDiffs(top, mergeBase)
+	fingerprint := fingerprintOf(fpBranch, fpWorking, fpStaged, status)
 
 	// Ensure WIP dir exists after all git ops so that a failed git command
 	// does not leave an orphaned .wip/<branch>/ directory.
@@ -568,12 +576,37 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 
 // --- helpers ---
 
+// wipPathspecExclude keeps the branch-scoped `.wip/` directory out of the diff
+// material that feeds the fingerprint. In repos where `.wip/` is *tracked*
+// (not gitignored) the workflow's own writes — review-bundle.json,
+// adversarial-review.md, review.md — show up in `git diff`, which would churn
+// the fingerprint on every computation and leave the adversarial findings
+// permanently, unclearably labelled stale.
+const wipPathspecExclude = ":(exclude).wip"
+
+// fingerprintDiffs returns the three diff texts that feed the fingerprint,
+// with `.wip/` excluded via git pathspec. It is the single source of that
+// material for both ReviewBundle and diffFingerprint, so the two can never
+// drift apart and invert the staleness bug. mergeBase may be "" when none
+// could be found, in which case the branch diff is empty.
+//
+// These are NOT the diffs stored in the bundle or sent to the adversarial
+// provider — those stay unfiltered. This is hash input only.
+func fingerprintDiffs(top, mergeBase string) (branchDiff, workingDiff, stagedDiff string) {
+	if mergeBase != "" {
+		branchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--", ".", wipPathspecExclude)
+	}
+	workingDiff = gitOutput(top, "diff", "--", ".", wipPathspecExclude)
+	stagedDiff = gitOutput(top, "diff", "--cached", "--", ".", wipPathspecExclude)
+	return branchDiff, workingDiff, stagedDiff
+}
+
 // fingerprintOf hashes the exact diff material a review pass looks at.
-// NUL separators prevent hash collisions across field boundaries. The status
-// text has `.wip/` entries stripped first so that the workflow's own artifacts
-// (review-bundle.json, adversarial-review.md, review.md) cannot make the
-// fingerprint change between an adversarial pass and the synthesis that
-// follows it, in repos where `.wip/` is not gitignored.
+// NUL separators prevent hash collisions across field boundaries. Callers pass
+// diffs produced by fingerprintDiffs (which excludes `.wip/` via pathspec);
+// the status text has `.wip/` entries stripped here, which additionally covers
+// *untracked* `.wip/` files — those appear in `git status --short` but in no
+// diff, so the pathspec exclusion alone would not catch them.
 func fingerprintOf(branchDiff, workingDiff, stagedDiff, status string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", branchDiff, workingDiff, stagedDiff, stripWipStatusLines(status))
@@ -604,14 +637,11 @@ func stripWipStatusLines(status string) string {
 // so staleness is judged against the working tree as it is now, not against a
 // possibly-stale on-disk bundle.
 func diffFingerprint(top string) string {
-	var branchDiff string
-	if mergeBase := findMergeBase(top); mergeBase != "" {
-		branchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--")
-	}
+	branchDiff, workingDiff, stagedDiff := fingerprintDiffs(top, findMergeBase(top))
 	return fingerprintOf(
 		branchDiff,
-		gitOutput(top, "diff", "--", "."),
-		gitOutput(top, "diff", "--cached", "--", "."),
+		workingDiff,
+		stagedDiff,
 		gitOutput(top, "status", "--short"),
 	)
 }
