@@ -76,15 +76,28 @@ func TestAdversarialDirectInvocationRuns(t *testing.T) {
 	// os.Exit the test binary.
 	reviewBundleCmd.Run(reviewBundleCmd, []string{dir})
 
-	// NOTE: these Set calls mutate package-level cobra command state that
-	// persists for the rest of the test binary. Harmless today; if more cmd
-	// tests are added, reset the flags or build a fresh command instance.
-	if err := adversarialReviewCmd.Flags().Set("provider", "gemini"); err != nil {
-		t.Fatal(err)
+	// adversarialReviewCmd is package-level state shared by every test in this
+	// binary, so save each flag's value and restore it on cleanup rather than
+	// leaking the overrides into whatever runs next.
+	setFlag := func(name, value string) {
+		t.Helper()
+		flag := adversarialReviewCmd.Flags().Lookup(name)
+		if flag == nil {
+			t.Fatalf("flag %q not registered", name)
+		}
+		original := flag.Value.String()
+		originallyChanged := flag.Changed
+		t.Cleanup(func() {
+			_ = flag.Value.Set(original)
+			flag.Changed = originallyChanged
+		})
+		if err := flag.Value.Set(value); err != nil {
+			t.Fatal(err)
+		}
+		flag.Changed = true
 	}
-	if err := adversarialReviewCmd.Flags().Set("timeout", "30"); err != nil {
-		t.Fatal(err)
-	}
+	setFlag("provider", "gemini")
+	setFlag("timeout", "30")
 	adversarialReviewCmd.Run(adversarialReviewCmd, []string{dir})
 
 	matches, err := filepath.Glob(filepath.Join(dir, ".wip", "*", "adversarial-review.md"))

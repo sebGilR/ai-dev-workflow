@@ -46,7 +46,7 @@ var geminiReviewCmd = &cobra.Command{
 		cfg := config.Load()
 		if !cfg.GeminiReview {
 			fmt.Fprintln(os.Stderr, "[aidw] Gemini adversarial review disabled (AIDW_GEMINI_REVIEW != 1).")
-			fmt.Fprintln(os.Stderr, "[aidw] Use `aidw adversarial-review` with AIDW_ADVERSARIAL_REVIEW=1 instead.")
+			fmt.Fprintln(os.Stderr, "[aidw] Use `aidw adversarial-review .` instead — it needs no env var and runs when explicitly invoked.")
 			os.Exit(0)
 		}
 		model, _ := c.Flags().GetString("model")

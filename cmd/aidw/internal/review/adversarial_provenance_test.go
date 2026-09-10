@@ -2,6 +2,7 @@ package review
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,7 +58,10 @@ func TestAdversarialStaleImport(t *testing.T) {
 		wipDir := seedWip(t, dir)
 
 		writeAdvFile(t, wipDir, "sha256:oldoldold")
-		writeBundleWithFingerprint(t, wipDir, "sha256:newnewnew")
+		// The bundle's stored fingerprint is deliberately a third value: the
+		// comparison must use the fingerprint recomputed from git, not this one.
+		writeBundleWithFingerprint(t, wipDir, "sha256:bundlebundle")
+		current := diffFingerprint(dir)
 
 		result, err := SynthesizeReview(dir)
 		if err != nil {
@@ -75,8 +79,11 @@ func TestAdversarialStaleImport(t *testing.T) {
 		if !strings.Contains(content, "_Stale:") {
 			t.Errorf("expected a stale provenance line; got:\n%s", content)
 		}
-		if !strings.Contains(content, "sha256:oldoldold") || !strings.Contains(content, "sha256:newnewnew") {
-			t.Error("stale line should name both the recorded and the current fingerprint")
+		if !strings.Contains(content, "sha256:oldoldold") || !strings.Contains(content, current) {
+			t.Errorf("stale line should name both the recorded and the current fingerprint; got:\n%s", content)
+		}
+		if strings.Contains(content, "sha256:bundlebundle") {
+			t.Error("staleness must be judged against git, not review-bundle.json's stored fingerprint")
 		}
 		if !strings.Contains(content, "Critical bug found.") {
 			t.Error("adversarial body should still be imported")
@@ -91,8 +98,8 @@ func TestAdversarialStaleImport(t *testing.T) {
 		initGitRepo(t, dir)
 		wipDir := seedWip(t, dir)
 
-		writeAdvFile(t, wipDir, "sha256:samesame")
-		writeBundleWithFingerprint(t, wipDir, "sha256:samesame")
+		writeBundleWithFingerprint(t, wipDir, "sha256:bundlebundle")
+		writeAdvFile(t, wipDir, diffFingerprint(dir))
 
 		result, err := SynthesizeReview(dir)
 		if err != nil {
@@ -218,4 +225,89 @@ func TestAdversarialWritesProvenanceHeader(t *testing.T) {
 	if !strings.Contains(content, "FAKE FINDINGS") {
 		t.Errorf("provider output missing; got:\n%s", content)
 	}
+}
+
+// TestAdversarialStalenessOnExplicitInvocationPath exercises the real
+// explicit-invocation sequence that Cluster D made canonical:
+//
+//	aidw review-bundle .  ->  aidw adversarial-review .  ->  (edit files)  ->
+//	aidw synthesize-review .
+//
+// review-bundle.json is NOT rebuilt before synthesis, so a fingerprint read
+// back from it would always compare equal to the one the adversarial pass
+// stamped. Synthesis must recompute from git instead.
+func TestAdversarialStalenessOnExplicitInvocationPath(t *testing.T) {
+	setupRepoWithProvider := func(t *testing.T) string {
+		t.Helper()
+		fake := t.TempDir()
+		script := filepath.Join(fake, "gemini")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho 'FAKE FINDINGS'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		dir := t.TempDir()
+		initGitRepo(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("original\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"git", "-C", dir, "add", "foo.txt"},
+			{"git", "-C", dir, "commit", "-m", "add foo"},
+		} {
+			if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+				t.Fatalf("git setup %v: %v\n%s", args, err, out)
+			}
+		}
+		// A working-tree change so the adversarial pass has something to review.
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("changed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReviewBundle(dir); err != nil {
+			t.Fatalf("ReviewBundle: %v", err)
+		}
+		if _, err := AdversarialReview(dir, "gemini", "test-model", 30); err != nil {
+			t.Fatalf("AdversarialReview: %v", err)
+		}
+		return dir
+	}
+
+	t.Run("working tree mutated after the pass is labelled stale", func(t *testing.T) {
+		dir := setupRepoWithProvider(t)
+
+		// Mutate the working tree WITHOUT re-running ReviewBundle.
+		if err := os.WriteFile(filepath.Join(dir, "foo.txt"), []byte("changed again\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := SynthesizeReview(dir)
+		if err != nil {
+			t.Fatalf("SynthesizeReview: %v", err)
+		}
+		data, _ := os.ReadFile(result.ReviewPath)
+		content := string(data)
+		if !strings.Contains(content, "_Stale:") {
+			t.Errorf("a diff change after the adversarial pass must be flagged stale; got:\n%s", content)
+		}
+		if !strings.Contains(content, "FAKE FINDINGS") {
+			t.Error("stale findings should still be imported")
+		}
+	})
+
+	t.Run("unchanged working tree is not labelled stale", func(t *testing.T) {
+		dir := setupRepoWithProvider(t)
+
+		result, err := SynthesizeReview(dir)
+		if err != nil {
+			t.Fatalf("SynthesizeReview: %v", err)
+		}
+		data, _ := os.ReadFile(result.ReviewPath)
+		content := string(data)
+		if strings.Contains(content, "_Stale:") {
+			t.Errorf("an unchanged working tree must not be labelled stale; got:\n%s", content)
+		}
+		if !strings.Contains(content, "fingerprint matches the current") {
+			t.Errorf("expected a matching provenance line; got:\n%s", content)
+		}
+	})
 }

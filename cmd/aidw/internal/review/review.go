@@ -100,10 +100,7 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	// Note: rawBranchDiff is empty when no merge base could be found (i.e.,
 	// neither main nor master exists, or git merge-base failed). The
 	// fingerprint still covers working-tree and staged changes in that case.
-	h := sha256.New()
-	// NUL separators prevent hash collisions across field boundaries.
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", rawBranchDiff, rawDiff, rawStaged, status)
-	fingerprint := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	fingerprint := fingerprintOf(rawBranchDiff, rawDiff, rawStaged, status)
 
 	// Ensure WIP dir exists after all git ops so that a failed git command
 	// does not leave an orphaned .wip/<branch>/ directory.
@@ -220,7 +217,12 @@ func SynthesizeReview(repoPath string) (*SynthesizeResult, error) {
 			// Always the same heading so reAdversarial keeps matching and the
 			// preservation branch below round-trips cleanly.
 			sections = append(sections, "## Adversarial Review\n")
-			sections = append(sections, provenanceLine(meta, bundle.DiffFingerprint)+"\n")
+			// Recompute from git rather than trusting bundle.DiffFingerprint:
+			// on the explicit-invocation path (`aidw adversarial-review .`
+			// then `aidw synthesize-review .`) review-bundle.json is not
+			// rebuilt in between, so the stored value is the very same one the
+			// adversarial pass stamped and would always compare equal.
+			sections = append(sections, provenanceLine(meta, diffFingerprint(top))+"\n")
 			sections = append(sections, adv+"\n")
 		}
 	} else if existingAdversarial != "" {
@@ -566,6 +568,54 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 
 // --- helpers ---
 
+// fingerprintOf hashes the exact diff material a review pass looks at.
+// NUL separators prevent hash collisions across field boundaries. The status
+// text has `.wip/` entries stripped first so that the workflow's own artifacts
+// (review-bundle.json, adversarial-review.md, review.md) cannot make the
+// fingerprint change between an adversarial pass and the synthesis that
+// follows it, in repos where `.wip/` is not gitignored.
+func fingerprintOf(branchDiff, workingDiff, stagedDiff, status string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", branchDiff, workingDiff, stagedDiff, stripWipStatusLines(status))
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// stripWipStatusLines drops `git status --short` lines that refer to the
+// branch-scoped `.wip/` directory.
+func stripWipStatusLines(status string) string {
+	lines := strings.Split(status, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		path := strings.TrimSpace(line)
+		if len(path) > 2 {
+			path = strings.TrimSpace(path[2:])
+		}
+		path = strings.Trim(path, `"`)
+		if path == ".wip" || path == ".wip/" || strings.HasPrefix(path, ".wip/") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// diffFingerprint recomputes the current diff fingerprint straight from git,
+// without reading (or writing) review-bundle.json. `synthesize-review` uses it
+// so staleness is judged against the working tree as it is now, not against a
+// possibly-stale on-disk bundle.
+func diffFingerprint(top string) string {
+	var branchDiff string
+	if mergeBase := findMergeBase(top); mergeBase != "" {
+		branchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--")
+	}
+	return fingerprintOf(
+		branchDiff,
+		gitOutput(top, "diff", "--", "."),
+		gitOutput(top, "diff", "--cached", "--", "."),
+		gitOutput(top, "status", "--short"),
+	)
+}
+
 func findMergeBase(repoPath string) string {
 	defaultBranch := git.DefaultBranch(repoPath)
 	out := strings.TrimSpace(gitOutput(repoPath, "merge-base", defaultBranch, "HEAD"))
@@ -663,11 +713,11 @@ func parseAdversarialHeader(text string) (adversarialMeta, string) {
 
 // provenanceLine renders the single line placed beneath the
 // `## Adversarial Review` heading describing where the findings came from and
-// whether they still match the current review bundle's diff.
+// whether they still describe the diff as it stands right now.
 //
-// Note: staleness is reported relative to review-bundle.json, not the working
-// tree. If the bundle itself is stale, a "current" label only means the
-// adversarial pass and the bundle agree.
+// currentFingerprint is recomputed from git by the caller (see
+// diffFingerprint), so staleness is judged against the live working tree
+// rather than against whatever review-bundle.json happens to hold.
 func provenanceLine(meta adversarialMeta, currentFingerprint string) string {
 	origin := "unknown provider"
 	if meta.Provider != "" {
@@ -687,14 +737,14 @@ func provenanceLine(meta adversarialMeta, currentFingerprint string) string {
 			"so it may describe an earlier diff. Re-run `aidw adversarial-review .` to refresh._"
 	case meta.DiffSHA256 == "" || currentFingerprint == "":
 		return fmt.Sprintf("_Provenance unverified (%s%s): no diff fingerprint to compare "+
-			"against the current review bundle._", origin, when)
+			"against the current diff._", origin, when)
 	case meta.DiffSHA256 != currentFingerprint:
 		return fmt.Sprintf("_Stale: generated by %s%s against a different diff "+
 			"(%s vs current %s). Re-run `aidw adversarial-review .` to refresh._",
 			origin, when, meta.DiffSHA256, currentFingerprint)
 	default:
 		return fmt.Sprintf("_Generated by %s%s; diff fingerprint matches the current "+
-			"review bundle (%s)._", origin, when, currentFingerprint)
+			"diff (%s)._", origin, when, currentFingerprint)
 	}
 }
 

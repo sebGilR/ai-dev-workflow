@@ -138,7 +138,31 @@
 
       "Read(.wip/**)",
       "Edit(.wip/**)",
-      "Bash(~/.claude/ai-dev-workflow/bin/aidw *)"
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw bootstrap*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw cleanup-branch*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw clear-*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw context-summary*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw document-project*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw ensure-repo*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw generate-github-*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw memory*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw merge-*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw migrate-wip*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw model*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw next*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw policy*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw resolve-wip*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw review-bundle*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw set-stage*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw start*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw status*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw summarize-context*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw synthesize-review*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw task*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw update-global-gitignore*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw upgrade*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw verify*)",
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw version*)"
     ],
     "ask": [
       "Bash(git commit *)",
@@ -170,8 +194,14 @@
       "Bash(shopify theme push*)",
       "Bash(shopify app deploy*)",
 
+      "Bash(aidw adversarial-review*)",
+      "Bash(aidw gemini-review*)",
       "Bash(~/.claude/ai-dev-workflow/bin/aidw adversarial-review*)",
-      "Bash(~/.claude/ai-dev-workflow/bin/aidw gemini-review*)"
+      "Bash(~/.claude/ai-dev-workflow/bin/aidw gemini-review*)",
+      "Bash(/opt/homebrew/bin/aidw adversarial-review*)",
+      "Bash(/opt/homebrew/bin/aidw gemini-review*)",
+      "Bash(/usr/local/bin/aidw adversarial-review*)",
+      "Bash(/usr/local/bin/aidw gemini-review*)"
     ],
     "deny": [
       "Read(./.env)",
