@@ -33,6 +33,9 @@ aidw clear-others .
 aidw clear-others . --purge --dry-run
 ```
 
+   This preview is read-only and always succeeds, even on a repo where
+   nothing has been archived yet.
+
 6. Show the user the **entire** `deleted` list from that preview. It includes
    everything already under `.wip/.archive/` from every prior run, not just
    the dirs about to be archived — and each `.archive/...` entry is a whole
@@ -44,7 +47,13 @@ aidw clear-others . --purge --dry-run
 aidw clear-others . --purge
 ```
 
-   `--purge` is the only command in this skill that deletes bytes. It is
-   refused while `.wip/.archive/` is empty (so a purge can never be a user's
-   first, unrecoverable step) — if it refuses, run the archive pass in step 3
-   first, then re-preview from step 5.
+   `--purge` is the only command in this skill that deletes bytes, and the
+   only step here that can be refused. The refusal fires when
+   `.wip/.archive/` is completely empty — if it refuses, run the archive pass
+   in step 3 first, then re-run this step.
+
+   Note the guard's real scope: it only checks that `.wip/.archive/` is
+   non-empty overall. It does **not** guarantee that each dir being purged
+   was itself previously archived — a branch dir created after the last
+   archive pass is deleted outright. Treat the step 6 confirmation, not the
+   guard, as the safety mechanism.

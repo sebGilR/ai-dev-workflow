@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -643,7 +644,8 @@ func TestCleanupBranch_KeepsContextAndPR(t *testing.T) {
 	}
 
 	// status.json must always survive cleanup (not just purge) — it is the
-	// workflow's stage/state record.
+	// workflow's stage/state record. Cleanup may downgrade the recorded stage
+	// (see downgradeStageAfterArchive) but must never remove the file.
 	if _, err := os.Stat(filepath.Join(state.WipDir, "status.json")); err != nil {
 		t.Errorf("status.json must survive cleanup: %v", err)
 	}
@@ -819,16 +821,152 @@ func TestCleanupBranch_DowngradesStageAfterArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CleanupBranch: %v", err)
 	}
-	if result.StageReset != "specified" {
-		t.Errorf("StageReset = %q, want %q", result.StageReset, "specified")
+	if result.StageReset != "started" {
+		t.Errorf("StageReset = %q, want %q", result.StageReset, "started")
 	}
 
 	var after Status
 	if err := util.ReadJSON(statusPath, &after); err != nil {
 		t.Fatal(err)
 	}
+	if after.Stage != "started" {
+		t.Errorf("status.json stage = %q after archiving review.md, want %q", after.Stage, "started")
+	}
+	// last_completed_step must move in lockstep, or status.json reports a
+	// completed step ahead of its own stage.
+	if after.LastCompletedStep == nil || *after.LastCompletedStep != "started" {
+		t.Errorf("last_completed_step = %v after downgrade, want %q", after.LastCompletedStep, "started")
+	}
+	// The downgraded stage must be one the codebase's own validation accepts:
+	// SetStage requires no files for "started", so this must round-trip.
+	if _, err := SetStage(dir, after.Stage, false); err != nil {
+		t.Errorf("downgraded stage %q is rejected by SetStage: %v", after.Stage, err)
+	}
+}
+
+// TestCleanupBranch_DowngradesSpecReviewed covers "spec-reviewed", whose
+// required review.md is archived even though its spec.md is kept.
+func TestCleanupBranch_DowngradesSpecReviewed(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "review.md"), []byte("skeptic findings"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(state.WipDir, "status.json")
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		t.Fatal(err)
+	}
+	status.Stage = "spec-reviewed"
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, false, false)
+	if err != nil {
+		t.Fatalf("CleanupBranch: %v", err)
+	}
+	if result.StageReset != "started" {
+		t.Errorf("StageReset = %q, want %q", result.StageReset, "started")
+	}
+	var after Status
+	if err := util.ReadJSON(statusPath, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Stage != "started" {
+		t.Errorf("stage = %q after archiving review.md, want %q", after.Stage, "started")
+	}
+}
+
+// TestCleanupBranch_LeavesUnbackedStageAlone asserts a stage whose artifacts
+// are all in keepOnCleanup is not downgraded.
+func TestCleanupBranch_LeavesUnbackedStageAlone(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(state.WipDir, "status.json")
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		t.Fatal(err)
+	}
+	status.Stage = "specified"
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, false, false)
+	if err != nil {
+		t.Fatalf("CleanupBranch: %v", err)
+	}
+	if result.StageReset != "" {
+		t.Errorf("StageReset = %q, want no downgrade for a stage backed by kept files", result.StageReset)
+	}
+	var after Status
+	if err := util.ReadJSON(statusPath, &after); err != nil {
+		t.Fatal(err)
+	}
 	if after.Stage != "specified" {
-		t.Errorf("status.json stage = %q after archiving review.md, want %q", after.Stage, "specified")
+		t.Errorf("stage = %q, want it left at %q", after.Stage, "specified")
+	}
+}
+
+// TestCleanupBranch_DryRunDoesNotDowngrade asserts a preview never mutates
+// status.json.
+func TestCleanupBranch_DryRunDoesNotDowngrade(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "review.md"), []byte("findings"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(state.WipDir, "status.json")
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		t.Fatal(err)
+	}
+	status.Stage = "reviewed"
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, true, false)
+	if err != nil {
+		t.Fatalf("CleanupBranch dry-run: %v", err)
+	}
+	if result.StageReset != "" {
+		t.Errorf("dry-run reported StageReset = %q, want empty", result.StageReset)
+	}
+	var after Status
+	if err := util.ReadJSON(statusPath, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Stage != "reviewed" {
+		t.Errorf("dry-run mutated status.json: stage = %q, want %q", after.Stage, "reviewed")
+	}
+	if _, err := os.Stat(filepath.Join(state.WipDir, "review.md")); err != nil {
+		t.Errorf("dry-run must not move review.md: %v", err)
+	}
+}
+
+// TestCleanupBranch_NoActiveWork mirrors the ClearOtherBranches pattern:
+// cleanup is lookup-only and must not seed a .wip dir.
+func TestCleanupBranch_NoActiveWork(t *testing.T) {
+	dir := initGitRepo(t)
+	if _, err := CleanupBranch(dir, true, false); !errors.Is(err, ErrNoActiveWork) {
+		t.Fatalf("CleanupBranch on a repo with no active work: err = %v, want ErrNoActiveWork", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".wip")); err == nil {
+		t.Error("CleanupBranch must not create .wip/ when there is no active work")
 	}
 }
 
@@ -893,6 +1031,109 @@ func TestPurge_RefusedWithoutPriorArchive(t *testing.T) {
 	})
 }
 
+// TestPurge_NothingToDeleteIsNoOp asserts a purge with zero candidates and an
+// empty archive is allowed through rather than tripping the guard.
+func TestPurge_NothingToDeleteIsNoOp(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	// Archive the seeded placeholders so nothing non-kept remains, then wipe
+	// the archive so both candidates and archived are empty.
+	if _, err := CleanupBranch(dir, false, false); err != nil {
+		t.Fatalf("archive pass: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(state.WipDir, branchArchiveDirName)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, false, true)
+	if err != nil {
+		t.Fatalf("purge with nothing to delete must be a no-op, got: %v", err)
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("Deleted = %v, want empty", result.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(state.WipDir, "status.json")); err != nil {
+		t.Errorf("no-op purge must leave kept files alone: %v", err)
+	}
+}
+
+// TestPurgeDryRun_AllowedWithoutPriorArchive asserts `--purge --dry-run` is a
+// read-only preview that always succeeds — including on an archive-less repo,
+// where the real purge would be refused — and mutates nothing.
+func TestPurgeDryRun_AllowedWithoutPriorArchive(t *testing.T) {
+	t.Run("CleanupBranch", func(t *testing.T) {
+		dir := initGitRepo(t)
+		state, err := EnsureBranchState(dir, "")
+		if err != nil {
+			t.Fatalf("EnsureBranchState: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := CleanupBranch(dir, true, true)
+		if err != nil {
+			t.Fatalf("--purge --dry-run must never be refused: %v", err)
+		}
+		if !slices.Contains(result.Deleted, "research.md") {
+			t.Errorf("Deleted = %v, want it to include research.md", result.Deleted)
+		}
+		if _, err := os.Stat(filepath.Join(state.WipDir, "research.md")); err != nil {
+			t.Errorf("dry-run purge must not delete anything: %v", err)
+		}
+		// The real purge is still refused.
+		if _, err := CleanupBranch(dir, false, true); err == nil {
+			t.Error("the real purge must still be refused after a dry-run preview")
+		}
+	})
+
+	t.Run("ClearOtherBranches", func(t *testing.T) {
+		dir := initGitRepo(t)
+		if _, err := EnsureBranchState(dir, ""); err != nil {
+			t.Fatalf("EnsureBranchState: %v", err)
+		}
+		other := filepath.Join(dir, ".wip", "20200101000000-other")
+		if err := os.MkdirAll(other, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ClearOtherBranches(dir, true, true)
+		if err != nil {
+			t.Fatalf("--purge --dry-run must never be refused: %v", err)
+		}
+		if !slices.Contains(result.Deleted, "20200101000000-other") {
+			t.Errorf("Deleted = %v, want it to include the other branch dir", result.Deleted)
+		}
+		if _, err := os.Stat(other); err != nil {
+			t.Errorf("dry-run purge must not delete anything: %v", err)
+		}
+	})
+
+	t.Run("ClearWip", func(t *testing.T) {
+		dir := initGitRepo(t)
+		wipBase := filepath.Join(dir, ".wip")
+		for _, name := range []string{"20200101000000-a", "20200102000000-b"} {
+			if err := os.MkdirAll(filepath.Join(wipBase, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		result, err := ClearWip(dir, true, true)
+		if err != nil {
+			t.Fatalf("--purge --dry-run must never be refused: %v", err)
+		}
+		if !slices.Contains(result.Deleted, "20200101000000-a") {
+			t.Errorf("Deleted = %v, want it to include the condemned dir", result.Deleted)
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, "20200101000000-a")); err != nil {
+			t.Errorf("dry-run purge must not delete anything: %v", err)
+		}
+	})
+}
+
 func TestCleanupBranch_Purge_DeletesArchiveToo(t *testing.T) {
 	dir := initGitRepo(t)
 	state, err := EnsureBranchState(dir, "")
@@ -927,7 +1168,10 @@ func TestCleanupBranch_Purge_DeletesArchiveToo(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(state.WipDir, "research.md")); !os.IsNotExist(err) {
 		t.Error("research.md should be gone after purge")
 	}
-	// status.json must always survive — cleanup (even purge) must never reset workflow state.
+	// status.json must always survive — cleanup (even purge) never deletes the
+	// workflow state file. Its recorded stage may be downgraded to the
+	// "started" floor when the artifact backing it was archived; the file and
+	// the branch's identifying state stay put.
 	if _, err := os.Stat(filepath.Join(state.WipDir, "status.json")); err != nil {
 		t.Errorf("status.json must survive purge: %v", err)
 	}

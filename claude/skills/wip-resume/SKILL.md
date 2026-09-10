@@ -48,11 +48,13 @@ tail -10 <wip_dir>/progress.log 2>/dev/null
    `review.md` when the stage is `reviewed`, etc.
 
    If the artifact backing the current stage is an empty header-only
-   placeholder, a cleanup pass archived it. Look for the most recent copy
-   under `<wip_dir>/archive/<timestamp>/` and say so rather than treating the
-   stage as unbacked — `aidw cleanup-branch` downgrades the stage to
-   `specified` when it archives, so a mismatch means the artifact predates
-   that behaviour.
+   placeholder, a cleanup pass archived it. Look for the most recent
+   **non-empty** copy under `<wip_dir>/archive/<timestamp>/` — header-only
+   stubs reseeded between cleanup runs (e.g. by `aidw start`) get archived
+   too, so the newest batch can itself be an empty stub while the real
+   content sits in an older one. Say so rather than treating the stage as
+   unbacked — `aidw cleanup-branch` downgrades the stage to `started` when it
+   archives, so a mismatch means the artifact predates that behaviour.
 
 5. If `progress.log` carried a recent `session=<id>` value (step 2), offer
    `claude --resume <session-id>` as a conversation-restore complement to the
