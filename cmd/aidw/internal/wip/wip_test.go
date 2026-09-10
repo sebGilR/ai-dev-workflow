@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"aidw/cmd/aidw/internal/util"
 )
 
 // initGitRepo creates a git repo with an initial commit so that
@@ -664,13 +667,11 @@ func TestCleanupBranch_ArchiveSurvivesSecondRun(t *testing.T) {
 		t.Fatalf("expected archive dir after first run: %v", err)
 	}
 
-	// Note: EnsureBranchState (called internally by CleanupBranch to resolve
-	// the branch dir) re-seeds any missing wipFiles placeholders on every
-	// call — including the ones just archived. That reseed-then-archive
-	// cycle is pre-existing EnsureBranchState behavior, not something this
-	// test exercises; what matters here is that running cleanup again does
-	// not fail trying to re-archive archive/ into itself, and does not
-	// touch (let alone lose) the first run's archived content.
+	// CleanupBranch is lookup-only (FindBranchState), so it no longer re-seeds
+	// the placeholders it just archived — the second run legitimately has
+	// nothing left to archive. What matters here is that it does not fail
+	// trying to re-archive archive/ into itself, and does not touch (let alone
+	// lose) the first run's archived CONTENT.
 	result2, err := CleanupBranch(dir, false, false)
 	if err != nil {
 		t.Fatalf("second CleanupBranch: %v", err)
@@ -680,18 +681,216 @@ func TestCleanupBranch_ArchiveSurvivesSecondRun(t *testing.T) {
 			t.Errorf("archive/ must never sweep itself, got Archived=%v", result2.Archived)
 		}
 	}
-	// The first run's archived batch must still be present and recoverable
-	// after the second run, whether or not the two timestamps collided.
-	found := 0
+	// The first run's archived research.md must still be present AND still
+	// carry its original content after the second run.
+	var found []string
 	_ = filepath.Walk(archiveRoot, func(path string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() && info.Name() == "research.md" {
-			found++
+			found = append(found, path)
 		}
 		return nil
 	})
-	if found == 0 {
-		t.Error("expected research.md to remain recoverable under archive/ after second run")
+	if len(found) == 0 {
+		t.Fatal("expected research.md to remain recoverable under archive/ after second run")
 	}
+	survived := false
+	for _, p := range found {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read archived %s: %v", p, err)
+		}
+		if string(data) == "content" {
+			survived = true
+		}
+	}
+	if !survived {
+		t.Errorf("archived research.md content was destroyed by the second run; found copies at %v", found)
+	}
+}
+
+// TestUniqueArchivePath_CollisionSuffix pins the pure collision-suffix
+// behaviour that keeps repeated archive passes from clobbering each other.
+func TestUniqueArchivePath_CollisionSuffix(t *testing.T) {
+	root := t.TempDir()
+
+	first := uniqueArchivePath(root, "20260101120000")
+	if got, want := filepath.Base(first), "20260101120000"; got != want {
+		t.Fatalf("first archive path = %q, want %q", got, want)
+	}
+	if err := os.MkdirAll(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	second := uniqueArchivePath(root, "20260101120000")
+	if got, want := filepath.Base(second), "20260101120000-2"; got != want {
+		t.Fatalf("second archive path = %q, want %q", got, want)
+	}
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	third := uniqueArchivePath(root, "20260101120000")
+	if got, want := filepath.Base(third), "20260101120000-3"; got != want {
+		t.Fatalf("third archive path = %q, want %q", got, want)
+	}
+}
+
+// TestCleanupBranch_SameTimestampArchiveCollision forces CleanupBranch to
+// archive into a second that already has a batch, and asserts the pre-existing
+// batch's content survives instead of being overwritten.
+func TestCleanupBranch_SameTimestampArchiveCollision(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+
+	// Pre-occupy every second CleanupBranch could plausibly stamp (now, +1s,
+	// +2s) with a prior run's real content, so the collision is forced no
+	// matter where the clock ticks — no same-second race in the test itself.
+	archiveRoot := filepath.Join(state.WipDir, branchArchiveDirName)
+	now := time.Now()
+	priorBatches := map[string]string{}
+	for i := 0; i < 3; i++ {
+		ts := now.Add(time.Duration(i) * time.Second).Format("20060102150405")
+		batch := filepath.Join(archiveRoot, ts)
+		if err := os.MkdirAll(batch, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "PRIOR-" + ts
+		if err := os.WriteFile(filepath.Join(batch, "research.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		priorBatches[batch] = body
+	}
+
+	if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("CURRENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, false, false)
+	if err != nil {
+		t.Fatalf("CleanupBranch: %v", err)
+	}
+
+	if _, occupied := priorBatches[result.ArchiveDir]; occupied {
+		t.Fatalf("CleanupBranch reused the occupied batch dir %q instead of a collision-safe one", result.ArchiveDir)
+	}
+	if !strings.HasSuffix(filepath.Base(result.ArchiveDir), "-2") {
+		t.Errorf("expected a collision-suffixed batch dir, got %q", filepath.Base(result.ArchiveDir))
+	}
+
+	// Every pre-existing batch must be byte-for-byte intact.
+	for batch, want := range priorBatches {
+		got, err := os.ReadFile(filepath.Join(batch, "research.md"))
+		if err != nil || string(got) != want {
+			t.Errorf("prior archived batch %q was destroyed: got %q want %q (err=%v)", batch, got, want, err)
+		}
+	}
+	current, err := os.ReadFile(filepath.Join(result.ArchiveDir, "research.md"))
+	if err != nil || string(current) != "CURRENT" {
+		t.Errorf("newly archived research.md missing/wrong: got %q (err=%v)", current, err)
+	}
+}
+
+// TestCleanupBranch_DowngradesStageAfterArchive asserts status.json (which
+// survives cleanup) stops claiming a stage whose artifact was just archived.
+func TestCleanupBranch_DowngradesStageAfterArchive(t *testing.T) {
+	dir := initGitRepo(t)
+	state, err := EnsureBranchState(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureBranchState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state.WipDir, "review.md"), []byte("findings"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	statusPath := filepath.Join(state.WipDir, "status.json")
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		t.Fatal(err)
+	}
+	status.Stage = "reviewed"
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupBranch(dir, false, false)
+	if err != nil {
+		t.Fatalf("CleanupBranch: %v", err)
+	}
+	if result.StageReset != "specified" {
+		t.Errorf("StageReset = %q, want %q", result.StageReset, "specified")
+	}
+
+	var after Status
+	if err := util.ReadJSON(statusPath, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Stage != "specified" {
+		t.Errorf("status.json stage = %q after archiving review.md, want %q", after.Stage, "specified")
+	}
+}
+
+// TestPurge_RefusedWithoutPriorArchive covers the archive-then-purge ordering
+// guard on all three purge paths.
+func TestPurge_RefusedWithoutPriorArchive(t *testing.T) {
+	t.Run("CleanupBranch", func(t *testing.T) {
+		dir := initGitRepo(t)
+		state, err := EnsureBranchState(dir, "")
+		if err != nil {
+			t.Fatalf("EnsureBranchState: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(state.WipDir, "research.md"), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CleanupBranch(dir, false, true); err == nil {
+			t.Fatal("expected purge without a prior archive pass to be refused")
+		}
+		if _, err := os.Stat(filepath.Join(state.WipDir, "research.md")); err != nil {
+			t.Errorf("refused purge must not delete anything: %v", err)
+		}
+		// After an archive pass, purge is allowed.
+		if _, err := CleanupBranch(dir, false, false); err != nil {
+			t.Fatalf("archive pass: %v", err)
+		}
+		if _, err := CleanupBranch(dir, false, true); err != nil {
+			t.Fatalf("purge after archive pass should be allowed: %v", err)
+		}
+	})
+
+	t.Run("ClearOtherBranches", func(t *testing.T) {
+		dir := initGitRepo(t)
+		if _, err := EnsureBranchState(dir, ""); err != nil {
+			t.Fatalf("EnsureBranchState: %v", err)
+		}
+		other := filepath.Join(dir, ".wip", "20200101000000-other")
+		if err := os.MkdirAll(other, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ClearOtherBranches(dir, false, true); err == nil {
+			t.Fatal("expected purge without a prior archive pass to be refused")
+		}
+		if _, err := os.Stat(other); err != nil {
+			t.Errorf("refused purge must not delete anything: %v", err)
+		}
+	})
+
+	t.Run("ClearWip", func(t *testing.T) {
+		dir := initGitRepo(t)
+		wipBase := filepath.Join(dir, ".wip")
+		for _, name := range []string{"20200101000000-a", "20200102000000-b"} {
+			if err := os.MkdirAll(filepath.Join(wipBase, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := ClearWip(dir, false, true); err == nil {
+			t.Fatal("expected purge without a prior archive pass to be refused")
+		}
+		if _, err := os.Stat(filepath.Join(wipBase, "20200101000000-a")); err != nil {
+			t.Errorf("refused purge must not delete anything: %v", err)
+		}
+	})
 }
 
 func TestCleanupBranch_Purge_DeletesArchiveToo(t *testing.T) {

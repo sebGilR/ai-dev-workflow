@@ -62,7 +62,7 @@ func init() {
 	clearWipCmd.Flags().Bool("dry-run", false, "Show what would be archived/deleted without actually doing it")
 	clearOthersCmd.Flags().Bool("dry-run", false, "Show what would be archived/deleted without actually doing it")
 
-	purgeHelp := "Permanently delete current non-kept entries AND previously archived content, instead of archiving"
+	purgeHelp := "Permanently delete current non-kept entries AND previously archived content, instead of archiving (refused until an archive pass exists)"
 	cleanupBranchCmd.Flags().Bool("purge", false, purgeHelp)
 	clearWipCmd.Flags().Bool("purge", false, purgeHelp)
 	clearOthersCmd.Flags().Bool("purge", false, purgeHelp)

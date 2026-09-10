@@ -52,6 +52,45 @@ func uniqueArchivePath(archiveRoot, name string) string {
 	}
 }
 
+// requireArchiveBeforePurge refuses a --purge run that would permanently
+// delete live entries which have never been archived. Purge is only allowed
+// once an archive pass exists (archived is non-empty), so the destructive
+// step is always preceded by a recoverable one. A purge with nothing to
+// delete at all is a harmless no-op and is allowed through.
+func requireArchiveBeforePurge(archived, candidates []string, archiveRoot string) error {
+	if len(archived) > 0 || len(candidates) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to purge: nothing is archived under %s yet, so --purge would permanently delete %d never-archived entr(y/ies): %s\nRun the archive pass first (same command without --purge), then re-run with --purge",
+		archiveRoot, len(candidates), strings.Join(candidates, ", "))
+}
+
+// downgradeStageAfterArchive keeps status.json (which is kept on cleanup)
+// consistent with the artifacts that remain: stages backed by a just-archived
+// artifact are downgraded to "specified", whose backing spec.md is kept.
+// Returns the new stage when a downgrade happened, "" otherwise. A branch dir
+// without status.json is not an error — nothing to reconcile.
+func downgradeStageAfterArchive(wipDir string) (string, error) {
+	statusPath := filepath.Join(wipDir, "status.json")
+	if _, err := os.Stat(statusPath); err != nil {
+		return "", nil
+	}
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		return "", err
+	}
+	if !stagesBackedByArchivedArtifacts[status.Stage] {
+		return "", nil
+	}
+	status.Stage = "specified"
+	status.UpdatedAt = util.NowISO()
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		return "", err
+	}
+	return status.Stage, nil
+}
+
 // stages is the set of valid workflow stages.
 var stages = map[string]bool{
 	"started":       true,
@@ -615,19 +654,39 @@ type CleanupResult struct {
 	Archived   []string `json:"archived,omitempty"`
 	ArchiveDir string   `json:"archive_dir,omitempty"`
 	Deleted    []string `json:"deleted,omitempty"`
+	StageReset string   `json:"stage_reset,omitempty"`
 	DryRun     bool     `json:"dry_run,omitempty"`
 	Purge      bool     `json:"purge,omitempty"`
 }
 
+// stagesBackedByArchivedArtifacts are the stages whose backing artifact
+// (plan.md, research.md, execution.md, review.md) is swept into archive/ by
+// CleanupBranch. After an archive pass only kept/seed-level artifacts remain
+// in place, so status.json must be downgraded to "specified" (backed by
+// spec.md, which is in keepOnCleanup) rather than keep claiming a stage whose
+// artifact is now an empty placeholder.
+var stagesBackedByArchivedArtifacts = map[string]bool{
+	"planned":      true,
+	"researched":   true,
+	"implementing": true,
+	"reviewed":     true,
+	"review-fixed": true,
+}
+
 // CleanupBranch archives (moves) all files in the branch's .wip dir except
 // the kept set (context.md, pr.md, spec.md, task-context.md, status.json)
-// into archive/<YYYYMMDDHHMMSS>/, instead of deleting them. The archive/
-// directory itself is never swept by a later cleanup run. Pass purge=true
-// to permanently delete both the current non-kept entries AND everything
-// previously archived — this is the only path that deletes bytes, and
-// callers (the wip-cleanup skill) must preview and confirm before using it.
+// into archive/<YYYYMMDDHHMMSS>/ (collision-safe via uniqueArchivePath),
+// instead of deleting them. The archive/ directory itself is never swept by
+// a later cleanup run. Pass purge=true to permanently delete both the current
+// non-kept entries AND everything previously archived — this is the only path
+// that deletes bytes, it refuses to run until an archive pass has happened,
+// and callers (the wip-cleanup skill) must preview and confirm before using it.
+//
+// Lookup-only: requires an existing active-work dir for the current branch
+// (ErrNoActiveWork otherwise) — it does not create or re-seed one, so cleanup
+// never reseeds the very placeholders it would archive on the next run.
 func CleanupBranch(repoPath string, dryRun, purge bool) (*CleanupResult, error) {
-	state, err := EnsureBranchState(repoPath, "")
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -656,13 +715,17 @@ func CleanupBranch(repoPath string, dryRun, purge bool) (*CleanupResult, error) 
 	result := &CleanupResult{WipDir: state.WipDir, Kept: kept, DryRun: dryRun, Purge: purge}
 
 	if purge {
-		var deleted []string
+		var archived []string
 		archiveRoot := filepath.Join(state.WipDir, branchArchiveDirName)
 		if archivedEntries, err := os.ReadDir(archiveRoot); err == nil {
 			for _, ae := range archivedEntries {
-				deleted = append(deleted, filepath.Join(branchArchiveDirName, ae.Name()))
+				archived = append(archived, filepath.Join(branchArchiveDirName, ae.Name()))
 			}
 		}
+		if err := requireArchiveBeforePurge(archived, candidates, archiveRoot); err != nil {
+			return nil, err
+		}
+		deleted := append([]string{}, archived...)
 		deleted = append(deleted, candidates...)
 		sort.Strings(deleted)
 
@@ -683,7 +746,10 @@ func CleanupBranch(repoPath string, dryRun, purge bool) (*CleanupResult, error) 
 
 	if len(candidates) > 0 {
 		ts := time.Now().Format("20060102150405")
-		archiveDir := filepath.Join(state.WipDir, branchArchiveDirName, ts)
+		// Collision-safe: a second archive pass within the same second (or any
+		// pre-existing batch under the same timestamp) gets a "-2" suffix rather
+		// than silently overwriting the earlier batch's content.
+		archiveDir := uniqueArchivePath(filepath.Join(state.WipDir, branchArchiveDirName), ts)
 		if !dryRun {
 			if err := os.MkdirAll(archiveDir, 0o755); err != nil {
 				return nil, err
@@ -694,6 +760,11 @@ func CleanupBranch(repoPath string, dryRun, purge bool) (*CleanupResult, error) 
 				if err := os.Rename(src, dst); err != nil {
 					return nil, err
 				}
+			}
+			if reset, err := downgradeStageAfterArchive(state.WipDir); err != nil {
+				return nil, err
+			} else if reset != "" {
+				result.StageReset = reset
 			}
 		}
 		result.Archived = candidates
@@ -844,7 +915,8 @@ func MigrateWip(repoPath string) (*MigrateWipResult, error) {
 // globally across all branches in the repo — it is intended as a workspace
 // cleanup tool, not a per-branch operation. Pass purge=true to permanently
 // delete both the condemned dirs AND everything already under
-// .wip/.archive/.
+// .wip/.archive/ — refused while .wip/.archive/ is empty, so a destructive
+// purge is always preceded by a recoverable archive pass.
 func ClearWip(repoPath string, dryRun, purge bool) (*ClearWipResult, error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
@@ -921,7 +993,11 @@ func ClearWip(repoPath string, dryRun, purge bool) (*ClearWipResult, error) {
 	sort.Strings(candidates)
 
 	if purge {
-		deleted := append([]string{}, listGlobalArchiveContents(wipBase)...)
+		archived := listGlobalArchiveContents(wipBase)
+		if err := requireArchiveBeforePurge(archived, candidates, filepath.Join(wipBase, globalArchiveDirName)); err != nil {
+			return nil, err
+		}
+		deleted := append([]string{}, archived...)
 		deleted = append(deleted, candidates...)
 		sort.Strings(deleted)
 		if _, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, true); err != nil {
@@ -947,7 +1023,9 @@ func ClearWip(repoPath string, dryRun, purge bool) (*ClearWipResult, error) {
 // ClearWip (which keeps the most-recently-dated dir globally), this command
 // identifies the "keep" dir by the current git branch. All files inside the
 // kept dir are preserved. Pass purge=true to permanently delete both the
-// other branch dirs AND everything already under .wip/.archive/.
+// other branch dirs AND everything already under .wip/.archive/ — refused
+// while .wip/.archive/ is empty, so a destructive purge is always preceded
+// by a recoverable archive pass.
 //
 // Lookup-only: requires an existing active-work dir for the current branch
 // (ErrNoActiveWork otherwise) — it does not create or seed one.
@@ -978,7 +1056,11 @@ func ClearOtherBranches(repoPath string, dryRun, purge bool) (*ClearWipResult, e
 	sort.Strings(candidates)
 
 	if purge {
-		deleted := append([]string{}, listGlobalArchiveContents(wipBase)...)
+		archived := listGlobalArchiveContents(wipBase)
+		if err := requireArchiveBeforePurge(archived, candidates, filepath.Join(wipBase, globalArchiveDirName)); err != nil {
+			return nil, err
+		}
+		deleted := append([]string{}, archived...)
 		deleted = append(deleted, candidates...)
 		sort.Strings(deleted)
 		if _, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, true); err != nil {

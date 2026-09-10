@@ -1,6 +1,6 @@
 ---
 name: wip-cleanup
-description: Keep the current branch's .wip folder intact (all files), and delete all other branch folders in .wip/.
+description: Keep the current branch's .wip folder intact (all files), and archive all other branch folders in .wip/.
 ---
 
 When this skill is used:
@@ -24,11 +24,27 @@ aidw clear-others .
    were archived. Note that archived dirs are recoverable under
    `.wip/.archive/` — nothing was deleted.
 5. Only if the user explicitly asks to permanently delete (not just archive)
-   the other branch dirs — including anything already archived — run:
+   the other branch dirs — including anything already archived — preview the
+   purge with `--purge --dry-run`. **`--dry-run` without `--purge` previews a
+   strictly smaller set than a purge deletes**, so never use it as the preview
+   for a purge:
+
+```bash
+aidw clear-others . --purge --dry-run
+```
+
+6. Show the user the **entire** `deleted` list from that preview. It includes
+   everything already under `.wip/.archive/` from every prior run, not just
+   the dirs about to be archived — and each `.archive/...` entry is a whole
+   archived branch tree, so the listed name stands for every file inside it.
+   Get explicit confirmation that all of it may be destroyed.
+7. Only then run the real purge:
 
 ```bash
 aidw clear-others . --purge
 ```
 
-   `--purge` is the only command in this skill that deletes bytes; always
-   preview (`--dry-run`) and get explicit confirmation before running it.
+   `--purge` is the only command in this skill that deletes bytes. It is
+   refused while `.wip/.archive/` is empty (so a purge can never be a user's
+   first, unrecoverable step) — if it refuses, run the archive pass in step 3
+   first, then re-preview from step 5.
