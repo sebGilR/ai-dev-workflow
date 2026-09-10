@@ -22,15 +22,56 @@ import (
 // CLI command / `make mirrors`), where the result is meant to be exactly
 // byte-identical to srcFS, which is what the mirrors drift test asserts.
 func GenerateGithubSkills(srcFS fs.FS, destDir string, prune bool) error {
+	// Validate the source is readable and non-empty BEFORE doing anything
+	// destructive. Without this, `--src /nonexistent --prune` would first
+	// delete every file under destDir (removeOrphanTree treats every dest
+	// file as an orphan when fs.Stat on srcFS always fails) and only then
+	// report the unreadable source. GenerateGithubAgents ReadDirs src up
+	// front for the same reason.
+	entries, err := fs.ReadDir(srcFS, ".")
+	if err != nil {
+		return fmt.Errorf("read src dir: %w", err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("read src dir: source is empty — refusing to mirror an empty tree over %s", destDir)
+	}
+
 	if prune {
 		if err := removeOrphanTree(srcFS, destDir); err != nil {
 			return fmt.Errorf("clean dest dir: %w", err)
 		}
 	}
+	warnOnSkillOverwrites(srcFS, destDir)
+
 	if err := util.CopyFS(srcFS, destDir); err != nil {
 		return fmt.Errorf("copy skills: %w", err)
 	}
 	return nil
+}
+
+// warnOnSkillOverwrites prints the same "customizations will be lost"
+// warning GenerateGithubAgents emits, for every dest file that already
+// exists with content differing from its source. Best-effort: a read error
+// on either side is simply not warned about — this must never fail the
+// copy itself.
+func warnOnSkillOverwrites(srcFS fs.FS, destDir string) {
+	_ = fs.WalkDir(srcFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort warning only
+		}
+		destPath := filepath.Join(destDir, filepath.FromSlash(path))
+		existing, readErr := os.ReadFile(destPath)
+		if readErr != nil {
+			return nil
+		}
+		want, readErr := fs.ReadFile(srcFS, path)
+		if readErr != nil || string(existing) == string(want) {
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "WARNING: Overwriting %s (content differs from generated version).\n", destPath)
+		fmt.Fprintln(os.Stderr, "         Any customizations in this file will be lost.")
+		return nil
+	})
 }
 
 // removeOrphanTree deletes any file under destDir whose relative path does

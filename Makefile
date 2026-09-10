@@ -31,9 +31,14 @@ clean:
 # the mirrors_test.go drift test fails CI otherwise. Uses `go run` (no
 # rebuild needed) with --src pointed at the checkout, not the embedded FS,
 # so it always reflects uncommitted local edits.
+#
+# --prune is passed ONLY here: it deletes files under .github/{skills,agents}
+# that no longer exist in claude/, which is what keeps the mirrors orphan-free.
+# The flag defaults to false everywhere else so `generate-github-*` pointed at
+# an arbitrary --dest can never delete a user's own files.
 mirrors:
-	go run ./cmd/aidw generate-github-skills --src claude/skills --dest .github/skills
-	go run ./cmd/aidw generate-github-agents --src claude/agents --dest .github/agents
+	go run ./cmd/aidw generate-github-skills --src claude/skills --dest .github/skills --prune
+	go run ./cmd/aidw generate-github-agents --src claude/agents --dest .github/agents --prune
 
 install: build
 	@mkdir -p "$(INSTALL_ROOT)/bin"

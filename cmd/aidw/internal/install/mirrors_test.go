@@ -64,13 +64,14 @@ func TestMirrorAgentsMatchGeneratedOutput(t *testing.T) {
 func assertTreesByteEqual(t *testing.T, a, b, hint string) {
 	t.Helper()
 
+	// filesUnder returns every file under root keyed by slash-relative
+	// path. It deliberately does NOT tolerate a missing root: if either
+	// tree were renamed or deleted, both sides would walk to zero files
+	// and the drift comparison below would pass vacuously.
 	filesUnder := func(root string) map[string][]byte {
 		out := map[string][]byte{}
 		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
 				return err
 			}
 			if info.IsDir() {
@@ -89,6 +90,9 @@ func assertTreesByteEqual(t *testing.T, a, b, hint string) {
 		})
 		if err != nil {
 			t.Fatalf("walk %s: %v", root, err)
+		}
+		if len(out) == 0 {
+			t.Fatalf("no files found under %s — the drift check would pass vacuously; did the tree move? (%s)", root, hint)
 		}
 		return out
 	}

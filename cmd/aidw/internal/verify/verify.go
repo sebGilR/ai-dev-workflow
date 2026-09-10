@@ -286,6 +286,21 @@ func Run(workspacePath string) *Results {
 // `## Model guidance` prose blocks in the wip-* skills are the fallback).
 var minFrontmatterEffortVersion = [3]int{2, 1, 259}
 
+// claudeVersionTimeout bounds the `claude --version` probe so a wedged host
+// binary can't hang `aidw verify` indefinitely.
+const claudeVersionTimeout = 5 * time.Second
+
+// versionAtLeast reports whether the semver-ish triple current is greater
+// than or equal to required, comparing major, then minor, then patch.
+func versionAtLeast(current, required [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if current[i] != required[i] {
+			return current[i] > required[i]
+		}
+	}
+	return true
+}
+
 // claudeCodeVersionPattern extracts a dotted version number (e.g. "2.1.266")
 // from `claude --version` output, whose exact wording is not a stable
 // contract to depend on.
@@ -302,8 +317,16 @@ func checkClaudeCodeVersion(warn func(string, bool, ...string)) {
 		return
 	}
 
-	out, err := exec.Command("claude", "--version").Output()
+	// Bounded: a wedged `claude` binary must not hang `aidw verify`.
+	ctx, cancel := context.WithTimeout(context.Background(), claudeVersionTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "claude", "--version").Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			warn(name, false, fmt.Sprintf("claude --version timed out after %s", claudeVersionTimeout))
+			return
+		}
 		warn(name, false, fmt.Sprintf("claude --version failed: %v", err))
 		return
 	}
@@ -319,9 +342,7 @@ func checkClaudeCodeVersion(warn func(string, bool, ...string)) {
 		fmt.Sscanf(m[i+1], "%d", &v[i])
 	}
 
-	ok := v[0] > minFrontmatterEffortVersion[0] ||
-		(v[0] == minFrontmatterEffortVersion[0] && v[1] > minFrontmatterEffortVersion[1]) ||
-		(v[0] == minFrontmatterEffortVersion[0] && v[1] == minFrontmatterEffortVersion[1] && v[2] >= minFrontmatterEffortVersion[2])
+	ok := versionAtLeast(v, minFrontmatterEffortVersion)
 
 	detail := fmt.Sprintf("detected %d.%d.%d (need >= %d.%d.%d) — skill effort/model frontmatter is silently ignored below this; the ## Model guidance prose blocks still apply",
 		v[0], v[1], v[2], minFrontmatterEffortVersion[0], minFrontmatterEffortVersion[1], minFrontmatterEffortVersion[2])
@@ -342,10 +363,12 @@ func commandExists(name string) bool {
 // Uses config.Load() to respect the same priority logic as the rest of the tool.
 func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	cfg := config.Load()
-	if !cfg.AdversarialReview {
-		return
-	}
 
+	// Note: this check is deliberately NOT gated on cfg.AdversarialReview.
+	// That flag no longer enables anything — `aidw adversarial-review` runs
+	// whenever it is explicitly invoked — so gating on it would hide the
+	// "provider CLI not installed" warning from exactly the users who reach
+	// the command by hand. The gate is now the resolved provider itself.
 	provider := cfg.ResolvedProvider()
 	installed := false
 	var checkCmd *exec.Cmd
@@ -381,6 +404,14 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	}
 
 	if !installed {
+		return
+	}
+
+	// The functional check spends a real provider call and can block for up to
+	// 15s, so it only runs for users who opted into adversarial review through
+	// the env flags. The installed/not-installed warning above is what the
+	// explicit-invocation path needs, and it always runs.
+	if !cfg.AdversarialReview && !cfg.GeminiReview {
 		return
 	}
 

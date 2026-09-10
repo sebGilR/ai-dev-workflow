@@ -201,7 +201,14 @@ func SeedRepo(repoPath string, w io.Writer) error {
 	fmt.Fprintln(w, "  → Seeding .github/skills/...")
 	skillsFS, err := fs.Sub(embedfs.FS, "claude/skills")
 	if err == nil {
-		util.CopyFS(skillsFS, filepath.Join(top, ".github", "skills"))
+		// prune=false: this seeds an arbitrary user repo, so we never
+		// delete files that aren't ours (see GenerateGithubSkills's
+		// prune doc comment). Routing through GenerateGithubSkills
+		// rather than a raw util.CopyFS also gets the "customizations
+		// will be lost" overwrite warning the agents path already has.
+		if err := GenerateGithubSkills(skillsFS, filepath.Join(top, ".github", "skills"), false); err != nil {
+			return fmt.Errorf("generate github skills: %w", err)
+		}
 	}
 
 	// 4. .github/agents/ (stripped of MCP sections)

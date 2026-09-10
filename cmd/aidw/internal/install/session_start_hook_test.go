@@ -1,6 +1,7 @@
 package install
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -155,6 +156,56 @@ func TestSessionStartHook_StaleSummary_ReportsStale(t *testing.T) {
 		}
 		if !strings.Contains(out, "STALE") {
 			t.Errorf("path=%q: expected a stale summary to be reported as STALE, got %q", path, out)
+		}
+	}
+}
+
+// TestSessionStartHook_ResolvesRepoFromStdinCwd exercises the real
+// stdin-JSON path production Claude Code uses, under BOTH the jq and the
+// no-jq sed fallback. $PWD is an unrelated non-git temp dir, so any output
+// at all proves the `.cwd` field was read and honoured.
+func TestSessionStartHook_ResolvesRepoFromStdinCwd(t *testing.T) {
+	home := hookTestEnv(t)
+	repo := initHookGitRepo(t, "")
+	unrelated := t.TempDir()
+	bin := filepath.Join(home, ".claude", "ai-dev-workflow", "bin", "aidw")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = repo
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("aidw %v: %v\n%s", args, err, out)
+		}
+	}
+	run("start", ".")
+	run("summarize-context", ".")
+
+	stdin := fmt.Sprintf(`{"session_id":"abc123","cwd":%q,"hook_event_name":"SessionStart","source":"startup"}`, repo)
+
+	for _, path := range []string{"/usr/bin:/bin", noJqPath(t)} {
+		out, code := runSessionStartScript(t, home, unrelated, path, stdin)
+		if code != 0 {
+			t.Errorf("path=%q: expected exit 0, got %d", path, code)
+		}
+		if !strings.Contains(out, "active work in") {
+			t.Errorf("path=%q: hook must resolve the repo from the stdin JSON cwd, not $PWD; got %q", path, out)
+		}
+		if !strings.Contains(out, "is current") {
+			t.Errorf("path=%q: expected a fresh summary to report \"current\", got %q", path, out)
+		}
+	}
+
+	// Sanity: with the same unrelated $PWD but NO stdin, the hook must
+	// stay silent — which is what makes the assertions above meaningful.
+	for _, path := range []string{"/usr/bin:/bin", noJqPath(t)} {
+		out, code := runSessionStartScript(t, home, unrelated, path, "")
+		if code != 0 {
+			t.Errorf("path=%q: expected exit 0, got %d", path, code)
+		}
+		if out != "" {
+			t.Errorf("path=%q: expected no output when $PWD is not a repo and no stdin is given, got %q", path, out)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package install
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,23 +17,36 @@ import (
 // the E2 mirrors drift test uses, so hook-script tests can find
 // templates/global/scripts/*.sh regardless of the working directory `go
 // test` was invoked from.
-func repoRoot(t *testing.T) string {
-	t.Helper()
+// findRepoRoot is the pure form of repoRoot: it returns an error instead of
+// calling t.Fatal, so it is safe to call from inside a sync.Once closure.
+// (t.Fatal triggers runtime.Goexit, and sync.Once marks itself done anyway —
+// so a Fatal inside Do would leave every later caller with a silently
+// zero-valued result instead of a failure.)
+func findRepoRoot() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("runtime.Caller failed")
+		return "", errors.New("runtime.Caller failed")
 	}
 	dir := filepath.Dir(file)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("could not locate repo root (no go.mod found)")
+			return "", errors.New("could not locate repo root (no go.mod found)")
 		}
 		dir = parent
 	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 var (
@@ -40,24 +55,41 @@ var (
 	testBinErr  error
 )
 
+// TestMain builds the aidw CLI once per test binary run into a private temp
+// directory and removes it afterwards, so concurrent `go test` runs (and
+// stale binaries from earlier runs) can't race over a shared fixed path.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if testBinPath != "" {
+		_ = os.RemoveAll(filepath.Dir(testBinPath))
+	}
+	os.Exit(code)
+}
+
 // builtAidwBinary builds the aidw CLI once per test run and returns its
 // path, so hook-script tests can exercise `aidw resolve-wip` /
 // `aidw summarize-context` end-to-end instead of stubbing them out.
 func builtAidwBinary(t *testing.T) string {
 	t.Helper()
 	testBinOnce.Do(func() {
-		root := repoRoot(t)
-		// Build into a fixed temp dir (not t.TempDir(), which is
-		// per-test and gets cleaned up) since sync.Once only runs once
-		// for the whole test binary run.
-		dir := filepath.Join(os.TempDir(), "aidw-hooks-test-bin")
-		_ = os.MkdirAll(dir, 0o755)
+		root, err := findRepoRoot()
+		if err != nil {
+			testBinErr = err
+			return
+		}
+		// A private temp dir (not t.TempDir(), which is per-test and
+		// gets cleaned up under us) since sync.Once only runs once for
+		// the whole test binary run. TestMain removes it at the end.
+		dir, err := os.MkdirTemp("", "aidw-hooks-test-bin-")
+		if err != nil {
+			testBinErr = err
+			return
+		}
 		out := filepath.Join(dir, "aidw")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/aidw")
 		cmd.Dir = root
 		if data, err := cmd.CombinedOutput(); err != nil {
-			testBinErr = err
-			t.Logf("go build output: %s", data)
+			testBinErr = fmt.Errorf("%w\n%s", err, data)
 			return
 		}
 		testBinPath = out
@@ -221,6 +253,45 @@ func TestHookFallsBackToShellResolver_WhenBinaryLacksResolveWip(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(wipDir, "progress.log")); err != nil {
 		t.Errorf("expected the shell fallback to still write progress.log when the binary can't resolve-wip: %v", err)
+	}
+}
+
+// TestHookResolvesRepoFromStdinCwd is the only test that exercises the
+// jq/sed `.cwd`-from-stdin-JSON extraction production Claude Code actually
+// relies on: every other call site passes empty stdin, so the script falls
+// back to $PWD and the extraction branches never run. Here $PWD is an
+// unrelated NON-git temp dir — if the JSON cwd were ignored the script
+// would exit 0 having written nothing at all.
+func TestHookResolvesRepoFromStdinCwd(t *testing.T) {
+	home := hookTestEnv(t)
+	repo := initHookGitRepo(t, "")
+	unrelated := t.TempDir()
+	bin := filepath.Join(home, ".claude", "ai-dev-workflow", "bin", "aidw")
+
+	startCmd := exec.Command(bin, "start", ".")
+	startCmd.Dir = repo
+	startCmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	if out, err := startCmd.CombinedOutput(); err != nil {
+		t.Fatalf("aidw start: %v\n%s", err, out)
+	}
+
+	stdin := fmt.Sprintf(`{"session_id":"abc123","cwd":%q,"hook_event_name":"Stop"}`, repo)
+	if _, _, code := runHookScript(t, home, unrelated, "stop", stdin); code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(repo, ".wip"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected exactly one wip dir, got %v (err=%v)", entries, err)
+	}
+	wipDir := filepath.Join(repo, ".wip", entries[0].Name())
+	if _, err := os.Stat(filepath.Join(wipDir, "progress.log")); err != nil {
+		t.Errorf("hook must resolve the repo from the stdin JSON cwd, not $PWD: %v", err)
+	}
+
+	// And nothing may have leaked into the unrelated $PWD.
+	if leaked, _ := os.ReadDir(unrelated); len(leaked) != 0 {
+		t.Errorf("hook wrote into $PWD instead of the JSON cwd: %v", leaked)
 	}
 }
 
