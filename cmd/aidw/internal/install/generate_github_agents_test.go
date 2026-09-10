@@ -181,6 +181,37 @@ func TestGenerateGithubSkills_PruneTrueRemovesOrphans(t *testing.T) {
 	}
 }
 
+// TestGenerateGithubAgents_EmptySrcDoesNotWipeDest is the agents-side twin
+// of TestGenerateGithubSkills_EmptySrcDoesNotWipeDest: a src that reads
+// fine but is empty must not be treated as "prune everything in dest".
+func TestGenerateGithubAgents_EmptySrcDoesNotWipeDest(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	destDir := filepath.Join(tempDir, "dest")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(destDir, "important.md")
+	if err := os.WriteFile(victim, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GenerateGithubAgents(os.DirFS(srcDir), destDir, true); err == nil {
+		t.Fatal("expected an error for an empty --src")
+	}
+
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("dest was wiped for an empty source: %v", err)
+	}
+	if string(data) != "do not delete me" {
+		t.Errorf("dest file was modified, got %q", data)
+	}
+}
+
 // TestGenerateGithubSkills_UnreadableSrcDoesNotWipeDest guards the exact
 // reproduced failure: `--src /nonexistent --dest X --prune` used to delete
 // every pre-existing file under X and only then report the bad source.

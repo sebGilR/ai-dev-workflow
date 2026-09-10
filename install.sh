@@ -255,9 +255,17 @@ export AIDW_ADVERSARIAL_PROVIDER="gemini"
 export AIDW_ADVERSARIAL_MODEL=""
 export AIDW_ADVERSARIAL_TIMEOUT="120"
 
-# Tiered Models (used by agents for routing)
-export AIDW_FRONTIER_MODEL="gemini-2.5-ultra"
-export AIDW_EFFICIENT_MODEL="gemini-2.5-flash"
+# Model routing tiers — `aidw model route frontier|efficient` prints these,
+# and the `## Model guidance` blocks in the wip-* skills point hosts at that
+# command. They are intentionally UNSET by default: the right value depends
+# entirely on which host you are running in, and a default naming another
+# vendor's model surfaces a confusing suggestion mid-session.
+#
+# Set them to model names your own host understands, e.g.:
+#   export AIDW_FRONTIER_MODEL="claude-opus-4-7"
+#   export AIDW_EFFICIENT_MODEL="claude-haiku-4-5"
+# export AIDW_FRONTIER_MODEL=""
+# export AIDW_EFFICIENT_MODEL=""
 
 # Legacy aliases (deprecated — kept for backward compatibility):
 # export AIDW_GEMINI_REVIEW="0"

@@ -7,9 +7,14 @@ import (
 )
 
 const (
-	// Default 2026 Model Tiers
-	DefaultFrontierModel  = "gemini-2.5-ultra"
-	DefaultEfficientModel = "gemini-2.5-flash"
+	// Model routing tiers are intentionally UNSET by default: the right
+	// value depends entirely on the host the workflow is running in, and
+	// baking in another vendor's model name surfaces a confusing
+	// suggestion mid-session (e.g. `aidw model route frontier` printing a
+	// Gemini model inside a Claude Code session). Empty means "not
+	// configured" — set AIDW_FRONTIER_MODEL / AIDW_EFFICIENT_MODEL.
+	DefaultFrontierModel  = ""
+	DefaultEfficientModel = ""
 
 	// Adversarial Review Defaults
 	DefaultAdversarialProvider = "gemini"

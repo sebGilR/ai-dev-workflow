@@ -31,9 +31,17 @@ func GenerateGithubAgents(srcFS fs.FS, destDir string, prune bool) error {
 		return fmt.Errorf("mkdir dest dir: %w", err)
 	}
 
+	// Validate the source is readable and non-empty BEFORE doing anything
+	// destructive. Without the empty check, `--src <empty dir> --prune`
+	// would leave `wanted` empty and removeOrphanFiles would then delete
+	// every top-level .md file in destDir while still exiting 0.
+	// GenerateGithubSkills carries the identical pair of guards.
 	entries, err := fs.ReadDir(srcFS, ".")
 	if err != nil {
 		return fmt.Errorf("read src dir: %w", err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("read src dir: source is empty — refusing to mirror an empty tree over %s", destDir)
 	}
 
 	headingNumRegex := regexp.MustCompile(`^### \d+\.(.*)`)

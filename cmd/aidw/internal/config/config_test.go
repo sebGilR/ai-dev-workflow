@@ -110,6 +110,35 @@ func TestLoad_LegacyDisabledDoesNotEnableAdversarial(t *testing.T) {
 	}
 }
 
+// TestLoad_ModelTiersUnsetByDefault pins the host-neutral default: with no
+// env vars set, neither tier resolves to a vendor-specific model name.
+func TestLoad_ModelTiersUnsetByDefault(t *testing.T) {
+	clearEnv(t)
+	cfg := Load()
+
+	if cfg.FrontierModel != "" {
+		t.Errorf("FrontierModel = %q, want \"\" (not configured)", cfg.FrontierModel)
+	}
+	if cfg.EfficientModel != "" {
+		t.Errorf("EfficientModel = %q, want \"\" (not configured)", cfg.EfficientModel)
+	}
+}
+
+func TestLoad_ModelTiersHonorEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AIDW_FRONTIER_MODEL", "claude-opus-4-7")
+	t.Setenv("AIDW_EFFICIENT_MODEL", "claude-haiku-4-5")
+
+	cfg := Load()
+
+	if cfg.FrontierModel != "claude-opus-4-7" {
+		t.Errorf("FrontierModel = %q, want claude-opus-4-7", cfg.FrontierModel)
+	}
+	if cfg.EfficientModel != "claude-haiku-4-5" {
+		t.Errorf("EfficientModel = %q, want claude-haiku-4-5", cfg.EfficientModel)
+	}
+}
+
 func TestResolvedProvider_Default(t *testing.T) {
 	cfg := Config{}
 	if cfg.ResolvedProvider() != DefaultAdversarialProvider {
