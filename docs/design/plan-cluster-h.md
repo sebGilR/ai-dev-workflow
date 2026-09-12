@@ -298,3 +298,125 @@ cycle already.
 | `Provenance.AuthoringSession` never populated | **Defer** — H1 may set it opportunistically, not a requirement |
 | `work start --branch` vs HEAD coherence | **Out of scope** — spec-level question, not H's |
 | Pre-PR#51 installs with Gemini model defaults | **Out of scope** — but H's own migration follows the same principle: explicit user-triggered commands, never silent config rewrites |
+
+## 6. Batch 6 (after H ships) — Claude Code speed-review gap fixes
+
+Not part of Cluster H's scope, but queued to run as the **next** batch on this
+branch's lineage once H's PR merges — do not let this drift into Cluster I's
+scope or get lost. Source: a 5-week usage audit
+(`~/workspace/claude-code-speed-review/claude-code-speed-review.md`) plus an
+Opus gap-analysis pass cross-referencing it against this repo's actual
+current config (run 2026-09-12). Ranked roughly by the audit's own
+estimated-savings order.
+
+### G1 (highest priority — undoes the audit's own fixes otherwise)
+
+`~/.claude/settings.json` already has the audit's recommended fixes (curl/wget
+deny→localhost-allow, stalling `ask` rules removed, `pnpm install
+--frozen-lockfile*` allowed, Opus effort back to `high`, SessionStart hook
+gone). **None of that is durable**: `templates/global/settings.template.json`
+still ships the old `deny`/`ask` rules (its `ask` entry is even broader —
+`git commit *`, not just `--amend*`), and
+`cmd/aidw/internal/install/merge_settings.go`'s `mergeLists` is union-only for
+permission lists — the existing `retractStaleAllowRules` only prunes one
+pattern and only from `allow`. The next `aidw upgrade`/`/wip-upgrade` silently
+re-adds the deny/ask rules for every user who already has the fix, recreating
+the exact overnight-stall pattern the audit measured.
+
+- Prune from `templates/global/settings.template.json`: `Bash(curl *)`,
+  `Bash(wget *)` from `deny`; `Bash(git commit *)`, `Bash(git rebase *)`,
+  `Bash(npm install *)`, `Bash(pnpm install *)` from `ask`; add the four
+  localhost curl allows + `Bash(pnpm install --frozen-lockfile*)` to `allow`.
+- Generalize `merge_settings.go`: add `retractedDenyPatterns` /
+  `retractedAskPatterns` with those exact strings and a
+  `retractStaleRules(merged, "deny"|"ask")` pass — template pruning alone
+  does nothing for already-installed users, since union-only merge never
+  removes.
+
+### G2 — "proceed on defaults" is nowhere in the workflow
+
+No skill implements this (`proceed on|stated default|AskUserQuestion` greps
+zero across `claude/skills/*/SKILL.md`).
+
+- Global CLAUDE.md managed block (`templates/global/claude_managed_block.md`
+  — edit the template, not `~/.claude/CLAUDE.md` directly), under "Default
+  expectations": add "proceed on stated default, list assumptions at the
+  end, only block on irreversible/outward-facing actions" + "try your own
+  tools/credentials before asking."
+- `claude/skills/wip-review/SKILL.md` — the "escalate to a deeper model?"
+  question fires on every review (measured as 98% of one session's tool
+  time in the audit). Default to no-escalate when unset; escalate only on
+  explicit flag or diff-size threshold.
+- `claude/skills/wip-plan/SKILL.md` — the unconditional HALT-and-ask after
+  step 3 is a second standing gate; make it conditional on plan size/risk.
+
+### G3 — stale/broken instructions still in the managed CLAUDE.md block
+
+All in `templates/global/claude_managed_block.md`:
+
+- `Agent(run_in_background=true, …)` — parameter doesn't exist; subagents
+  background by default. Also in
+  `bmad-parallel-orchestrator/agents/bmad-parallel-orchestrator.md` and
+  `skills/bmad-parallel-run/SKILL.md`. Replace every occurrence.
+- "Always ask the user before bypassing RTK" — subagents can't ask. Replace
+  with: subagents run `rtk proxy <cmd>` directly and note it in their
+  report; only the main session confirms with the user first.
+- Serena mandate — `serena` isn't on PATH here. Downgrade to "if
+  `mcp__serena__*` responds, use it; on any error, fall back to Grep/Read
+  immediately, don't retry." Same fix needed in `wip-reviewer.md` and
+  `wip-planner.md`, which duplicate the "use Serena first" instruction.
+- CodeGraph mandate — works in this repo (`.codegraph/` exists) but is
+  asserted project-wide; soften to conditional unless willing to run
+  `codegraph init` everywhere.
+- Shopify + BMAD blocks load into every repo including non-Shopify/non-BMAD
+  ones (~13KB of 21.6KB). Lower priority — context size barely affects
+  latency per the audit's own data (§4.3).
+- `sequential-thinking` MCP registered, never called — delete the entry.
+
+### G4 — no credential/identity-write ban in implementer/QA agent definitions
+
+Add verbatim to the hard-rules section of
+`bmad-parallel-orchestrator/agents/workers/bmad-impl-bg.md`,
+`bmad-qa-bg.md`, and `bmad-review-fixer-bg.md`:
+
+> Never write to user, identity, credential, or session tables — not in any
+> environment, not temporarily, not with `validate: false` or
+> `update_columns`. Never set, reset, or print a password, digest, token, or
+> session cookie. If you cannot authenticate to a dev server, stop and
+> report that a seeded QA login is missing; do not work around it.
+
+(The audit's actual incident agent, `bmad-vk-implementer`, lives in a
+different repo and isn't reachable from here — same fix applies there.)
+
+### G5 — no shared dispatch-brief template
+
+Zero hits for `worktree|premise|quote|paraphras` across
+`claude/skills/*/SKILL.md`. Add `templates/briefs/isolated-agent-brief.md`,
+referenced from `wip-implement`, carrying: branch-check-first, no
+amend/rebase, commit+push per step, never `cd` to primary checkout,
+quote-don't-paraphrase spec text with `file:line`, never pin `main`'s SHA,
+premise-check before editing, explicit timeout or Monitor for long suites.
+Worktree-guard refusals are the audit's single most common subagent error
+(343 hits across 143 agents) — this is the highest-leverage single addition
+for that.
+
+### G6 — RTK still rewrites `grep`/`find`/`git diff`
+
+Fix lives in RTK's own config (exclude those from rewriting), not in this
+repo — but flagged here since it's a correctness hazard (silent zero-match
+results), not just noise. `PreToolUse` hook in `settings.json` is unchanged.
+
+### Needs a human decision, not a config edit
+
+- Top-level `"model": "sonnet"` (medium effort) for the *main session* in
+  `~/.claude/settings.json` goes further than the audit's R7 asked (R7
+  wanted Opus-high for orchestration/review) — don't autofix, ask first.
+- Whether Serena/CodeGraph get fixed (install `gopls`, put `serena` on
+  PATH, run `codegraph init` everywhere) vs. deleted from the mandate is a
+  tooling-investment call.
+- R1's "keep the machine awake" / preflight / liveness-check items are
+  operator procedure, not static config — the liveness rule (check last
+  push time, not output-file size, auto-redispatch after one stall) could
+  be encoded into `bmad-parallel-orchestrator.md`'s monitoring step and
+  carries the audit's single largest estimate (+50-80 lane-hours).
+
