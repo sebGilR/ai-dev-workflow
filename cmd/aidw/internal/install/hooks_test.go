@@ -243,7 +243,11 @@ func TestHookFallsBackToShellResolver_WhenBinaryLacksResolveWip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo := initHookGitRepo(t, "")
+	// Explicit branch: the wip dir below is named for branch "main", and
+	// git's default branch name on `git init` is environment-dependent
+	// (this repo's global init.defaultBranch=main locally, but CI runners
+	// commonly have no such config and fall back to "master").
+	repo := initHookGitRepo(t, "main")
 	wipDir := filepath.Join(repo, ".wip", "20260101120000-main")
 	if err := os.MkdirAll(wipDir, 0o755); err != nil {
 		t.Fatal(err)
