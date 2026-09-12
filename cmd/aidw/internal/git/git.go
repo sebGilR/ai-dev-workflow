@@ -32,6 +32,14 @@ func Toplevel(dir string) (string, error) {
 	return run(dir, "rev-parse", "--show-toplevel")
 }
 
+// CommonDir returns the absolute path of the repository's common git
+// directory (shared by all worktrees of one clone). Unlike Toplevel,
+// which is worktree-local, CommonDir is the same for every worktree of a
+// given clone — this is what makes RepoIdentity worktree-aware.
+func CommonDir(dir string) (string, error) {
+	return run(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+}
+
 // CurrentBranch returns the name of the current branch.
 // Returns "detached-head" when HEAD is not on a branch (matches Python behaviour).
 func CurrentBranch(dir string) (string, error) {

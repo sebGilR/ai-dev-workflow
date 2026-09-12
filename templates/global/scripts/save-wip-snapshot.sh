@@ -66,6 +66,16 @@ if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
   branch="detached-head"
 fi
 
+# Work-model path (additive, best-effort): a single resolver/writer call
+# that reads cwd/session_id from the same stdin JSON payload already
+# drained above. If the binary is missing or too old to have `work
+# checkpoint`, or the command errors for any reason (no active work,
+# ambiguous, or a real error), this simply no-ops — no shell-side
+# reimplementation of a work-model resolution fallback is attempted.
+if [[ -n "$aidw_bin" && -x "$aidw_bin" ]]; then
+  printf '%s' "$hook_input" | "$aidw_bin" work checkpoint --from-hook >/dev/null 2>&1 || true
+fi
+
 wip_dir=""
 resolved_via_binary=0
 
