@@ -1,4 +1,4 @@
-.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-linux-arm64 build-all test clean install
+.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-linux-arm64 build-all test clean install mirrors
 
 INSTALL_ROOT ?= $(HOME)/.claude/ai-dev-workflow
 
@@ -24,6 +24,21 @@ test:
 
 clean:
 	rm -f bin/aidw-darwin-arm64 bin/aidw-darwin-amd64 bin/aidw-linux-amd64 bin/aidw-linux-arm64
+
+# Regenerate the .github/skills/ and .github/agents/ mirrors from their
+# claude/skills/ and claude/agents/ sources in this checkout. Run this
+# after editing any SKILL.md or agent .md file, and before committing —
+# the mirrors_test.go drift test fails CI otherwise. Uses `go run` (no
+# rebuild needed) with --src pointed at the checkout, not the embedded FS,
+# so it always reflects uncommitted local edits.
+#
+# --prune is passed ONLY here: it deletes files under .github/{skills,agents}
+# that no longer exist in claude/, which is what keeps the mirrors orphan-free.
+# The flag defaults to false everywhere else so `generate-github-*` pointed at
+# an arbitrary --dest can never delete a user's own files.
+mirrors:
+	go run ./cmd/aidw generate-github-skills --src claude/skills --dest .github/skills --prune
+	go run ./cmd/aidw generate-github-agents --src claude/agents --dest .github/agents --prune
 
 install: build
 	@mkdir -p "$(INSTALL_ROOT)/bin"

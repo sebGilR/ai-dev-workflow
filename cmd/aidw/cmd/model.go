@@ -24,14 +24,27 @@ var modelRouteCmd = &cobra.Command{
 
 		switch tier {
 		case "frontier":
-			fmt.Println(cfg.FrontierModel)
+			printRoutedModel(cfg.FrontierModel, "AIDW_FRONTIER_MODEL")
 		case "efficient":
-			fmt.Println(cfg.EfficientModel)
+			printRoutedModel(cfg.EfficientModel, "AIDW_EFFICIENT_MODEL")
 		default:
 			fmt.Fprintf(os.Stderr, "unknown tier %q — valid values: frontier, efficient\n", tier)
 			os.Exit(1)
 		}
 	},
+}
+
+// printRoutedModel writes the resolved model name to stdout. Tiers are
+// unset by default (the right model depends on the host), so when nothing
+// is configured stdout stays empty — keeping `$(aidw model route <tier>)`
+// captures honest — and the explanation goes to stderr. Exit status stays
+// 0: "not configured" is a valid state, not a failure.
+func printRoutedModel(model, envVar string) {
+	if model == "" {
+		fmt.Fprintf(os.Stderr, "(not configured — set %s)\n", envVar)
+		return
+	}
+	fmt.Println(model)
 }
 
 func init() {

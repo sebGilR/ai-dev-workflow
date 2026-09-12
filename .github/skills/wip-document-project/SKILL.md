@@ -1,0 +1,40 @@
+---
+name: wip-document-project
+description: Perform a deep research pass on the repo to generate high-fidelity documentation in .claude/repo-docs/.
+agent: analyst
+---
+
+When this skill is used:
+
+1. **Skeleton Pass**: Ensure documentation skeletons exist. Run:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw document-project .
+   ```
+
+2. **Intelligence Pass**: Use the `wip-analyst` subagent to:
+   - Identify the primary entry points and architectural pillars.
+   - Describe the data flow and core components.
+   - Extract and document error handling, testing, and API/CLI patterns.
+   - Identify any "gotchas" or environment requirements.
+   
+   **Pro Tip (Model Routing)**: This research pass is token-intensive. If your host supports it, run the analyst with the efficient model:
+   ```bash
+   # Get the efficient model name:
+   ~/.claude/ai-dev-workflow/bin/aidw model route efficient
+   ```
+
+3. **Finalize**: Update `architecture.md`, `patterns.md`, and `gotchas.md` in `.claude/repo-docs/` with the discovered insights.
+
+4. **Index**: Refresh the semantic memory index:
+   ```bash
+   ~/.claude/ai-dev-workflow/bin/aidw memory index . .claude/repo-docs/
+   ```
+
+5. **Global Share**: Store a high-level summary of the architecture in the global memory layer:
+   ```bash
+   # Extract the top 500 chars of the system overview
+   ARCH_SUMMARY=$(head -n 20 .claude/repo-docs/architecture.md)
+   ~/.claude/ai-dev-workflow/bin/aidw memory store . "project-architecture" "$ARCH_SUMMARY" --semantic
+   ```
+
+6. Summarize the documentation created and invite the user to review.

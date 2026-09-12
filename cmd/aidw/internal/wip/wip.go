@@ -2,6 +2,9 @@
 package wip
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,11 +18,99 @@ import (
 	"aidw/cmd/aidw/internal/util"
 )
 
+// ErrNoActiveWork is returned by lookup-only resolution (FindBranchState and
+// callers built on it) when no .wip branch directory exists yet. Callers
+// should surface a message pointing at /wip-start rather than silently
+// creating state.
+var ErrNoActiveWork = errors.New("no active work for this branch — run /wip-start")
+
 // wipFiles is the list of standard WIP workflow files.
 var wipFiles = []string{"plan.md", "spec.md", "task-context.md", "review.md", "research.md", "context.md", "execution.md", "pr.md"}
 
-// keepOnCleanup is the set of files to keep during cleanup-branch.
-var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true, "task-context.md": true, "spec.md": true}
+// keepOnCleanup is the set of files to keep during cleanup-branch. status.json
+// must never be swept — it is edited in place (see downgradeStageAfterArchive)
+// so the recorded stage stays consistent with the artifacts that remain, but
+// the file itself, and the rest of the branch's identifying state, survive.
+var keepOnCleanup = map[string]bool{"context.md": true, "pr.md": true, "task-context.md": true, "spec.md": true, "status.json": true}
+
+// branchArchiveDirName is where CleanupBranch archives (rather than deletes)
+// non-kept files, under the branch's own .wip/<branch>/ directory.
+const branchArchiveDirName = "archive"
+
+// globalArchiveDirName is where ClearWip/ClearOtherBranches archive
+// (rather than delete) entire condemned branch directories, under .wip/.
+const globalArchiveDirName = ".archive"
+
+// uniqueArchivePath returns a destination path for moving `name` into
+// archiveRoot, appending "-2", "-3", ... on collision so repeated
+// archive/clear runs never clobber each other's content.
+func uniqueArchivePath(archiveRoot, name string) string {
+	dest := filepath.Join(archiveRoot, name)
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(dest); err != nil {
+			return dest
+		}
+		dest = filepath.Join(archiveRoot, fmt.Sprintf("%s-%d", name, i))
+	}
+}
+
+// requireArchiveBeforePurge refuses a --purge run against a repo where no
+// archive pass has ever happened. The check is deliberately coarse: it is
+// satisfied as soon as the archive root is non-empty overall, and does NOT
+// verify that each individual entry in candidates was itself previously
+// archived — a brand-new, never-archived entry created after an archive pass
+// will still be purged. A purge with nothing to delete at all is a harmless
+// no-op and is allowed through.
+//
+// Callers invoke this only on real (non-dry-run) purges: `--purge --dry-run`
+// is a read-only preview and must always be allowed to compute its full
+// deleted set, including on an archive-less repo.
+func requireArchiveBeforePurge(archived, candidates []string, archiveRoot string) error {
+	if len(archived) > 0 || len(candidates) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to purge: nothing is archived under %s yet, so --purge would permanently delete %d never-archived entr(y/ies): %s\nRun the archive pass first (same command without --purge), then re-run with --purge",
+		archiveRoot, len(candidates), strings.Join(candidates, ", "))
+}
+
+// downgradeStageAfterArchive keeps status.json (which is kept on cleanup)
+// consistent with the artifacts that remain: stages backed by a just-archived
+// artifact are downgraded to "started", the workflow floor.
+//
+// "started" — not "specified" — is the target because it is the only stage
+// SetStage accepts with no required files, so the downgraded status.json
+// describes a state the codebase's own validation would still accept. (After
+// cleanup, spec.md is typically the header-only seeded stub, which
+// SetStage(..., "specified") rejects as too small.) A single uniform floor is
+// also the only coherent target: a per-stage downgrade to "specified" would
+// be an *upgrade* for "planned", which sits earlier in the workflow.
+//
+// LastCompletedStep is moved in lockstep so status.json never reports a
+// completed step ahead of its own stage. Returns the new stage when a
+// downgrade happened, "" otherwise. A branch dir without status.json is not
+// an error — nothing to reconcile.
+func downgradeStageAfterArchive(wipDir string) (string, error) {
+	statusPath := filepath.Join(wipDir, "status.json")
+	if _, err := os.Stat(statusPath); err != nil {
+		return "", nil
+	}
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		return "", err
+	}
+	if !stagesBackedByArchivedArtifacts[status.Stage] {
+		return "", nil
+	}
+	status.Stage = "started"
+	downgraded := status.Stage
+	status.LastCompletedStep = &downgraded
+	status.UpdatedAt = util.NowISO()
+	if err := util.WriteJSON(statusPath, status); err != nil {
+		return "", err
+	}
+	return status.Stage, nil
+}
 
 // stages is the set of valid workflow stages.
 var stages = map[string]bool{
@@ -54,33 +145,27 @@ type BranchState struct {
 	Status Status `json:"status"`
 }
 
-// EnsureBranchState ensures the .wip/<branch> directory exists and is properly initialized.
-// If branch is empty, the current branch is used.
-func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
-	top, err := git.Toplevel(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("not a git repo: %w", err)
-	}
-
-	// Ensure repo is bootstrapped
-	if _, err := EnsureRepo(top); err != nil {
-		return nil, err
-	}
-
+// resolveBranchName applies the current-branch fallback + slugification shared
+// by EnsureBranchState and FindBranchState.
+func resolveBranchName(top, branch string) (string, error) {
 	branchName := branch
 	if branchName == "" {
 		b, err := git.CurrentBranch(top)
 		if err != nil {
-			return nil, fmt.Errorf("get current branch: %w", err)
+			return "", fmt.Errorf("get current branch: %w", err)
 		}
 		branchName = b
 	}
-	branchName = slug.SafeSlug(branchName)
+	return slug.SafeSlug(branchName), nil
+}
 
+// findExistingWipDir resolves phases 1-2 of branch-dir resolution (dated dir,
+// then legacy unprefixed dir) without creating anything. Returns "" if
+// neither exists. This is the lookup-only core shared by EnsureBranchState
+// (which falls through to phase 3 creation) and FindBranchState (which does
+// not).
+func findExistingWipDir(top, branchName string) (string, error) {
 	wipBase := filepath.Join(top, ".wip")
-	if err := os.MkdirAll(wipBase, 0o755); err != nil {
-		return nil, err
-	}
 
 	// Phase 1: find existing dated dir (YYYYMMDD or YYYYMMDDHHMMSS prefix); pick the newest
 	// Note: check-then-create is not atomic; concurrent invocations for the same branch
@@ -90,7 +175,10 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 	var candidates []string
 	entries, err := os.ReadDir(wipBase)
 	if err != nil {
-		return nil, fmt.Errorf("read wip directory: %w", err)
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read wip directory: %w", err)
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -109,17 +197,89 @@ func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
 	}
 	sort.Strings(candidates)
 
-	var wipDir string
 	if len(candidates) > 0 {
-		wipDir = filepath.Join(wipBase, candidates[len(candidates)-1])
+		return filepath.Join(wipBase, candidates[len(candidates)-1]), nil
 	}
 
 	// Phase 2: legacy unprefixed dir
+	legacy := filepath.Join(wipBase, branchName)
+	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+		return legacy, nil
+	}
+
+	return "", nil
+}
+
+// FindBranchState resolves the branch's WIP directory using the same
+// phase 1-2 lookup as EnsureBranchState, but never creates a repo, a .wip
+// directory, or seeds any files. It returns ErrNoActiveWork when no branch
+// directory (or no status.json inside it) exists. Use this for read-only
+// commands (status, next-action, context-summary, memory) so they never
+// spontaneously create workflow state — only `aidw start` / `/wip-start`
+// (EnsureBranchState) does that.
+func FindBranchState(repoPath, branch string) (*BranchState, error) {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repo: %w", err)
+	}
+
+	branchName, err := resolveBranchName(top, branch)
+	if err != nil {
+		return nil, err
+	}
+
+	wipDir, err := findExistingWipDir(top, branchName)
+	if err != nil {
+		return nil, err
+	}
 	if wipDir == "" {
-		legacy := filepath.Join(wipBase, branchName)
-		if info, err := os.Stat(legacy); err == nil && info.IsDir() {
-			wipDir = legacy
-		}
+		return nil, ErrNoActiveWork
+	}
+
+	statusPath := filepath.Join(wipDir, "status.json")
+	if _, err := os.Stat(statusPath); err != nil {
+		return nil, ErrNoActiveWork
+	}
+
+	var status Status
+	if err := util.ReadJSON(statusPath, &status); err != nil {
+		return nil, fmt.Errorf("read status.json: %w", err)
+	}
+
+	return &BranchState{
+		Repo:   top,
+		Branch: branchName,
+		WipDir: wipDir,
+		Status: status,
+	}, nil
+}
+
+// EnsureBranchState ensures the .wip/<branch> directory exists and is properly initialized.
+// If branch is empty, the current branch is used.
+func EnsureBranchState(repoPath, branch string) (*BranchState, error) {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repo: %w", err)
+	}
+
+	// Ensure repo is bootstrapped
+	if _, err := EnsureRepo(top); err != nil {
+		return nil, err
+	}
+
+	branchName, err := resolveBranchName(top, branch)
+	if err != nil {
+		return nil, err
+	}
+
+	wipBase := filepath.Join(top, ".wip")
+	if err := os.MkdirAll(wipBase, 0o755); err != nil {
+		return nil, err
+	}
+
+	wipDir, err := findExistingWipDir(top, branchName)
+	if err != nil {
+		return nil, err
 	}
 
 	// Phase 3: create new dated dir
@@ -293,27 +453,73 @@ type ContextSummaryResult struct {
 	Branch      string `json:"branch"`
 }
 
-// WriteContextSummary generates context-summary.md from WIP files.
+// WriteContextSummary generates context-summary.md from WIP files. It is a
+// lookup-only operation: it never creates a .wip directory — call
+// EnsureBranchState (via `aidw start`) first if none exists.
 func WriteContextSummary(repoPath string) (*ContextSummaryResult, error) {
-	state, err := EnsureBranchState(repoPath, "")
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
 	}
 
 	files := collectContextFiles(state.WipDir)
 	summary := generateSummaryText(files, state.Status)
+	header := summaryProvenanceHeader(state.WipDir, util.NowISO())
+	full := header + "\n" + summary
 
 	summaryPath := filepath.Join(state.WipDir, "context-summary.md")
-	if err := util.AtomicWrite(summaryPath, []byte(summary), 0o644); err != nil {
+	if err := util.AtomicWrite(summaryPath, []byte(full), 0o644); err != nil {
 		return nil, err
 	}
 
 	branch := state.Status.Branch
 	return &ContextSummaryResult{
 		SummaryPath: summaryPath,
-		SizeBytes:   len(summary),
+		SizeBytes:   len(full),
 		Branch:      branch,
 	}, nil
+}
+
+// SummaryStaleness reports whether context-summary.md's provenance header
+// still matches the current on-disk contents of its source files.
+type SummaryStaleness struct {
+	Stale       bool   `json:"stale"`
+	GeneratedAt string `json:"generated_at"`
+	SummaryPath string `json:"summary_path"`
+}
+
+// CheckSummaryStaleness is lookup-only: it never creates a .wip directory or
+// a summary file. An absent context-summary.md is itself reported as an
+// error (callers should tell the user to run `aidw summarize-context`); a
+// present-but-unparseable header (e.g. hand-edited or pre-A3a) counts as
+// stale rather than erroring, since there is nothing to verify.
+func CheckSummaryStaleness(repoPath string) (*SummaryStaleness, error) {
+	state, err := FindBranchState(repoPath, "")
+	if err != nil {
+		return nil, err
+	}
+
+	summaryPath := filepath.Join(state.WipDir, "context-summary.md")
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		return nil, fmt.Errorf("no context-summary.md found — run: aidw summarize-context <path>")
+	}
+
+	prov, ok := parseSummaryProvenance(string(data))
+	if !ok {
+		return &SummaryStaleness{Stale: true, SummaryPath: summaryPath}, nil
+	}
+
+	current, _ := parseSummaryProvenance(summaryProvenanceHeader(state.WipDir, prov.GeneratedAt))
+	stale := false
+	for name, hash := range current.Sources {
+		if prov.Sources[name] != hash {
+			stale = true
+			break
+		}
+	}
+
+	return &SummaryStaleness{Stale: stale, GeneratedAt: prov.GeneratedAt, SummaryPath: summaryPath}, nil
 }
 // NextAction represents the recommended next step in the workflow.
 type NextAction struct {
@@ -324,8 +530,9 @@ type NextAction struct {
 }
 
 // GetNextAction identifies the logical next step based on current state.
+// Lookup-only: never creates a .wip directory.
 func GetNextAction(repoPath string) (*NextAction, error) {
-	state, err := EnsureBranchState(repoPath, "")
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -408,18 +615,14 @@ func GetNextAction(repoPath string) (*NextAction, error) {
 	}, nil
 }
 
-// SummarizeStatus returns a human-readable status summary.
+// SummarizeStatus returns a human-readable status summary. Lookup-only:
+// never creates a .wip directory.
 func SummarizeStatus(repoPath string) (string, error) {
-// ...
-
-	top, err := git.Toplevel(repoPath)
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return "", err
 	}
-	state, err := EnsureBranchState(top, "")
-	if err != nil {
-		return "", err
-	}
+	top := state.Repo
 
 	firstNonEmpty := func(path string, fallback string) string {
 		data, err := os.ReadFile(path)
@@ -467,15 +670,54 @@ Execution preview:
 
 // CleanupResult is returned by CleanupBranch.
 type CleanupResult struct {
-	WipDir  string   `json:"wip_dir"`
-	Kept    []string `json:"kept"`
-	Deleted []string `json:"deleted"`
-	DryRun  bool     `json:"dry_run,omitempty"`
+	WipDir     string   `json:"wip_dir"`
+	Kept       []string `json:"kept"`
+	Archived   []string `json:"archived,omitempty"`
+	ArchiveDir string   `json:"archive_dir,omitempty"`
+	Deleted    []string `json:"deleted,omitempty"`
+	StageReset string   `json:"stage_reset,omitempty"`
+	DryRun     bool     `json:"dry_run,omitempty"`
+	Purge      bool     `json:"purge,omitempty"`
 }
 
-// CleanupBranch removes all files in the branch's .wip dir except context.md and pr.md.
-func CleanupBranch(repoPath string, dryRun bool) (*CleanupResult, error) {
-	state, err := EnsureBranchState(repoPath, "")
+// stagesBackedByArchivedArtifacts are the stages whose backing artifact
+// (plan.md, research.md, execution.md, review.md — none of which are in
+// keepOnCleanup) is swept into archive/ by CleanupBranch. After an archive
+// pass only kept/seed-level artifacts remain in place, so status.json is
+// downgraded to the "started" floor rather than keep claiming a stage whose
+// artifact is now an empty placeholder. See downgradeStageAfterArchive for
+// why the floor is uniform.
+//
+// "spec-reviewed" belongs here even though its spec.md is kept: its other
+// required artifact, review.md, is archived like the rest. "specified" and
+// "started" are deliberately absent — both of their backing artifacts
+// (spec.md, task-context.md) are in keepOnCleanup, so they survive intact.
+var stagesBackedByArchivedArtifacts = map[string]bool{
+	"planned":       true,
+	"spec-reviewed": true,
+	"researched":    true,
+	"implementing":  true,
+	"reviewed":      true,
+	"review-fixed":  true,
+}
+
+// CleanupBranch archives (moves) all files in the branch's .wip dir except
+// the kept set (context.md, pr.md, spec.md, task-context.md, status.json)
+// into archive/<YYYYMMDDHHMMSS>/ (collision-safe via uniqueArchivePath),
+// instead of deleting them. The archive/ directory itself is never swept by
+// a later cleanup run. Pass purge=true to permanently delete both the current
+// non-kept entries AND everything previously archived — this is the only path
+// that deletes bytes, and callers (the wip-cleanup skill) must preview and
+// confirm before using it. A real purge is refused only when archive/ is
+// completely empty; that guard does not guarantee every individual entry
+// being purged was itself previously archived. `purge` combined with
+// `dryRun` is a read-only preview and is never refused.
+//
+// Lookup-only: requires an existing active-work dir for the current branch
+// (ErrNoActiveWork otherwise) — it does not create or re-seed one, so cleanup
+// never reseeds the very placeholders it would archive on the next run.
+func CleanupBranch(repoPath string, dryRun, purge bool) (*CleanupResult, error) {
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -485,46 +727,137 @@ func CleanupBranch(repoPath string, dryRun bool) (*CleanupResult, error) {
 		return nil, err
 	}
 
-	var deleted []string
-	for _, e := range entries {
-		if keepOnCleanup[e.Name()] {
-			continue
-		}
-		path := filepath.Join(state.WipDir, e.Name())
-		if !dryRun {
-			if e.IsDir() {
-				if err := os.RemoveAll(path); err != nil {
-					return nil, err
-				}
-			} else {
-				if err := os.Remove(path); err != nil {
-					return nil, err
-				}
-			}
-		}
-		deleted = append(deleted, e.Name())
-	}
-
-	sort.Strings(deleted)
 	kept := make([]string, 0, len(keepOnCleanup))
 	for k := range keepOnCleanup {
 		kept = append(kept, k)
 	}
 	sort.Strings(kept)
 
-	return &CleanupResult{
-		WipDir:  state.WipDir,
-		Kept:    kept,
-		Deleted: deleted,
-		DryRun:  dryRun,
-	}, nil
+	var candidates []string
+	for _, e := range entries {
+		name := e.Name()
+		if keepOnCleanup[name] || name == branchArchiveDirName {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+	sort.Strings(candidates)
+
+	result := &CleanupResult{WipDir: state.WipDir, Kept: kept, DryRun: dryRun, Purge: purge}
+
+	if purge {
+		var archived []string
+		archiveRoot := filepath.Join(state.WipDir, branchArchiveDirName)
+		if archivedEntries, err := os.ReadDir(archiveRoot); err == nil {
+			for _, ae := range archivedEntries {
+				archived = append(archived, filepath.Join(branchArchiveDirName, ae.Name()))
+			}
+		}
+		if !dryRun {
+			if err := requireArchiveBeforePurge(archived, candidates, archiveRoot); err != nil {
+				return nil, err
+			}
+		}
+		deleted := append([]string{}, archived...)
+		deleted = append(deleted, candidates...)
+		sort.Strings(deleted)
+
+		if !dryRun {
+			for _, name := range candidates {
+				path := filepath.Join(state.WipDir, name)
+				if err := os.RemoveAll(path); err != nil {
+					return nil, err
+				}
+			}
+			if err := os.RemoveAll(archiveRoot); err != nil {
+				return nil, err
+			}
+		}
+		result.Deleted = deleted
+		return result, nil
+	}
+
+	if len(candidates) > 0 {
+		ts := time.Now().Format("20060102150405")
+		// Collision-safe: a second archive pass within the same second (or any
+		// pre-existing batch under the same timestamp) gets a "-2" suffix rather
+		// than silently overwriting the earlier batch's content.
+		archiveDir := uniqueArchivePath(filepath.Join(state.WipDir, branchArchiveDirName), ts)
+		if !dryRun {
+			if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+				return nil, err
+			}
+			for _, name := range candidates {
+				src := filepath.Join(state.WipDir, name)
+				dst := filepath.Join(archiveDir, name)
+				if err := os.Rename(src, dst); err != nil {
+					return nil, err
+				}
+			}
+			if reset, err := downgradeStageAfterArchive(state.WipDir); err != nil {
+				return nil, err
+			} else if reset != "" {
+				result.StageReset = reset
+			}
+		}
+		result.Archived = candidates
+		result.ArchiveDir = archiveDir
+	}
+
+	return result, nil
 }
 
-// ClearWipResult is returned by ClearWip.
+// ClearWipResult is returned by ClearWip and ClearOtherBranches.
 type ClearWipResult struct {
-	Kept    *string  `json:"kept"`
-	Deleted []string `json:"deleted"`
-	DryRun  bool     `json:"dry_run,omitempty"`
+	Kept     *string  `json:"kept"`
+	Archived []string `json:"archived,omitempty"`
+	Deleted  []string `json:"deleted,omitempty"`
+	DryRun   bool     `json:"dry_run,omitempty"`
+	Purge    bool     `json:"purge,omitempty"`
+}
+
+// archiveOrDeleteDirs moves each named top-level dir under wipBase into
+// globalArchiveDirName (collision-safe), or — when purge is true — deletes
+// it outright. It never touches globalArchiveDirName itself — callers wipe
+// that directory's own previously-archived content separately, once, after
+// this returns. Returns the names actually processed.
+func archiveOrDeleteDirs(wipBase string, names []string, dryRun, purge bool) ([]string, error) {
+	var processed []string
+	archiveRoot := filepath.Join(wipBase, globalArchiveDirName)
+	for _, name := range names {
+		path := filepath.Join(wipBase, name)
+		if !dryRun {
+			if purge {
+				if err := os.RemoveAll(path); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
+					return nil, err
+				}
+				dest := uniqueArchivePath(archiveRoot, name)
+				if err := os.Rename(path, dest); err != nil {
+					return nil, err
+				}
+			}
+		}
+		processed = append(processed, name)
+	}
+	return processed, nil
+}
+
+// listGlobalArchiveContents returns the top-level names currently archived
+// under .wip/.archive/, for purge previews.
+func listGlobalArchiveContents(wipBase string) []string {
+	var names []string
+	entries, err := os.ReadDir(filepath.Join(wipBase, globalArchiveDirName))
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		names = append(names, filepath.Join(globalArchiveDirName, e.Name()))
+	}
+	return names
 }
 
 // MigratedDir describes a single legacy-to-dated rename.
@@ -608,12 +941,18 @@ func MigrateWip(repoPath string) (*MigrateWipResult, error) {
 	return &MigrateWipResult{WipBase: wipBase, Migrated: migrated, Warnings: warnings}, nil
 }
 
-// ClearWip deletes old .wip branch dirs, keeping only the single most recently
-// dated one across all branches. If no dated dirs exist, the most recent legacy
-// dir (alphabetically last) is preserved to avoid data loss. This operates
+// ClearWip archives (moves into .wip/.archive/, rather than deleting) old
+// .wip branch dirs, keeping only the single most recently dated one across
+// all branches. If no dated dirs exist, the most recent legacy dir
+// (alphabetically last) is preserved to avoid data loss. This operates
 // globally across all branches in the repo — it is intended as a workspace
-// cleanup tool, not a per-branch operation.
-func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
+// cleanup tool, not a per-branch operation. Pass purge=true to permanently
+// delete both the condemned dirs AND everything already under .wip/.archive/.
+// A real purge is refused only when .wip/.archive/ is completely empty; that
+// guard does not guarantee every individual dir being purged was itself
+// previously archived. `purge` with `dryRun` is a read-only preview and is
+// never refused.
+func ClearWip(repoPath string, dryRun, purge bool) (*ClearWipResult, error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
 		return nil, err
@@ -621,7 +960,7 @@ func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 
 	wipBase := filepath.Join(top, ".wip")
 	if info, err := os.Stat(wipBase); err != nil || !info.IsDir() {
-		return &ClearWipResult{Kept: nil, Deleted: []string{}, DryRun: dryRun}, nil
+		return &ClearWipResult{Kept: nil, DryRun: dryRun, Purge: purge}, nil
 	}
 
 	entries, err := os.ReadDir(wipBase)
@@ -632,24 +971,23 @@ func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 	datedPattern := regexp.MustCompile(`^(\d{8}(?:\d{6})?)-(.+)$`)
 	type datedDir struct {
 		date string
-		path string
 		name string
 	}
 	var dated []datedDir
 	var others []string
 
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || e.Name() == globalArchiveDirName {
 			continue
 		}
 		m := datedPattern.FindStringSubmatch(e.Name())
 		if m != nil {
 			if _, err := time.Parse("20060102150405", m[1]); err == nil {
-				dated = append(dated, datedDir{date: m[1], path: filepath.Join(wipBase, e.Name()), name: e.Name()})
+				dated = append(dated, datedDir{date: m[1], name: e.Name()})
 				continue
 			}
 			if _, err := time.Parse("20060102", m[1]); err == nil {
-				dated = append(dated, datedDir{date: m[1], path: filepath.Join(wipBase, e.Name()), name: e.Name()})
+				dated = append(dated, datedDir{date: m[1], name: e.Name()})
 				continue
 			}
 		}
@@ -677,40 +1015,60 @@ func ClearWip(repoPath string, dryRun bool) (*ClearWipResult, error) {
 		keep = &keepName
 	}
 
-	var deleted []string
+	var candidates []string
 	for i := 0; i < len(dated)-1; i++ {
-		if !dryRun {
-			if err := os.RemoveAll(dated[i].path); err != nil {
-				return nil, err
-			}
-		}
-		deleted = append(deleted, dated[i].name)
+		candidates = append(candidates, dated[i].name)
 	}
 	for _, name := range others {
 		if keep != nil && name == *keep {
 			continue
 		}
+		candidates = append(candidates, name)
+	}
+	sort.Strings(candidates)
+
+	if purge {
+		archived := listGlobalArchiveContents(wipBase)
 		if !dryRun {
-			if err := os.RemoveAll(filepath.Join(wipBase, name)); err != nil {
+			if err := requireArchiveBeforePurge(archived, candidates, filepath.Join(wipBase, globalArchiveDirName)); err != nil {
 				return nil, err
 			}
 		}
-		deleted = append(deleted, name)
+		deleted := append([]string{}, archived...)
+		deleted = append(deleted, candidates...)
+		sort.Strings(deleted)
+		if _, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, true); err != nil {
+			return nil, err
+		}
+		if !dryRun {
+			if err := os.RemoveAll(filepath.Join(wipBase, globalArchiveDirName)); err != nil {
+				return nil, err
+			}
+		}
+		return &ClearWipResult{Kept: keep, Deleted: deleted, DryRun: dryRun, Purge: purge}, nil
 	}
 
-	sort.Strings(deleted)
-	return &ClearWipResult{Kept: keep, Deleted: deleted, DryRun: dryRun}, nil
+	archived, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, false)
+	if err != nil {
+		return nil, err
+	}
+	return &ClearWipResult{Kept: keep, Archived: archived, DryRun: dryRun, Purge: purge}, nil
 }
 
-// ClearOtherBranches deletes all .wip branch dirs except the current branch's
-// dir. Unlike ClearWip (which keeps the most-recently-dated dir globally),
-// this command identifies the "keep" dir by the current git branch. All files
-// inside the kept dir are preserved.
+// ClearOtherBranches archives (moves into .wip/.archive/, rather than
+// deleting) all .wip branch dirs except the current branch's dir. Unlike
+// ClearWip (which keeps the most-recently-dated dir globally), this command
+// identifies the "keep" dir by the current git branch. All files inside the
+// kept dir are preserved. Pass purge=true to permanently delete both the
+// other branch dirs AND everything already under .wip/.archive/. A real purge
+// is refused only when .wip/.archive/ is completely empty; that guard does not
+// guarantee every individual dir being purged was itself previously archived.
+// `purge` with `dryRun` is a read-only preview and is never refused.
 //
-// Side effect: calls EnsureBranchState, which creates and seeds the current
-// branch .wip/ directory if it does not already exist.
-func ClearOtherBranches(repoPath string, dryRun bool) (*ClearWipResult, error) {
-	state, err := EnsureBranchState(repoPath, "")
+// Lookup-only: requires an existing active-work dir for the current branch
+// (ErrNoActiveWork otherwise) — it does not create or seed one.
+func ClearOtherBranches(repoPath string, dryRun, purge bool) (*ClearWipResult, error) {
+	state, err := FindBranchState(repoPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -723,24 +1081,44 @@ func ClearOtherBranches(repoPath string, dryRun bool) (*ClearWipResult, error) {
 		return nil, err
 	}
 
-	deleted := []string{}
+	var candidates []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		if e.Name() == keepDirName {
+		if e.Name() == keepDirName || e.Name() == globalArchiveDirName {
 			continue
 		}
+		candidates = append(candidates, e.Name())
+	}
+	sort.Strings(candidates)
+
+	if purge {
+		archived := listGlobalArchiveContents(wipBase)
 		if !dryRun {
-			if err := os.RemoveAll(filepath.Join(wipBase, e.Name())); err != nil {
+			if err := requireArchiveBeforePurge(archived, candidates, filepath.Join(wipBase, globalArchiveDirName)); err != nil {
 				return nil, err
 			}
 		}
-		deleted = append(deleted, e.Name())
+		deleted := append([]string{}, archived...)
+		deleted = append(deleted, candidates...)
+		sort.Strings(deleted)
+		if _, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, true); err != nil {
+			return nil, err
+		}
+		if !dryRun {
+			if err := os.RemoveAll(filepath.Join(wipBase, globalArchiveDirName)); err != nil {
+				return nil, err
+			}
+		}
+		return &ClearWipResult{Kept: &keepDirName, Deleted: deleted, DryRun: dryRun, Purge: purge}, nil
 	}
 
-	sort.Strings(deleted)
-	return &ClearWipResult{Kept: &keepDirName, Deleted: deleted, DryRun: dryRun}, nil
+	archived, err := archiveOrDeleteDirs(wipBase, candidates, dryRun, false)
+	if err != nil {
+		return nil, err
+	}
+	return &ClearWipResult{Kept: &keepDirName, Archived: archived, DryRun: dryRun, Purge: purge}, nil
 }
 
 // EnsureRepoResult is returned by EnsureRepo.
@@ -884,10 +1262,14 @@ func sortedStages() []string {
 	return ss
 }
 
+// summarySourceFiles lists the WIP files (in stable order) that feed
+// context-summary.md generation. Order is also used for the provenance
+// header's source hash list, so it must stay stable across releases.
+var summarySourceFiles = []string{"plan.md", "research.md", "execution.md", "review.md", "pr.md", "context.md", "spec.md", "task-context.md"}
+
 func collectContextFiles(wipDir string) map[string]string {
-	filenames := []string{"plan.md", "research.md", "execution.md", "review.md", "pr.md", "context.md"}
 	result := make(map[string]string)
-	for _, name := range filenames {
+	for _, name := range summarySourceFiles {
 		data, _ := os.ReadFile(filepath.Join(wipDir, name))
 		result[name] = strings.TrimSpace(string(data))
 	}
@@ -895,6 +1277,59 @@ func collectContextFiles(wipDir string) map[string]string {
 	data, _ := os.ReadFile(statusPath)
 	result["status.json"] = strings.TrimSpace(string(data))
 	return result
+}
+
+// summaryProvenancePrefix/Pattern define the machine-readable header
+// prepended to context-summary.md so staleness can be detected later without
+// re-reading every source file's mtime (which is unreliable across clones/CI
+// checkouts). Format:
+//
+//	<!-- aidw:summary generated_at=<ISO8601> sources=<name>:<sha256-8>,... -->
+var summaryProvenancePattern = regexp.MustCompile(`^<!-- aidw:summary generated_at=(\S+) sources=(.*) -->\s*$`)
+
+// summaryProvenanceHeader builds the provenance header for the CURRENT
+// on-disk contents of wipDir's summary source files. generatedAt is the
+// timestamp to embed (callers pass util.NowISO() when generating; staleness
+// checks only care about the sources= hashes, not the timestamp).
+func summaryProvenanceHeader(wipDir, generatedAt string) string {
+	parts := make([]string, 0, len(summarySourceFiles))
+	for _, name := range summarySourceFiles {
+		data, err := os.ReadFile(filepath.Join(wipDir, name))
+		if err != nil {
+			parts = append(parts, name+":-")
+			continue
+		}
+		sum := sha256.Sum256(data)
+		parts = append(parts, name+":"+hex.EncodeToString(sum[:])[:8])
+	}
+	return fmt.Sprintf("<!-- aidw:summary generated_at=%s sources=%s -->", generatedAt, strings.Join(parts, ","))
+}
+
+// SummaryProvenance is the parsed form of a context-summary.md provenance header.
+type SummaryProvenance struct {
+	GeneratedAt string
+	Sources     map[string]string // filename -> sha256-8 hash, or "-" if the file was missing
+}
+
+// parseSummaryProvenance extracts the provenance header from the first line
+// of content. ok is false if no (or a malformed) header is present — treated
+// as stale by callers, since there is nothing to verify against.
+func parseSummaryProvenance(content string) (prov SummaryProvenance, ok bool) {
+	firstLine, _, _ := strings.Cut(content, "\n")
+	m := summaryProvenancePattern.FindStringSubmatch(strings.TrimSpace(firstLine))
+	if m == nil {
+		return SummaryProvenance{}, false
+	}
+	prov = SummaryProvenance{GeneratedAt: m[1], Sources: map[string]string{}}
+	if m[2] != "" {
+		for _, pair := range strings.Split(m[2], ",") {
+			name, hash, found := strings.Cut(pair, ":")
+			if found {
+				prov.Sources[name] = hash
+			}
+		}
+	}
+	return prov, true
 }
 
 // titleCase capitalizes the first letter of each space-separated word.
@@ -909,6 +1344,9 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
+// trim returns the HEAD of text, up to limit runes, or "_none_" if empty.
+// Suited to files that are edited in place (context.md, plan.md, spec.md,
+// task-context.md) where the most important content is at the top.
 func trim(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -919,6 +1357,22 @@ func trim(text string, limit int) string {
 		return text
 	}
 	return strings.TrimSpace(string(runes[:limit])) + " ..."
+}
+
+// trimTail returns the TAIL of text, up to limit runes, or "_none_" if empty.
+// Suited to append-mode files (execution.md, research.md) where wip-sync
+// memos and the most recent notes land at the end — a head trim would show
+// stale content from the start of the file instead.
+func trimTail(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "_none_"
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return "... " + strings.TrimSpace(string(runes[len(runes)-limit:]))
 }
 
 func generateSummaryText(files map[string]string, status Status) string {
@@ -937,9 +1391,13 @@ func generateSummaryText(files map[string]string, status Status) string {
 		"",
 		fmt.Sprintf("## Implementation Plan\n%s", trim(files["plan.md"], 400)),
 		"",
-		fmt.Sprintf("## Key Research Findings\n%s", trim(files["research.md"], 300)),
+		fmt.Sprintf("## Specification\n%s", trim(files["spec.md"], 400)),
 		"",
-		fmt.Sprintf("## Implementation Progress\n%s", trim(files["execution.md"], 300)),
+		fmt.Sprintf("## Task Context\n%s", trim(files["task-context.md"], 300)),
+		"",
+		fmt.Sprintf("## Key Research Findings\n%s", trimTail(files["research.md"], 300)),
+		"",
+		fmt.Sprintf("## Implementation Progress\n%s", trimTail(files["execution.md"], 300)),
 		"",
 		fmt.Sprintf("## Review Findings\n%s", trim(files["review.md"], 200)),
 		"",

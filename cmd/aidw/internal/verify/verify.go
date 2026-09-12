@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -270,8 +271,82 @@ func Run(workspacePath string) *Results {
 	// Adversarial review provider check
 	checkAdversarialProvider(warn)
 
+	// Claude Code host version — SKILL.md/agent `effort`/`model` frontmatter
+	// requires a modern host to be honored (reliable interactive support
+	// from 2.1.259; silently ignored below that).
+	checkClaudeCodeVersion(warn)
+
 	r.OK = r.Failed == 0
 	return r
+}
+
+// minFrontmatterEffortVersion is the lowest Claude Code version known to
+// reliably honor SKILL.md/agent `effort:`/`model:` frontmatter interactively.
+// Below this, the frontmatter is silently ignored (not an error — the
+// `## Model guidance` prose blocks in the wip-* skills are the fallback).
+var minFrontmatterEffortVersion = [3]int{2, 1, 259}
+
+// claudeVersionTimeout bounds the `claude --version` probe so a wedged host
+// binary can't hang `aidw verify` indefinitely.
+const claudeVersionTimeout = 5 * time.Second
+
+// versionAtLeast reports whether the semver-ish triple current is greater
+// than or equal to required, comparing major, then minor, then patch.
+func versionAtLeast(current, required [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if current[i] != required[i] {
+			return current[i] > required[i]
+		}
+	}
+	return true
+}
+
+// claudeCodeVersionPattern extracts a dotted version number (e.g. "2.1.266")
+// from `claude --version` output, whose exact wording is not a stable
+// contract to depend on.
+var claudeCodeVersionPattern = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// checkClaudeCodeVersion warns (never hard-fails — this is host tooling, not
+// an aidw install defect) when the `claude` CLI can't be found, its version
+// can't be parsed, or it is older than minFrontmatterEffortVersion.
+func checkClaudeCodeVersion(warn func(string, bool, ...string)) {
+	name := "host: Claude Code version supports SKILL.md effort/model frontmatter"
+
+	if !commandExists("claude") {
+		warn(name, false, "claude CLI not found on PATH — could not check version")
+		return
+	}
+
+	// Bounded: a wedged `claude` binary must not hang `aidw verify`.
+	ctx, cancel := context.WithTimeout(context.Background(), claudeVersionTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "claude", "--version").Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			warn(name, false, fmt.Sprintf("claude --version timed out after %s", claudeVersionTimeout))
+			return
+		}
+		warn(name, false, fmt.Sprintf("claude --version failed: %v", err))
+		return
+	}
+
+	m := claudeCodeVersionPattern.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if m == nil {
+		warn(name, false, fmt.Sprintf("could not parse version from: %q", strings.TrimSpace(string(out))))
+		return
+	}
+
+	var v [3]int
+	for i := 0; i < 3; i++ {
+		fmt.Sscanf(m[i+1], "%d", &v[i])
+	}
+
+	ok := versionAtLeast(v, minFrontmatterEffortVersion)
+
+	detail := fmt.Sprintf("detected %d.%d.%d (need >= %d.%d.%d) — skill effort/model frontmatter is silently ignored below this; the ## Model guidance prose blocks still apply",
+		v[0], v[1], v[2], minFrontmatterEffortVersion[0], minFrontmatterEffortVersion[1], minFrontmatterEffortVersion[2])
+	warn(name, ok, detail)
 }
 
 func fileExists(path string) bool {
@@ -288,10 +363,12 @@ func commandExists(name string) bool {
 // Uses config.Load() to respect the same priority logic as the rest of the tool.
 func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	cfg := config.Load()
-	if !cfg.AdversarialReview {
-		return
-	}
 
+	// Note: this check is deliberately NOT gated on cfg.AdversarialReview.
+	// That flag no longer enables anything — `aidw adversarial-review` runs
+	// whenever it is explicitly invoked — so gating on it would hide the
+	// "provider CLI not installed" warning from exactly the users who reach
+	// the command by hand. The gate is now the resolved provider itself.
 	provider := cfg.ResolvedProvider()
 	installed := false
 	var checkCmd *exec.Cmd
@@ -320,6 +397,16 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 			checkCmd = exec.Command("codex", "ping")
 			checkCmd.Stdin = strings.NewReader("pong")
 		}
+	case "agy", "antigravity":
+		// Mirrors review.resolveProvider, which accepts both spellings and
+		// runs the Antigravity CLI under the binary name `agy`.
+		installed = commandExists("agy")
+		warn("adversarial: agy CLI installed", installed,
+			"install the Antigravity CLI (provides the `agy` binary)")
+		if installed {
+			checkCmd = exec.Command("agy", "--print", "ping pong",
+				"--dangerously-skip-permissions", "--print-timeout", "15s")
+		}
 	default:
 		warn(fmt.Sprintf("adversarial: unknown provider %q", provider), false,
 			"valid values: gemini, copilot, codex, agy")
@@ -327,6 +414,14 @@ func checkAdversarialProvider(warn func(string, bool, ...string)) {
 	}
 
 	if !installed {
+		return
+	}
+
+	// The functional check spends a real provider call and can block for up to
+	// 15s, so it only runs for users who opted into adversarial review through
+	// the env flags. The installed/not-installed warning above is what the
+	// explicit-invocation path needs, and it always runs.
+	if !cfg.AdversarialReview && !cfg.GeminiReview {
 		return
 	}
 

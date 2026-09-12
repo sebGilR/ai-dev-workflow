@@ -9,13 +9,34 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"aidw/cmd/aidw/internal/git"
 	"aidw/cmd/aidw/internal/memory"
-	"aidw/cmd/aidw/internal/wip"
+	"aidw/cmd/aidw/internal/slug"
 )
 
 var memoryCmd = &cobra.Command{
 	Use:   "memory",
 	Short: "Manage persistent task memory and facts",
+}
+
+// repoAndBranch resolves the two values the memory commands actually need:
+// the repository root (the key every memory row is scoped by) and the
+// slugified current branch name. It deliberately does NOT go through
+// wip.FindBranchState/EnsureBranchState — memory is repo-scoped knowledge and
+// must work on a repo/branch with no .wip state at all (that is what
+// /wip-document-project does on a fresh repo). The slugification must stay
+// identical to wip's resolveBranchName so facts stored here are readable by
+// callers that resolve the branch through the wip package.
+func repoAndBranch(repoPath string) (repo string, branch string, err error) {
+	top, err := git.Toplevel(repoPath)
+	if err != nil {
+		return "", "", fmt.Errorf("not a git repo: %w", err)
+	}
+	b, err := git.CurrentBranch(top)
+	if err != nil {
+		return "", "", fmt.Errorf("get current branch: %w", err)
+	}
+	return top, slug.SafeSlug(b), nil
 }
 
 var memoryStatusCmd = &cobra.Command{
@@ -41,9 +62,9 @@ var memoryStoreCmd = &cobra.Command{
 		val := args[2]
 		semantic, _ := c.Flags().GetBool("semantic")
 
-		state, err := wip.EnsureBranchState(repoPath, "")
+		repo, branch, err := repoAndBranch(repoPath)
 		if err != nil {
-			Die("wip state: %v", err)
+			Die("resolve repo: %v", err)
 		}
 
 		db, err := memory.Open()
@@ -64,14 +85,14 @@ var memoryStoreCmd = &cobra.Command{
 			}
 		}
 
-		if err := db.StoreFact(state.Repo, state.Branch, key, val, emb); err != nil {
+		if err := db.StoreFact(repo, branch, key, val, emb); err != nil {
 			Die("store: %v", err)
 		}
 
 		PrintJSON(map[string]any{
 			"status":   "stored",
 			"key":      key,
-			"branch":   state.Branch,
+			"branch":   branch,
 			"semantic": semantic,
 		})
 	},
@@ -90,12 +111,12 @@ var memoryListCmd = &cobra.Command{
 				Die("repo path is required for local listing")
 			}
 			repoPath = args[0]
-			state, err := wip.EnsureBranchState(repoPath, "")
+			repo, b, err := repoAndBranch(repoPath)
 			if err != nil {
-				Die("wip state: %v", err)
+				Die("resolve repo: %v", err)
 			}
-			repoName = state.Repo
-			branch = state.Branch
+			repoName = repo
+			branch = b
 		}
 
 		db, err := memory.Open()
@@ -143,9 +164,9 @@ var memoryIndexCmd = &cobra.Command{
 			target = args[1]
 		}
 
-		state, err := wip.EnsureBranchState(repoPath, "")
+		repo, _, err := repoAndBranch(repoPath)
 		if err != nil {
-			Die("wip state: %v", err)
+			Die("resolve repo: %v", err)
 		}
 
 		db, err := memory.Open()
@@ -175,13 +196,29 @@ var memoryIndexCmd = &cobra.Command{
 				return nil
 			}
 
-			relPath, _ := filepath.Rel(state.Repo, path)
+			// repo is always absolute (git rev-parse --show-toplevel), while
+			// path follows target — which is relative whenever the caller
+			// passed a relative one, as the wip-document-project skill does
+			// (`aidw memory index . .claude/repo-docs/`). filepath.Rel errors
+			// on a mixed absolute/relative pair, so resolve path first;
+			// otherwise every indexed row got an empty file_path.
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				absPath = path
+			}
+			if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+				absPath = resolved
+			}
+			relPath, relErr := filepath.Rel(repo, absPath)
+			if relErr != nil {
+				relPath = absPath
+			}
 			emb, err := client.Embed(content)
 			if err != nil {
 				return fmt.Errorf("embed %s: %w", relPath, err)
 			}
 
-			if err := db.IndexItem(state.Repo, relPath, content, emb); err != nil {
+			if err := db.IndexItem(repo, relPath, content, emb); err != nil {
 				return fmt.Errorf("store %s: %w", relPath, err)
 			}
 			count++
@@ -215,11 +252,11 @@ var memorySearchCmd = &cobra.Command{
 			}
 			repoPath = args[0]
 			query = args[1]
-			state, err := wip.EnsureBranchState(repoPath, "")
+			repo, _, err := repoAndBranch(repoPath)
 			if err != nil {
-				Die("wip state: %v", err)
+				Die("resolve repo: %v", err)
 			}
-			repoPath = state.Repo
+			repoPath = repo
 		}
 
 		db, err := memory.Open()

@@ -15,22 +15,43 @@ import (
 // GenerateGithubAgents reads markdown files from srcFS, strips out the
 // "### 1. Serena MCP" section, renumbers subsequent numbered sections,
 // and writes the result to destDir. It is idempotent.
-func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
+//
+// prune controls whether generated .md files in destDir with no
+// corresponding source file are removed. This MUST be false when destDir
+// is an arbitrary user repository (e.g. SeedRepo's per-repo bootstrap) —
+// pruning there would silently delete files the user put in their own
+// .github/agents/ that happen to share the .md extension, which is exactly
+// the "archive, never delete" rail phase 1 is trying to hold everywhere
+// else. Pass true only for this checkout's own mirror-generation entry
+// points (the generate-github-agents CLI command / `make mirrors`), where
+// destDir is .github/agents/ in this same repo and staying in lockstep
+// with claude/agents/ (no orphans left behind) is exactly the point.
+func GenerateGithubAgents(srcFS fs.FS, destDir string, prune bool) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir dest dir: %w", err)
 	}
 
+	// Validate the source is readable and non-empty BEFORE doing anything
+	// destructive. Without the empty check, `--src <empty dir> --prune`
+	// would leave `wanted` empty and removeOrphanFiles would then delete
+	// every top-level .md file in destDir while still exiting 0.
+	// GenerateGithubSkills carries the identical pair of guards.
 	entries, err := fs.ReadDir(srcFS, ".")
 	if err != nil {
 		return fmt.Errorf("read src dir: %w", err)
 	}
+	if len(entries) == 0 {
+		return fmt.Errorf("read src dir: source is empty — refusing to mirror an empty tree over %s", destDir)
+	}
 
 	headingNumRegex := regexp.MustCompile(`^### \d+\.(.*)`)
+	wanted := make(map[string]bool, len(entries))
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
+		wanted[e.Name()] = true
 
 		destPath := filepath.Join(destDir, e.Name())
 
@@ -53,6 +74,34 @@ func GenerateGithubAgents(srcFS fs.FS, destDir string) error {
 		}
 	}
 
+	if !prune {
+		return nil
+	}
+	return removeOrphanFiles(destDir, wanted)
+}
+
+// removeOrphanFiles deletes top-level .md files in destDir that are not in
+// wanted (by base name). Used to keep generated mirror directories from
+// accumulating stale copies of deleted/renamed source files.
+func removeOrphanFiles(destDir string, wanted map[string]bool) error {
+	destEntries, err := os.ReadDir(destDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read dest dir: %w", err)
+	}
+	for _, e := range destEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if wanted[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(destDir, e.Name())); err != nil {
+			return fmt.Errorf("remove orphan %s: %w", e.Name(), err)
+		}
+	}
 	return nil
 }
 
@@ -99,4 +148,3 @@ func processAgentFileFS(srcFS fs.FS, name string, headingNumRegex *regexp.Regexp
 
 	return sb.String(), nil
 }
-

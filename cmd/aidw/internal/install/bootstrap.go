@@ -7,24 +7,24 @@ import (
 	"os"
 	"path/filepath"
 
+	embedfs "aidw"
 	"aidw/cmd/aidw/internal/git"
 	"aidw/cmd/aidw/internal/util"
 	"aidw/cmd/aidw/internal/wip"
-	embedfs "aidw"
 )
 
 // BootstrapResult summarises what the bootstrap/upgrade process applied.
 type BootstrapResult struct {
-	ClaudeMD    string   `json:"claude_md"`
-	GeminiMD    string   `json:"gemini_md"`
-	Settings    string   `json:"settings"`
-	MCPJSON     string   `json:"mcp_json"`
-	Gitignore   string   `json:"gitignore"`
-	SqliteVec   string   `json:"sqlite_vec"`
-	Skills      []string `json:"skills"`
-	Agents      []string `json:"agents"`
-	RepoPath    string   `json:"repo_path,omitempty"`
-	Warnings    []string `json:"warnings,omitempty"`
+	ClaudeMD  string   `json:"claude_md"`
+	GeminiMD  string   `json:"gemini_md"`
+	Settings  string   `json:"settings"`
+	MCPJSON   string   `json:"mcp_json"`
+	Gitignore string   `json:"gitignore"`
+	SqliteVec string   `json:"sqlite_vec"`
+	Skills    []string `json:"skills"`
+	Agents    []string `json:"agents"`
+	RepoPath  string   `json:"repo_path,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
 }
 
 // BootstrapOptions configures the bootstrap process.
@@ -201,14 +201,24 @@ func SeedRepo(repoPath string, w io.Writer) error {
 	fmt.Fprintln(w, "  → Seeding .github/skills/...")
 	skillsFS, err := fs.Sub(embedfs.FS, "claude/skills")
 	if err == nil {
-		util.CopyFS(skillsFS, filepath.Join(top, ".github", "skills"))
+		// prune=false: this seeds an arbitrary user repo, so we never
+		// delete files that aren't ours (see GenerateGithubSkills's
+		// prune doc comment). Routing through GenerateGithubSkills
+		// rather than a raw util.CopyFS also gets the "customizations
+		// will be lost" overwrite warning the agents path already has.
+		if err := GenerateGithubSkills(skillsFS, filepath.Join(top, ".github", "skills"), false); err != nil {
+			return fmt.Errorf("generate github skills: %w", err)
+		}
 	}
 
 	// 4. .github/agents/ (stripped of MCP sections)
 	fmt.Fprintln(w, "  → Seeding .github/agents/...")
 	agentsFS, err := fs.Sub(embedfs.FS, "claude/agents")
 	if err == nil {
-		if err := GenerateGithubAgents(agentsFS, filepath.Join(top, ".github", "agents")); err != nil {
+		// prune=false: this seeds an arbitrary user repo, so we never
+		// delete files that aren't ours just because they share the .md
+		// extension (see GenerateGithubAgents's prune doc comment).
+		if err := GenerateGithubAgents(agentsFS, filepath.Join(top, ".github", "agents"), false); err != nil {
 			return fmt.Errorf("generate github agents: %w", err)
 		}
 	}
@@ -266,28 +276,33 @@ func extractEmbedded(claudeHome, copilotHome string, w io.Writer) ([]string, []s
 	util.CopyFS(skillsFS, claudeSkills)
 	copilotSkills := filepath.Join(copilotHome, "skills")
 	util.CopyFS(skillsFS, copilotSkills)
-	
+
 	entries, _ := fs.ReadDir(skillsFS, ".")
 	for _, e := range entries {
-		if e.IsDir() { skills = append(skills, e.Name()) }
+		if e.IsDir() {
+			skills = append(skills, e.Name())
+		}
 	}
 
 	// Agents
 	agentsFS, _ := fs.Sub(embedfs.FS, "claude/agents")
 	claudeAgents := filepath.Join(claudeHome, "agents")
 	util.CopyFS(agentsFS, claudeAgents)
-	
+
 	entries, _ = fs.ReadDir(agentsFS, ".")
 	for _, e := range entries {
-		if !e.IsDir() { agents = append(agents, e.Name()) }
+		if !e.IsDir() {
+			agents = append(agents, e.Name())
+		}
 	}
 
 	// Managed scripts
 	scripts := map[string]string{
-		"templates/global/scripts/statusline.sh":         "statusline.sh",
-		"templates/global/scripts/save-wip-snapshot.sh":  "save-wip-snapshot.sh",
+		"templates/global/scripts/statusline.sh":              "statusline.sh",
+		"templates/global/scripts/save-wip-snapshot.sh":       "save-wip-snapshot.sh",
+		"templates/global/scripts/session-start-context.sh":   "session-start-context.sh",
 		"templates/global/scripts/get-embeddings.template.sh": "get-embeddings.sh",
-		"bin/serena-query":                               "bin/serena-query",
+		"bin/serena-query": "bin/serena-query",
 	}
 	for src, name := range scripts {
 		data, err := embedfs.FS.ReadFile(src)

@@ -245,16 +245,27 @@ write_env_file() {
 
 # Adversarial review (optional) — choose a provider: gemini, copilot, codex, agy
 #   agy = Antigravity CLI (binary: `agy`). Leave AIDW_ADVERSARIAL_MODEL empty to
-#   use agy's own default model, or set a name from `agy models`.
-# Set AIDW_ADVERSARIAL_REVIEW=1 to enable
-export AIDW_ADVERSARIAL_REVIEW="1"
-export AIDW_ADVERSARIAL_PROVIDER="codex"
-export AIDW_ADVERSARIAL_MODEL="gemini-2.5-ultra"
+#   use the provider's own default model.
+# AIDW_ADVERSARIAL_REVIEW only affects the deprecated `aidw gemini-review`
+# command. `aidw adversarial-review` is never run or offered by the workflow;
+# it runs only when you explicitly invoke it, and each run is approved through
+# the Claude Code permission prompt (permissions.ask in ~/.claude/settings.json).
+export AIDW_ADVERSARIAL_REVIEW="0"
+export AIDW_ADVERSARIAL_PROVIDER="gemini"
+export AIDW_ADVERSARIAL_MODEL=""
 export AIDW_ADVERSARIAL_TIMEOUT="120"
 
-# Tiered Models (used by agents for routing)
-export AIDW_FRONTIER_MODEL="gemini-2.5-ultra"
-export AIDW_EFFICIENT_MODEL="gemini-2.5-flash"
+# Model routing tiers — `aidw model route frontier|efficient` prints these,
+# and the `## Model guidance` blocks in the wip-* skills point hosts at that
+# command. They are intentionally UNSET by default: the right value depends
+# entirely on which host you are running in, and a default naming another
+# vendor's model surfaces a confusing suggestion mid-session.
+#
+# Set them to model names your own host understands, e.g.:
+#   export AIDW_FRONTIER_MODEL="claude-opus-4-7"
+#   export AIDW_EFFICIENT_MODEL="claude-haiku-4-5"
+# export AIDW_FRONTIER_MODEL=""
+# export AIDW_EFFICIENT_MODEL=""
 
 # Legacy aliases (deprecated — kept for backward compatibility):
 # export AIDW_GEMINI_REVIEW="0"
@@ -275,18 +286,22 @@ ENVEOF
       echo '[[ ":$PATH:" != *":$HOME/go/bin:"* ]] && export PATH="$HOME/go/bin:$PATH"' >> "$env_file"
       _added=$((_added + 1))
     fi
-    # Migrate AIDW_ADVERSARIAL_REVIEW: preserve legacy enablement if AIDW_GEMINI_REVIEW="1".
-    if ! grep -q '^export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
-      if grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
-        echo 'export AIDW_ADVERSARIAL_REVIEW="1"' >> "$env_file"
-      else
-        echo 'export AIDW_ADVERSARIAL_REVIEW="0"' >> "$env_file"
-      fi
+    # AIDW_ADVERSARIAL_REVIEW is now always off: `aidw adversarial-review` runs
+    # only on explicit invocation (gated by the Claude Code permission prompt),
+    # and the flag only affects the deprecated `aidw gemini-review` command.
+    # Actively flip any existing enablement to "0" rather than only appending.
+    if grep -q '^export AIDW_ADVERSARIAL_REVIEW="1"' "$env_file" 2>/dev/null; then
+      awk '{if (/^export AIDW_ADVERSARIAL_REVIEW="1"/) {print "export AIDW_ADVERSARIAL_REVIEW=\"0\""} else {print}}' \
+        "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+      echo "  Adversarial review auto-run disabled (AIDW_ADVERSARIAL_REVIEW=\"0\")."
+      _added=$((_added + 1))
+    elif ! grep -q '^export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
+      echo 'export AIDW_ADVERSARIAL_REVIEW="0"' >> "$env_file"
       _added=$((_added + 1))
     fi
     for _var_line in \
       'export AIDW_ADVERSARIAL_PROVIDER="gemini"' \
-      'export AIDW_ADVERSARIAL_MODEL="gemini-2.5-pro"' \
+      'export AIDW_ADVERSARIAL_MODEL=""' \
       'export AIDW_ADVERSARIAL_TIMEOUT="120"'
     do
       local _var_name
@@ -347,102 +362,6 @@ patch_shell_profile() {
   }
   echo "Added aidw env source line to: $profile"
   echo "Reload with:  source $profile"
-}
-
-configure_adversarial_review() {
-  local env_file="$CLAUDE_HOME/ai-dev-workflow/aidw.env.sh"
-
-  # Skip if env file missing or not interactive
-  [ -f "$env_file" ] || return 0
-  [ -t 0 ] || return 0
-
-  # Skip if already explicitly enabled (new or legacy var)
-  if grep -q '^export AIDW_ADVERSARIAL_REVIEW="1"' "$env_file" 2>/dev/null || \
-     grep -q '^export AIDW_GEMINI_REVIEW="1"' "$env_file" 2>/dev/null; then
-    echo "Adversarial review: already enabled in $env_file"
-    return 0
-  fi
-
-  echo ""
-
-  # Detect available providers
-  local _available=()
-  if command -v gemini &>/dev/null; then
-    _available+=("gemini")
-  fi
-  if command -v copilot &>/dev/null; then
-    _available+=("copilot")
-  fi
-  if command -v codex &>/dev/null; then
-    _available+=("codex")
-  fi
-
-  if [ ${#_available[@]} -eq 0 ]; then
-    echo "Adversarial review: no supported providers detected (gemini, copilot, codex)."
-    echo "  To enable later, install a provider and set AIDW_ADVERSARIAL_REVIEW=1 in $env_file"
-    return 0
-  fi
-
-  echo "Adversarial review providers detected:"
-  local _i=1
-  for _p in "${_available[@]}"; do
-    echo "  $_i) $_p"
-    _i=$((_i + 1))
-  done
-  echo "  $_i) none (skip)"
-  printf "Choose adversarial review provider [1-%s]: " "$_i"
-  read -r _choice </dev/tty || _choice=""
-  echo ""
-
-  local _chosen=""
-  if [[ "$_choice" =~ ^[0-9]+$ ]] && [ "$_choice" -ge 1 ] && [ "$_choice" -lt "$_i" ]; then
-    _chosen="${_available[$((_choice - 1))]}"
-  fi
-
-  if [ -n "$_chosen" ]; then
-    # Write or update AIDW_ADVERSARIAL_REVIEW
-    if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_REVIEW=' "$env_file" 2>/dev/null; then
-      awk '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_REVIEW=/) {print "export AIDW_ADVERSARIAL_REVIEW=\"1\""} else {print}}' \
-        "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
-    else
-      printf '\nexport AIDW_ADVERSARIAL_REVIEW="1"\n' >> "$env_file"
-    fi
-    # Write or update AIDW_ADVERSARIAL_PROVIDER
-    if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_PROVIDER=' "$env_file" 2>/dev/null; then
-      awk -v p="$_chosen" '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_PROVIDER=/) {print "export AIDW_ADVERSARIAL_PROVIDER=\""p"\""} else {print}}' \
-        "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
-    else
-      printf 'export AIDW_ADVERSARIAL_PROVIDER="%s"\n' "$_chosen" >> "$env_file"
-    fi
-    # For non-gemini providers, clear AIDW_ADVERSARIAL_MODEL so the provider uses its own default.
-    if [ "$_chosen" != "gemini" ]; then
-      if grep -qE '^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=' "$env_file" 2>/dev/null; then
-        awk '{if (/^#*[[:space:]]*export AIDW_ADVERSARIAL_MODEL=/) {print "export AIDW_ADVERSARIAL_MODEL=\"\""} else {print}}' \
-          "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
-      fi
-    fi
-    echo "Adversarial review enabled with provider: $_chosen"
-    case "$_chosen" in
-      gemini)
-        if ! command -v gemini &>/dev/null; then
-          echo "  gemini CLI not found — see https://github.com/google-gemini/gemini-cli"
-        fi
-        ;;
-      copilot)
-        if ! command -v copilot &>/dev/null; then
-          echo "  copilot CLI not found — see https://github.com/github/copilot-cli"
-        fi
-        ;;
-      codex)
-        if ! command -v codex &>/dev/null; then
-          echo "  codex CLI not found — see https://github.com/openai/codex"
-        fi
-        ;;
-    esac
-  else
-    echo "Adversarial review skipped. To enable later:"
-    echo "  Set AIDW_ADVERSARIAL_REVIEW=1 and AIDW_ADVERSARIAL_PROVIDER=<gemini|copilot|codex> in $env_file"
-  fi
 }
 
 configure_rtk() {
@@ -617,7 +536,6 @@ configure_serena_project() {
 
 write_env_file
 patch_shell_profile
-configure_adversarial_review
 configure_rtk
 configure_repo_gitignore
 configure_serena_project

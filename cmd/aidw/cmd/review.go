@@ -46,7 +46,7 @@ var geminiReviewCmd = &cobra.Command{
 		cfg := config.Load()
 		if !cfg.GeminiReview {
 			fmt.Fprintln(os.Stderr, "[aidw] Gemini adversarial review disabled (AIDW_GEMINI_REVIEW != 1).")
-			fmt.Fprintln(os.Stderr, "[aidw] Use `aidw adversarial-review` with AIDW_ADVERSARIAL_REVIEW=1 instead.")
+			fmt.Fprintln(os.Stderr, "[aidw] Use `aidw adversarial-review .` instead — it needs no env var and runs when explicitly invoked.")
 			os.Exit(0)
 		}
 		model, _ := c.Flags().GetString("model")
@@ -83,12 +83,17 @@ var adversarialReviewCmd = &cobra.Command{
 	Use:   "adversarial-review <path>",
 	Short: "Run adversarial review pass using the configured provider",
 	Args:  cobra.ExactArgs(1),
+	// Note: this command is intentionally NOT gated by AIDW_ADVERSARIAL_REVIEW.
+	// It runs only when explicitly invoked.
+	//
+	// The binary itself carries no approval gate. The only gate is external:
+	// the `permissions.ask` entries in templates/global/settings.template.json
+	// cause a prompt when the command is invoked through the Claude Code Bash
+	// tool, on a host where those settings have been installed. Direct shell,
+	// scripted, or CI invocation of this binary is not gated by that mechanism
+	// at all.
 	Run: func(c *cobra.Command, args []string) {
 		cfg := config.Load()
-		if !cfg.AdversarialReview {
-			fmt.Fprintln(os.Stderr, "[aidw] Adversarial review disabled (AIDW_ADVERSARIAL_REVIEW != 1).")
-			os.Exit(0)
-		}
 		provider, _ := c.Flags().GetString("provider")
 		model, _ := c.Flags().GetString("model")
 		tier, _ := c.Flags().GetString("tier")

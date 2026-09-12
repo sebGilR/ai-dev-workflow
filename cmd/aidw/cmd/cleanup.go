@@ -11,11 +11,12 @@ import (
 
 var cleanupBranchCmd = &cobra.Command{
 	Use:   "cleanup-branch <path>",
-	Short: "Remove all files in the current branch .wip dir except context.md, pr.md, spec.md and task-context.md",
+	Short: "Archive all files in the current branch .wip dir except context.md, pr.md, spec.md, task-context.md and status.json",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		dryRun, _ := c.Flags().GetBool("dry-run")
-		result, err := wip.CleanupBranch(args[0], dryRun)
+		purge, _ := c.Flags().GetBool("purge")
+		result, err := wip.CleanupBranch(args[0], dryRun, purge)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
@@ -26,11 +27,12 @@ var cleanupBranchCmd = &cobra.Command{
 
 var clearWipCmd = &cobra.Command{
 	Use:   "clear-wip <path>",
-	Short: "Delete all .wip branch dirs except the most recently dated one",
+	Short: "Archive all .wip branch dirs except the most recently dated one",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		dryRun, _ := c.Flags().GetBool("dry-run")
-		result, err := wip.ClearWip(args[0], dryRun)
+		purge, _ := c.Flags().GetBool("purge")
+		result, err := wip.ClearWip(args[0], dryRun, purge)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
@@ -41,11 +43,12 @@ var clearWipCmd = &cobra.Command{
 
 var clearOthersCmd = &cobra.Command{
 	Use:   "clear-others <path>",
-	Short: "Delete all .wip branch dirs except the current branch's dir",
+	Short: "Archive all .wip branch dirs except the current branch's dir",
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		dryRun, _ := c.Flags().GetBool("dry-run")
-		result, err := wip.ClearOtherBranches(args[0], dryRun)
+		purge, _ := c.Flags().GetBool("purge")
+		result, err := wip.ClearOtherBranches(args[0], dryRun, purge)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)
@@ -55,9 +58,14 @@ var clearOthersCmd = &cobra.Command{
 }
 
 func init() {
-	cleanupBranchCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
-	clearWipCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
-	clearOthersCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
+	cleanupBranchCmd.Flags().Bool("dry-run", false, "Show what would be archived/deleted without actually doing it")
+	clearWipCmd.Flags().Bool("dry-run", false, "Show what would be archived/deleted without actually doing it")
+	clearOthersCmd.Flags().Bool("dry-run", false, "Show what would be archived/deleted without actually doing it")
+
+	purgeHelp := "Permanently delete current non-kept entries AND previously archived content, instead of archiving (refused only while the archive dir is completely empty; combine with --dry-run for a preview that is never refused)"
+	cleanupBranchCmd.Flags().Bool("purge", false, purgeHelp)
+	clearWipCmd.Flags().Bool("purge", false, purgeHelp)
+	clearOthersCmd.Flags().Bool("purge", false, purgeHelp)
 
 	Root.AddCommand(cleanupBranchCmd)
 	Root.AddCommand(clearWipCmd)

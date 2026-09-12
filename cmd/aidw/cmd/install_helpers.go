@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"aidw/cmd/aidw/internal/install"
 	embedfs "aidw"
+	"aidw/cmd/aidw/internal/install"
 )
 
 func init() {
@@ -17,6 +17,7 @@ func init() {
 	Root.AddCommand(mergeMCPJSONCmd)
 	Root.AddCommand(updateGlobalGitignoreCmd)
 	Root.AddCommand(generateGithubAgentsCmd)
+	Root.AddCommand(generateGithubSkillsCmd)
 
 	mergeCLAUDEMdCmd.Flags().String("claude-md", "", "Path to CLAUDE.md")
 	mergeCLAUDEMdCmd.Flags().String("snippet", "", "Path to snippet file (optional, defaults to embedded)")
@@ -25,6 +26,44 @@ func init() {
 	updateGlobalGitignoreCmd.Flags().StringArray("add", nil, "Extra entries to add to the global gitignore")
 	generateGithubAgentsCmd.Flags().String("src", "", "Source directory containing agent markdown files (optional, defaults to embedded)")
 	generateGithubAgentsCmd.Flags().String("dest", "", "Destination directory for generated agents")
+	generateGithubAgentsCmd.Flags().Bool("prune", false, "Delete files under --dest that have no corresponding source file (destructive; only safe when --dest is this checkout's own mirror)")
+	generateGithubSkillsCmd.Flags().String("src", "", "Source directory containing skill subdirectories (optional, defaults to embedded)")
+	generateGithubSkillsCmd.Flags().String("dest", "", "Destination directory for generated skills")
+	generateGithubSkillsCmd.Flags().Bool("prune", false, "Delete files under --dest that have no corresponding source file (destructive; only safe when --dest is this checkout's own mirror)")
+}
+
+var generateGithubSkillsCmd = &cobra.Command{
+	Use:   "generate-github-skills",
+	Short: "Generate .github/skills/ from claude/skills/ (byte-identical mirror)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		srcPath, _ := cmd.Flags().GetString("src")
+		dest, _ := cmd.Flags().GetString("dest")
+		if dest == "" {
+			return fmt.Errorf("--dest is required")
+		}
+
+		var srcFS fs.FS
+		var err error
+		if srcPath != "" {
+			srcFS = os.DirFS(srcPath)
+		} else {
+			srcFS, err = fs.Sub(embedfs.FS, "claude/skills")
+			if err != nil {
+				return fmt.Errorf("embedded skills: %w", err)
+			}
+		}
+
+		// prune defaults to false: --dest is a free-form path, so the
+		// destructive orphan sweep must be opted into explicitly. Only
+		// this checkout's own mirror-generation entry point (`make
+		// mirrors`, where dest is .github/skills) passes --prune.
+		prune, _ := cmd.Flags().GetBool("prune")
+		if err := install.GenerateGithubSkills(srcFS, dest, prune); err != nil {
+			fmt.Fprintln(os.Stderr, "generate-github-skills:", err)
+			os.Exit(1)
+		}
+		return nil
+	},
 }
 
 var generateGithubAgentsCmd = &cobra.Command{
@@ -48,7 +87,10 @@ var generateGithubAgentsCmd = &cobra.Command{
 			}
 		}
 
-		if err := install.GenerateGithubAgents(srcFS, dest); err != nil {
+		// prune defaults to false: same rationale as
+		// generate-github-skills above.
+		prune, _ := cmd.Flags().GetBool("prune")
+		if err := install.GenerateGithubAgents(srcFS, dest, prune); err != nil {
 			fmt.Fprintln(os.Stderr, "generate-github-agents:", err)
 			os.Exit(1)
 		}

@@ -3,11 +3,22 @@ name: wip-implement
 description: 'Executes the implementation tasks defined in the spec.md using a deterministic, artifact-driven sequence.'
 context: fork
 agent: implementer
+effort: medium
 ---
 
 # Workflow: Spec-Driven Implementation
 
 **Goal:** Turn the agreed-upon `spec.md` into hardened, working code.
+
+## Model guidance
+
+A well-specified spec.md is mechanical to execute, so the efficient tier
+(`effort: medium` above) is usually enough — escalate to the frontier tier
+on repeated test/build failures or when a task turns out to be
+under-specified. `aidw model route <tier>` prints the configured name for
+either tier (env `AIDW_FRONTIER_MODEL` / `AIDW_EFFICIENT_MODEL`). Respect
+an explicit user model choice without re-prompting, and never claim a
+model switch happened unless the host actually performed it.
 
 ## STEP 1: Load Specification
 

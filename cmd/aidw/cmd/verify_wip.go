@@ -9,13 +9,18 @@ import (
 	"aidw/cmd/aidw/internal/wip"
 )
 
+// makeVerifyCmd builds one of the read-only verify-* commands. These are pure
+// checks: they resolve the branch's WIP directory with the lookup-only
+// FindBranchState so that invoking a verifier never seeds a .wip directory.
+// With no active work they fail with the ErrNoActiveWork message, which points
+// the caller at /wip-start.
 func makeVerifyCmd(use, short, filename string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use + " <path>",
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		Run: func(c *cobra.Command, args []string) {
-			state, err := wip.EnsureBranchState(args[0], "")
+			state, err := wip.FindBranchState(args[0], "")
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "[aidw]", err)
 				os.Exit(1)
@@ -54,7 +59,7 @@ var verifyWipFileCmd = &cobra.Command{
 	Short: "Verify a specific file in the WIP directory exists and has content",
 	Args:  cobra.ExactArgs(2),
 	Run: func(c *cobra.Command, args []string) {
-		state, err := wip.EnsureBranchState(args[0], "")
+		state, err := wip.FindBranchState(args[0], "")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[aidw]", err)
 			os.Exit(1)

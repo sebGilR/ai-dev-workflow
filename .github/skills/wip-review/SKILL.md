@@ -1,7 +1,23 @@
 ---
 name: wip-review
 description: Prepare a review bundle and consolidate review notes.
+effort: high
 ---
+
+## Model guidance
+
+Review benefits most from the frontier tier — this is the last line of
+defense before a PR, and missed findings are expensive. `effort: high`
+above requests that tier where the host honors SKILL.md frontmatter
+(Claude Code >= 2.1.259); on older hosts it is silently ignored, which is
+exactly what step 4 below exists to handle explicitly via
+`AIDW_REVIEW_MODEL` / the escalation prompt. `aidw model route <tier>`
+prints the configured name for either tier (env `AIDW_FRONTIER_MODEL` /
+`AIDW_EFFICIENT_MODEL`) — this is a separate, general-purpose mechanism
+from the review-specific `AIDW_REVIEW_MODEL` override in step 4, which
+stays as-is. Respect an explicit user model choice without re-prompting,
+and never claim a model switch happened unless the host actually
+performed it.
 
 When this skill is used:
 
@@ -28,10 +44,10 @@ When this skill is used:
    Show the output to the user.
 
    b. Check the `AIDW_REVIEW_MODEL` environment variable:
-   - If set to `"opus"` → use `claude-opus-4.6` (CI override, no prompt)
-   - If set to `"sonnet"` → use `claude-sonnet-4.6` (CI override, no prompt)
-   - If unset → ask the user: **"Escalate to Opus 4.6 for deeper analysis? [y/N]"**
-     Default (no answer / N) → `claude-sonnet-4.6`
+   - If set to `"opus"` → use the deepest-analysis model tier (CI override, no prompt)
+   - If set to `"sonnet"` → use the default model tier (CI override, no prompt)
+   - If unset → ask the user: **"Escalate to a deeper-analysis model for this review? [y/N]"**
+     Default (no answer / N) → the default model tier
 
 5. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
 
@@ -48,47 +64,21 @@ The reviewer should:
 - Note missing tests and regression risks
 - Include a final verdict
 
-5. Adversarial review:
+External adversarial review is never run or offered by this workflow. It runs only when the user explicitly invokes `aidw adversarial-review .`.
 
-Check the `AIDW_ADVERSARIAL_REVIEW` environment variable first; fall back to `AIDW_GEMINI_REVIEW` for legacy users:
-- If the effective value is `0`: skip this step entirely (CI opt-out).
-- If the effective value is `1`: run without prompting (CI opt-in).
-- Otherwise (not set): ask the user: **"Run adversarial review? [y/N]"** — proceed only if they answer yes.
-
-The provider is controlled by `AIDW_ADVERSARIAL_PROVIDER` (default: `gemini`). Valid values: `gemini`, `copilot`, `codex`.
-
-If running:
-
-```bash
-AIDW_ADVERSARIAL_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw adversarial-review .
-```
-
-Then re-run synthesize-review to merge adversarial findings into `review.md`:
-
-```bash
-~/.claude/ai-dev-workflow/bin/aidw synthesize-review .
-```
-
-If the command fails because the provider CLI is not installed or auth is not configured, skip this step entirely. The `## Adversarial Review` section will be omitted from `review.md`.
-
-Legacy users with `AIDW_GEMINI_REVIEW=1` can also use:
-```bash
-AIDW_GEMINI_REVIEW=1 ~/.claude/ai-dev-workflow/bin/aidw gemini-review .
-```
-
-7. Verify the review.md write succeeded:
+6. Verify the review.md write succeeded:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw verify-review .
 ```
 
-8. If verification passes, update the stage:
+7. If verification passes, update the stage:
 
 ```bash
 ~/.claude/ai-dev-workflow/bin/aidw set-stage . reviewed
 ```
 
-9. Summarize the review findings, focusing on blockers and high-priority issues.
+8. Summarize the review findings, focusing on blockers and high-priority issues.
 
 ## RTK Usage (Token Compression)
 

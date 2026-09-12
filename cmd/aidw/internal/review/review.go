@@ -94,16 +94,21 @@ func ReviewBundle(repoPath string) (*BundleResult, error) {
 	// cache key. Status changes (new untracked files, renames, mode changes)
 	// that don't affect diffs would otherwise produce a stale bundle.
 	status := gitOutput(top, "status", "--short")
-	changedFiles := parseChangedFiles(status)
+	// Derive the changed-file list from the same `.wip/`-free view of the
+	// status that feeds the fingerprint, so a cache hit and the recorded
+	// ChangedFiles can never disagree about what changed.
+	changedFiles := parseChangedFiles(stripWipStatusLines(status))
 
-	// Compute fingerprint from raw diffs + status; skip rebuild if unchanged.
-	// Note: rawBranchDiff is empty when no merge base could be found (i.e.,
-	// neither main nor master exists, or git merge-base failed). The
-	// fingerprint still covers working-tree and staged changes in that case.
-	h := sha256.New()
-	// NUL separators prevent hash collisions across field boundaries.
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", rawBranchDiff, rawDiff, rawStaged, status)
-	fingerprint := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	// Compute the fingerprint from a `.wip/`-excluded re-read of the diffs
+	// (see fingerprintDiffs) plus the stripped status; skip rebuild if
+	// unchanged. These are deliberately separate git calls from the ones above:
+	// what gets stored in the bundle and sent to the adversarial provider stays
+	// the full, unfiltered diff. Note the branch diff is empty when no merge
+	// base could be found (i.e. neither main nor master exists, or git
+	// merge-base failed); the fingerprint still covers working-tree and staged
+	// changes in that case.
+	fpBranch, fpWorking, fpStaged := fingerprintDiffs(top, mergeBase)
+	fingerprint := fingerprintOf(fpBranch, fpWorking, fpStaged, status)
 
 	// Ensure WIP dir exists after all git ops so that a failed git command
 	// does not leave an orphaned .wip/<branch>/ directory.
@@ -189,9 +194,9 @@ func SynthesizeReview(repoPath string) (*SynthesizeResult, error) {
 	sections = append(sections, "# Review\n")
 
 	// Append changed files list from bundle
+	var bundle BundleResult
 	bundlePath := wipDir + "/review-bundle.json"
 	if _, serr := os.Stat(bundlePath); serr == nil {
-		var bundle BundleResult
 		if rerr := util.ReadJSON(bundlePath, &bundle); rerr == nil && len(bundle.ChangedFiles) > 0 {
 			sections = append(sections, "## Changed Files\n")
 			for _, f := range bundle.ChangedFiles {
@@ -214,9 +219,18 @@ func SynthesizeReview(repoPath string) (*SynthesizeResult, error) {
 
 	adversarialPath := wipDir + "/adversarial-review.md"
 	if data, rerr := os.ReadFile(adversarialPath); rerr == nil {
-		adv := strings.TrimSpace(string(data))
+		meta, body := parseAdversarialHeader(string(data))
+		adv := strings.TrimSpace(body)
 		if adv != "" {
+			// Always the same heading so reAdversarial keeps matching and the
+			// preservation branch below round-trips cleanly.
 			sections = append(sections, "## Adversarial Review\n")
+			// Recompute from git rather than trusting bundle.DiffFingerprint:
+			// on the explicit-invocation path (`aidw adversarial-review .`
+			// then `aidw synthesize-review .`) review-bundle.json is not
+			// rebuilt in between, so the stored value is the very same one the
+			// adversarial pass stamped and would always compare equal.
+			sections = append(sections, provenanceLine(meta, diffFingerprint(top))+"\n")
 			sections = append(sections, adv+"\n")
 		}
 	} else if existingAdversarial != "" {
@@ -517,7 +531,14 @@ func AdversarialReview(repoPath, providerName, model string, timeoutSecs int) (*
 		return result, nil
 	}
 
-	if werr := util.AtomicWrite(adversarialPath, []byte(rawOut+"\n"), 0o644); werr != nil {
+	// Stamp provenance so `synthesize-review` can tell whether these findings
+	// still describe the diff currently in the review bundle. The fingerprint
+	// is the bundle's own DiffFingerprint — no separate recomputation.
+	header := fmt.Sprintf(
+		"<!-- aidw:adversarial provider=%s model=%s generated_at=%s diff_sha256=%s -->\n\n",
+		providerName, model, util.NowISO(), bundle.DiffFingerprint,
+	)
+	if werr := util.AtomicWrite(adversarialPath, []byte(header+rawOut+"\n"), 0o644); werr != nil {
 		return nil, fmt.Errorf("write adversarial-review.md: %w", werr)
 	}
 
@@ -554,6 +575,76 @@ func GeminiReview(repoPath, model string, timeoutSecs int) (*GeminiReviewResult,
 }
 
 // --- helpers ---
+
+// wipPathspecExclude keeps the branch-scoped `.wip/` directory out of the diff
+// material that feeds the fingerprint. In repos where `.wip/` is *tracked*
+// (not gitignored) the workflow's own writes — review-bundle.json,
+// adversarial-review.md, review.md — show up in `git diff`, which would churn
+// the fingerprint on every computation and leave the adversarial findings
+// permanently, unclearably labelled stale.
+const wipPathspecExclude = ":(exclude).wip"
+
+// fingerprintDiffs returns the three diff texts that feed the fingerprint,
+// with `.wip/` excluded via git pathspec. It is the single source of that
+// material for both ReviewBundle and diffFingerprint, so the two can never
+// drift apart and invert the staleness bug. mergeBase may be "" when none
+// could be found, in which case the branch diff is empty.
+//
+// These are NOT the diffs stored in the bundle or sent to the adversarial
+// provider — those stay unfiltered. This is hash input only.
+func fingerprintDiffs(top, mergeBase string) (branchDiff, workingDiff, stagedDiff string) {
+	if mergeBase != "" {
+		branchDiff = gitOutput(top, "diff", mergeBase, "HEAD", "--", ".", wipPathspecExclude)
+	}
+	workingDiff = gitOutput(top, "diff", "--", ".", wipPathspecExclude)
+	stagedDiff = gitOutput(top, "diff", "--cached", "--", ".", wipPathspecExclude)
+	return branchDiff, workingDiff, stagedDiff
+}
+
+// fingerprintOf hashes the exact diff material a review pass looks at.
+// NUL separators prevent hash collisions across field boundaries. Callers pass
+// diffs produced by fingerprintDiffs (which excludes `.wip/` via pathspec);
+// the status text has `.wip/` entries stripped here, which additionally covers
+// *untracked* `.wip/` files — those appear in `git status --short` but in no
+// diff, so the pathspec exclusion alone would not catch them.
+func fingerprintOf(branchDiff, workingDiff, stagedDiff, status string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", branchDiff, workingDiff, stagedDiff, stripWipStatusLines(status))
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// stripWipStatusLines drops `git status --short` lines that refer to the
+// branch-scoped `.wip/` directory.
+func stripWipStatusLines(status string) string {
+	lines := strings.Split(status, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		path := strings.TrimSpace(line)
+		if len(path) > 2 {
+			path = strings.TrimSpace(path[2:])
+		}
+		path = strings.Trim(path, `"`)
+		if path == ".wip" || path == ".wip/" || strings.HasPrefix(path, ".wip/") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// diffFingerprint recomputes the current diff fingerprint straight from git,
+// without reading (or writing) review-bundle.json. `synthesize-review` uses it
+// so staleness is judged against the working tree as it is now, not against a
+// possibly-stale on-disk bundle.
+func diffFingerprint(top string) string {
+	branchDiff, workingDiff, stagedDiff := fingerprintDiffs(top, findMergeBase(top))
+	return fingerprintOf(
+		branchDiff,
+		workingDiff,
+		stagedDiff,
+		gitOutput(top, "status", "--short"),
+	)
+}
 
 func findMergeBase(repoPath string) string {
 	defaultBranch := git.DefaultBranch(repoPath)
@@ -607,6 +698,85 @@ var (
 	reAdversarial = regexp.MustCompile(`(?m)^## Adversarial Review\s*$`)
 	reNextHeading = regexp.MustCompile(`(?m)^## `)
 )
+
+// reAdversarialHeader matches the provenance comment written by
+// AdversarialReview at the top of adversarial-review.md.
+var reAdversarialHeader = regexp.MustCompile(`^<!--\s*aidw:adversarial\s+(.*?)\s*-->\s*\n?`)
+
+// adversarialMeta holds the parsed provenance header fields.
+type adversarialMeta struct {
+	Present     bool
+	Provider    string
+	Model       string
+	GeneratedAt string
+	DiffSHA256  string
+}
+
+// parseAdversarialHeader splits an adversarial-review.md payload into its
+// provenance metadata and the review body. A file without a header yields
+// meta.Present == false and the whole text as the body.
+func parseAdversarialHeader(text string) (adversarialMeta, string) {
+	trimmed := strings.TrimLeft(text, "\n")
+	m := reAdversarialHeader.FindStringSubmatch(trimmed)
+	if m == nil {
+		return adversarialMeta{}, text
+	}
+	meta := adversarialMeta{Present: true}
+	for _, field := range strings.Fields(m[1]) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "provider":
+			meta.Provider = value
+		case "model":
+			meta.Model = value
+		case "generated_at":
+			meta.GeneratedAt = value
+		case "diff_sha256":
+			meta.DiffSHA256 = value
+		}
+	}
+	return meta, trimmed[len(m[0]):]
+}
+
+// provenanceLine renders the single line placed beneath the
+// `## Adversarial Review` heading describing where the findings came from and
+// whether they still describe the diff as it stands right now.
+//
+// currentFingerprint is recomputed from git by the caller (see
+// diffFingerprint), so staleness is judged against the live working tree
+// rather than against whatever review-bundle.json happens to hold.
+func provenanceLine(meta adversarialMeta, currentFingerprint string) string {
+	origin := "unknown provider"
+	if meta.Provider != "" {
+		origin = meta.Provider
+		if meta.Model != "" {
+			origin += " / " + meta.Model
+		}
+	}
+	when := ""
+	if meta.GeneratedAt != "" {
+		when = ", generated " + meta.GeneratedAt
+	}
+
+	switch {
+	case !meta.Present:
+		return "_Provenance unknown: this adversarial review carries no `aidw` header, " +
+			"so it may describe an earlier diff. Re-run `aidw adversarial-review .` to refresh._"
+	case meta.DiffSHA256 == "" || currentFingerprint == "":
+		return fmt.Sprintf("_Provenance unverified (%s%s): no diff fingerprint to compare "+
+			"against the current diff._", origin, when)
+	case meta.DiffSHA256 != currentFingerprint:
+		return fmt.Sprintf("_Stale: generated by %s%s against a different diff "+
+			"(%s vs current %s). Re-run `aidw adversarial-review .` to refresh._",
+			origin, when, meta.DiffSHA256, currentFingerprint)
+	default:
+		return fmt.Sprintf("_Generated by %s%s; diff fingerprint matches the current "+
+			"diff (%s)._", origin, when, currentFingerprint)
+	}
+}
 
 // extractExistingSections extracts the Claude Review and Adversarial Review
 // sections from an existing review.md, preserving human-written content.
