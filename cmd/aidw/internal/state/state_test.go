@@ -1,13 +1,19 @@
 package state
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"aidw/cmd/aidw/internal/git"
+	"aidw/cmd/aidw/internal/util"
 )
 
 func initGitRepo(t *testing.T) string {
@@ -194,39 +200,310 @@ func TestAcquireLock_SecondAcquireFailsImmediately(t *testing.T) {
 	}
 }
 
-func TestAcquireLock_StealsStaleLockAndReleaseWorks(t *testing.T) {
+func TestAcquireLock_ReleaseAllowsReacquire(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "work.json")
 
-	firstRelease, err := AcquireLock(target)
+	release, err := AcquireLock(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	// Double release must be a no-op, not an unlock of a recycled fd.
+	release()
+
+	second, err := AcquireLock(target)
+	if err != nil {
+		t.Fatalf("expected reacquire after release to succeed: %v", err)
+	}
+	second()
+
+	// The lock file itself is intentionally left on disk: flock guards a
+	// file description, and unlinking would reintroduce a two-winner race.
+	if _, err := os.Stat(target + ".lock"); err != nil {
+		t.Fatalf("lock file should persist after release: %v", err)
+	}
+}
+
+// TestAcquireLock_ConcurrentGoroutinesExactlyOneWinner is the real race
+// test: N goroutines contend for the same lock at once and exactly one may
+// win. Note that flock is per open file description, not per process, so
+// in-process goroutines contend for real here.
+func TestAcquireLock_ConcurrentGoroutinesExactlyOneWinner(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "work.json")
+
+	const n = 16
+	type attempt struct {
+		release func()
+		err     error
+	}
+	results := make([]attempt, n)
+
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < n; i++ {
+		done.Add(1)
+		go func(i int) {
+			defer done.Done()
+			start.Wait()
+			release, err := AcquireLock(target)
+			// Deliberately do NOT release here — releasing inside the
+			// goroutine would let a later goroutine legitimately win too,
+			// making "exactly one" nondeterministic.
+			results[i] = attempt{release: release, err: err}
+		}(i)
+	}
+	start.Done()
+	done.Wait()
+
+	winners := 0
+	var winner func()
+	for i, r := range results {
+		if r.err == nil {
+			winners++
+			winner = r.release
+			continue
+		}
+		if !strings.Contains(r.err.Error(), "is held") {
+			t.Fatalf("attempt %d: loser error should report the lock is held, got %v", i, r.err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly 1 winner out of %d concurrent acquirers, got %d", n, winners)
+	}
+
+	winner()
+	after, err := AcquireLock(target)
+	if err != nil {
+		t.Fatalf("expected acquire to succeed after the winner released: %v", err)
+	}
+	after()
+}
+
+// TestAcquireLock_SurvivesKilledHolder proves the crash-safety property
+// that replaced staleness-based stealing: a process SIGKILLed while
+// holding the lock has it released by the kernel, so the resource is not
+// stuck forever.
+func TestAcquireLock_SurvivesKilledHolder(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "work.json")
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperHoldsLock", "-test.v")
+	cmd.Env = append(os.Environ(), "AIDW_LOCK_HELPER_TARGET="+target)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	// Wait for a readiness line rather than sleeping a fixed interval.
+	ready := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), "LOCK-HELD") {
+				ready <- nil
+				return
+			}
+		}
+		ready <- fmt.Errorf("helper exited without acquiring the lock: %v", scanner.Err())
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for helper to acquire the lock")
+	}
+
+	// While the helper holds it, we must not be able to acquire it.
+	if _, err := AcquireLock(target); err == nil {
+		t.Fatal("expected acquire to fail while a live subprocess holds the lock")
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+
+	// The kernel drops the flock when the holder dies. Poll briefly: the
+	// fd teardown is not necessarily complete the instant wait() returns.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		release, err := AcquireLock(target)
+		if err == nil {
+			release()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock still held after the holding process was SIGKILLed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHelperHoldsLock is not a real test: it is the subprocess body for
+// TestAcquireLock_SurvivesKilledHolder, guarded by an env var so it is a
+// no-op during a normal test run.
+func TestHelperHoldsLock(t *testing.T) {
+	target := os.Getenv("AIDW_LOCK_HELPER_TARGET")
+	if target == "" {
+		t.Skip("helper process only")
+	}
+	if _, err := AcquireLock(target); err != nil {
+		t.Fatalf("helper failed to acquire lock: %v", err)
+	}
+	fmt.Println("LOCK-HELD")
+	// Hold it (without ever releasing) until the parent kills us.
+	time.Sleep(2 * time.Minute)
+}
+
+func TestRegisterRepo_ConcurrentUnrelatedReposAllSucceed(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("AIDW_STATE_DIR", stateDir)
+
+	const n = 8
+	repos := make([]string, n)
+	for i := 0; i < n; i++ {
+		repos[i] = initGitRepo(t)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	ids := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ids[i], errs[i] = RegisterRepo(stateDir, repos[i])
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("RegisterRepo for repo %d failed under concurrency: %v", i, err)
+		}
+	}
+
+	// Every registration must be durably present — the retry must not have
+	// let a write be lost.
+	rf, err := LoadRepos(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range ids {
+		if _, ok := rf.Repos[id]; !ok {
+			t.Fatalf("repo %d (%s) missing from repos.json after concurrent registration", i, id)
+		}
+	}
+}
+
+func TestRegisterRepo_UsesGivenStateDirNotGlobal(t *testing.T) {
+	globalDir := t.TempDir()
+	otherDir := t.TempDir()
+	t.Setenv("AIDW_STATE_DIR", globalDir)
+
+	repo := initGitRepo(t)
+	if _, err := RegisterRepo(otherDir, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(otherDir, "repos.json")); err != nil {
+		t.Fatalf("RegisterRepo should write repos.json under the stateDir it was given: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(globalDir, "repos.json")); !os.IsNotExist(err) {
+		t.Fatalf("RegisterRepo must not touch the global state dir, stat err = %v", err)
+	}
+}
+
+func TestRepoIdentityIn_HonorsExplicitStateDirAlias(t *testing.T) {
+	globalDir := t.TempDir()
+	aliasDir := t.TempDir()
+	t.Setenv("AIDW_STATE_DIR", globalDir)
+
+	repo := initGitRepo(t)
+	canonical, err := canonicalCommonDir(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	lockPath := target + ".lock"
-	old := time.Now().Add(-2 * LockStaleThreshold)
-	if err := os.Chtimes(lockPath, old, old); err != nil {
+	rf := &ReposFile{Repos: map[string]RepoEntry{
+		"pinned-id": {Aliases: []string{canonical}},
+	}}
+	if err := util.WriteJSON(filepath.Join(aliasDir, "repos.json"), rf); err != nil {
 		t.Fatal(err)
 	}
 
-	secondRelease, err := AcquireLock(target)
+	got, err := repoIdentityIn(aliasDir, repo)
 	if err != nil {
-		t.Fatalf("expected steal of stale lock to succeed: %v", err)
+		t.Fatal(err)
+	}
+	if got != "pinned-id" {
+		t.Fatalf("repoIdentityIn(aliasDir) = %q, want the alias-mapped id from that stateDir", got)
 	}
 
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("lock file should exist after steal: %v", err)
+	// The global state dir has no such alias, so the derived id differs —
+	// proving the explicit stateDir was actually consulted.
+	globalID, err := RepoIdentity(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalID == "pinned-id" {
+		t.Fatal("RepoIdentity should not see the alias registered only in aliasDir")
+	}
+}
+
+func TestRepoIdentityIn_DuplicateClaimIsAnError(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("AIDW_STATE_DIR", stateDir)
+
+	repo := initGitRepo(t)
+	canonical, err := canonicalCommonDir(repo)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// The original (now-stale) holder's release must NOT remove the new
-	// holder's lock file — the ownership-token check, not just staleness.
-	firstRelease()
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("stale original holder's release() must not remove new holder's lock: %v", err)
+	rf := &ReposFile{Repos: map[string]RepoEntry{
+		"id-a": {Aliases: []string{canonical}},
+		"id-b": {LastKnownPaths: []string{canonical}},
+	}}
+	if err := util.WriteJSON(filepath.Join(stateDir, "repos.json"), rf); err != nil {
+		t.Fatal(err)
 	}
 
-	secondRelease()
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Fatalf("expected lock file removed after legitimate release, stat err = %v", err)
+	// Repeat: map iteration order is randomized, so a nondeterministic
+	// implementation would pass this only sometimes.
+	for i := 0; i < 20; i++ {
+		if _, err := repoIdentityIn(stateDir, repo); err == nil {
+			t.Fatal("expected a duplicate-registration error, got nil")
+		}
+	}
+}
+
+func TestStateDir_MakesRelativeOverrideAbsolute(t *testing.T) {
+	t.Setenv("AIDW_STATE_DIR", "relative-state")
+	got := StateDir()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("StateDir() = %q, want an absolute path", got)
+	}
+}
+
+func TestStateDir_AbsoluteWithoutHome(t *testing.T) {
+	t.Setenv("AIDW_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	got := StateDir()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("StateDir() with no HOME = %q, want an absolute path", got)
 	}
 }
