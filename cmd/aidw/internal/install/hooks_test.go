@@ -225,6 +225,11 @@ func TestHookDottedSlugNoCollision(t *testing.T) {
 // non-zero. The hook must still recognize this as "binary resolution
 // failed" and fall through to the shell resolver — not silently treat an
 // empty/garbled answer as "no active work" and skip the snapshot.
+//
+// The stub fails for EVERY subcommand, so this also covers the work-model
+// path's `|| true` safety net end-to-end: `aidw work checkpoint
+// --from-hook` exits 1 here and the script must still exit 0 and complete
+// the legacy snapshot.
 func TestHookFallsBackToShellResolver_WhenBinaryLacksResolveWip(t *testing.T) {
 	home := t.TempDir()
 	binDir := filepath.Join(home, ".claude", "ai-dev-workflow", "bin")
@@ -292,6 +297,51 @@ func TestHookResolvesRepoFromStdinCwd(t *testing.T) {
 	// And nothing may have leaked into the unrelated $PWD.
 	if leaked, _ := os.ReadDir(unrelated); len(leaked) != 0 {
 		t.Errorf("hook wrote into $PWD instead of the JSON cwd: %v", leaked)
+	}
+}
+
+// TestHookFiresWorkCheckpoint_WithoutLegacyWipDir pins the work-model hook
+// integration (G4.1) and, specifically, its placement: the `aidw work
+// checkpoint --from-hook` call sits BEFORE the legacy wip_dir resolution, so
+// it must fire for a repo that has a work record but no `.wip` directory at
+// all (the script exits quietly further down for lack of a wip_dir).
+//
+// The observable proof that the call actually ran is the session binding the
+// checkpoint's step-3 auto-bind writes under the state dir — asserting on
+// the record's provenance.updated_at would be worthless here, since
+// timestamps are second-granularity.
+func TestHookFiresWorkCheckpoint_WithoutLegacyWipDir(t *testing.T) {
+	home := hookTestEnv(t)
+	repo := initHookGitRepo(t, "")
+	bin := filepath.Join(home, ".claude", "ai-dev-workflow", "bin", "aidw")
+	// The hook script only ever gets HOME + PATH, so state lands in the
+	// default $HOME/.local/state/aidw — already isolated by the temp HOME.
+	env := []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	stateDir := filepath.Join(home, ".local", "state", "aidw")
+
+	// `aidw work start` (NOT `aidw start`) — no .wip directory is created.
+	startCmd := exec.Command(bin, "work", "start", ".", "--title", "hooked task")
+	startCmd.Dir = repo
+	startCmd.Env = env
+	if out, err := startCmd.CombinedOutput(); err != nil {
+		t.Fatalf("aidw work start: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".wip")); !os.IsNotExist(err) {
+		t.Fatalf("`work start` must not create .wip (err=%v)", err)
+	}
+
+	stdin := fmt.Sprintf(`{"session_id":"hook-sess-1","cwd":%q,"hook_event_name":"Stop"}`, repo)
+	if _, stderr, code := runHookScript(t, home, repo, "stop", stdin); code != 0 {
+		t.Errorf("expected exit 0, got %d (stderr: %s)", code, stderr)
+	}
+
+	binding := filepath.Join(stateDir, "sessions", "hook-sess-1.json")
+	if _, err := os.Stat(binding); err != nil {
+		t.Fatalf("hook did not fire `work checkpoint --from-hook` (no session binding at %s): %v", binding, err)
+	}
+	// And it still must not have invented a .wip directory.
+	if _, err := os.Stat(filepath.Join(repo, ".wip")); !os.IsNotExist(err) {
+		t.Errorf("hook created a .wip directory for a branch that never ran `aidw start` (err=%v)", err)
 	}
 }
 

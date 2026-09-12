@@ -104,7 +104,10 @@ var workListCmd = &cobra.Command{
 			Die("work list: %v", err)
 		}
 
-		var filtered []*work.Record
+		// Initialized (not a nil `var`) so an empty result serializes as
+		// `[]` rather than `null` — shell callers pipe this into
+		// `jq '.[]'`, which errors on null.
+		filtered := make([]*work.Record, 0, len(all))
 		for _, r := range all {
 			if !hasAttachmentForRepo(r, repoID) {
 				continue
@@ -165,6 +168,10 @@ var workStatusCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "[aidw] no active work for this context — run `aidw work start`")
 				os.Exit(1)
 			}
+			if errors.Is(err, work.ErrIncompleteScan) {
+				fmt.Fprintln(os.Stderr, "[aidw]", err)
+				os.Exit(1)
+			}
 			if errors.Is(err, work.ErrAmbiguousWork) {
 				PrintJSON(candidateSummaries(candidates, repoID))
 				os.Exit(1)
@@ -212,23 +219,21 @@ var workAttachCmd = &cobra.Command{
 			Die("work attach: --work is required")
 		}
 
-		r, err := work.Load(state.StateDir(), workID)
-		if err != nil {
-			Die("work attach: %v", err)
-		}
-
 		_, repoID, branch, normalizedTop, head, err := resolveAttachContext(args[0])
 		if err != nil {
 			Die("work attach: %v", err)
 		}
 
-		r.Attachments = append(r.Attachments, work.Attachment{
-			RepoID:       repoID,
-			WorktreePath: normalizedTop,
-			Branch:       branch,
-			Head:         head,
+		r, err := work.UpdateRecord(state.StateDir(), workID, func(r *work.Record) error {
+			r.Attachments = append(r.Attachments, work.Attachment{
+				RepoID:       repoID,
+				WorktreePath: normalizedTop,
+				Branch:       branch,
+				Head:         head,
+			})
+			return nil
 		})
-		if err := work.Save(state.StateDir(), r); err != nil {
+		if err != nil {
 			Die("work attach: %v", err)
 		}
 		PrintJSON(r)
@@ -298,7 +303,7 @@ func runCheckpointDirect(path, flagWork string) {
 		Die("work checkpoint: %v", err)
 	}
 
-	record, _, err := work.Resolve(work.ResolveOptions{
+	record, candidates, err := work.Resolve(work.ResolveOptions{
 		StateDir:       state.StateDir(),
 		ExplicitWorkID: flagWork,
 		SessionID:      "", // non-hook context
@@ -311,14 +316,29 @@ func runCheckpointDirect(path, flagWork string) {
 			fmt.Fprintln(os.Stderr, "[aidw] no active work for this context — run `aidw work start`")
 			os.Exit(1)
 		}
+		if errors.Is(err, work.ErrIncompleteScan) {
+			fmt.Fprintln(os.Stderr, "[aidw]", err)
+			os.Exit(1)
+		}
 		if errors.Is(err, work.ErrAmbiguousWork) {
+			// Direct (non-hook) invocation is user-facing, so print the
+			// same candidate list `work status` prints — the spec's
+			// silence requirement applies only to --from-hook. Still no
+			// write of any kind.
+			PrintJSON(candidateSummaries(candidates, repoID))
 			os.Exit(1)
 		}
 		Die("work checkpoint: %v", err)
 	}
 	// No auto-bind here — there is no SessionID to bind in a non-hook
-	// invocation.
-	if err := work.Save(state.StateDir(), record); err != nil {
+	// invocation. UpdateRecord re-reads under the lock rather than trusting
+	// the in-memory snapshot Resolve returned, so a concurrent writer's
+	// change (e.g. an attach that landed between Resolve and here) isn't
+	// silently reverted; checkpoint's only effect is the updated_at bump
+	// saveLocked applies.
+	if _, err := work.UpdateRecord(state.StateDir(), record.WorkID, func(*work.Record) error {
+		return nil
+	}); err != nil {
 		Die("work checkpoint: %v", err)
 	}
 }
@@ -378,6 +398,14 @@ func runCheckpointFromHook(args []string, flagWork string) {
 			// No bound/associated active work = no-op, exit 0, no output.
 			os.Exit(0)
 		}
+		if errors.Is(resolveErr, work.ErrIncompleteScan) {
+			// Distinct from plain ambiguity: a record could not be read at
+			// all, so this is worth a stderr line even though the hook
+			// script wraps the whole call in `|| true` — helps a human
+			// debugging a hook run manually.
+			fmt.Fprintln(os.Stderr, "[aidw]", resolveErr)
+			os.Exit(1)
+		}
 		if errors.Is(resolveErr, work.ErrAmbiguousWork) {
 			os.Exit(1)
 		}
@@ -385,7 +413,13 @@ func runCheckpointFromHook(args []string, flagWork string) {
 		os.Exit(1)
 	}
 
-	if err := work.Save(state.StateDir(), record); err != nil {
+	// UpdateRecord re-reads under the lock rather than trusting the
+	// in-memory snapshot Resolve returned, so a concurrent writer's change
+	// isn't silently reverted; checkpoint's only effect is the updated_at
+	// bump saveLocked applies.
+	if _, err := work.UpdateRecord(state.StateDir(), record.WorkID, func(*work.Record) error {
+		return nil
+	}); err != nil {
 		fmt.Fprintln(os.Stderr, "[aidw]", err)
 		os.Exit(1)
 	}

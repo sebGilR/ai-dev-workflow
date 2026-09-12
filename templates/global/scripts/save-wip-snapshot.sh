@@ -4,10 +4,17 @@
 # Usage: save-wip-snapshot.sh [warn|critical|manual|stop|precompact|sessionend]
 #
 # This hook is a NO-OP outside a git repo and a NO-OP when the current
-# branch has no active WIP directory. It never creates a .wip directory,
-# never seeds files, and never writes anything for a branch that hasn't run
-# `aidw start` / /wip-start. It always exits 0 so the host is never blocked
-# by a hook failure.
+# branch has no active WIP directory. It never creates a .wip directory and
+# never seeds or writes any .wip file for a branch that hasn't run
+# `aidw start` / /wip-start.
+#
+# It is NOT, however, write-free in general: it also makes one best-effort
+# `aidw work checkpoint --from-hook` call (see below), which can touch the
+# work-model store under $AIDW_STATE_DIR (work/<id>/work.json,
+# sessions/<id>.json) for a repo that has an associated work record but no
+# .wip directory at all. That call never writes inside the repo.
+#
+# It always exits 0 so the host is never blocked by a hook failure.
 
 set -u
 
