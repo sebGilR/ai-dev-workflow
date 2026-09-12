@@ -1,6 +1,11 @@
 package work
 
-import "sort"
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+)
 
 // ResolveOptions carries the caller's known context into Resolve.
 type ResolveOptions struct {
@@ -17,7 +22,10 @@ type ResolveOptions struct {
 //  1. ExplicitWorkID, if set — always wins, loaded via Load(). No ambiguity
 //     possible.
 //  2. SessionID's recorded binding (LoadSessionBinding), if SessionID is
-//     non-empty and a binding exists.
+//     non-empty and a binding exists AND the record it names still loads. A
+//     binding pointing at a purged or corrupt record is treated as no
+//     binding at all and falls through to step 3, never surfaced as a raw
+//     filesystem error.
 //  3. Unambiguous worktree association — TWO ORDERED PHASES, not a union
 //     of both match kinds (a union manufactures false ambiguity):
 //     Phase A: candidates = active/paused records with an attachment whose
@@ -34,7 +42,11 @@ type ResolveOptions struct {
 //     Phase B: run ONLY if Phase A produced zero candidates — candidates =
 //     active/paused records with an attachment matching RepoID+Branch (the
 //     moved-worktree fallback, when the worktree_path itself no longer
-//     matches because the worktree was relocated).
+//     matches because the worktree was relocated). Phase B additionally
+//     SKIPS any attachment whose recorded worktree_path still exists on
+//     disk and differs from opts.WorktreePath: that attachment belongs to
+//     another live checkout, and a shared branch name is not licence to
+//     steal its record.
 //     Candidate sets (both phases) are DE-DUPLICATED BY WORK_ID before
 //     applying the 0/1/>=2 rule, then sorted by WorkID for deterministic
 //     output.
@@ -43,6 +55,12 @@ type ResolveOptions struct {
 //     -> return it; more than one -> return ErrAmbiguousWork and the full
 //     candidate list as the second return value — never guess, never pick
 //     most-recently-updated.
+//     If the underlying scan could not read one or more record directories,
+//     the 0- and 1-candidate outcomes are suppressed and an
+//     ErrAmbiguousWork+ErrIncompleteScan error is returned instead — a
+//     skipped record may have been the second match, and the confident
+//     branches are exactly the dangerous ones (the hook auto-binds on a
+//     single match, making a wrong resolution permanent).
 //
 // Resolve is a PURE lookup: it never calls SaveSessionBinding or any other
 // write. Callers that want the design's "auto-bind on unambiguous worktree
@@ -59,20 +77,23 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	}
 
 	if opts.SessionID != "" {
-		binding, err := LoadSessionBinding(opts.StateDir, opts.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if binding != nil {
-			r, err := Load(opts.StateDir, binding.WorkID)
-			if err != nil {
-				return nil, nil, err
+		binding, bindErr := LoadSessionBinding(opts.StateDir, opts.SessionID)
+		// A binding we cannot read (corrupt file) or that points at a record
+		// we cannot load (purged, corrupt, future schema) is treated exactly
+		// like "no binding exists": fall through to step 3 and re-derive the
+		// answer from worktree association. Propagating the raw load error
+		// instead would make every subsequent hook fire die on
+		// `open .../work.json: no such file or directory` with no way out,
+		// and the design's step-3 fallback exists precisely to answer this
+		// question from first principles.
+		if bindErr == nil && binding != nil {
+			if r, loadErr := Load(opts.StateDir, binding.WorkID); loadErr == nil {
+				return r, nil, nil
 			}
-			return r, nil, nil
 		}
 	}
 
-	all, err := ListRecords(opts.StateDir)
+	all, skipped, err := ScanRecords(opts.StateDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -86,7 +107,21 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	phaseA := dedupeSorted(matchByWorktree(live, opts.RepoID, opts.WorktreePath))
 	candidates := phaseA
 	if len(candidates) == 0 {
-		candidates = dedupeSorted(matchByRepoBranch(live, opts.RepoID, opts.Branch))
+		candidates = dedupeSorted(matchByRepoBranch(live, opts.RepoID, opts.Branch, opts.WorktreePath))
+	}
+
+	// An incomplete scan poisons the 0-and-1 candidate answers, which are
+	// exactly the two confident ones: "no active work" (a silent exit-0
+	// no-op in the hook) and "exactly this record" (which the hook then
+	// makes STICKY by auto-binding the session to it). A record that failed
+	// to load may have been the missing second match, so neither confident
+	// answer is defensible. >=2 candidates is already the uncertain path, so
+	// it needs no extra handling.
+	if len(skipped) > 0 && len(candidates) < 2 {
+		return nil, candidates, fmt.Errorf(
+			"%w: cannot resolve work safely: %d of the scanned work records could not be read (%s); repair or remove them, or pass --work explicitly: %w",
+			ErrAmbiguousWork, len(skipped), strings.Join(skipped, ", "), ErrIncompleteScan,
+		)
 	}
 
 	switch len(candidates) {
@@ -112,22 +147,57 @@ func matchByWorktree(records []*Record, repoID, worktreePath string) []*Record {
 	return out
 }
 
-func matchByRepoBranch(records []*Record, repoID, branch string) []*Record {
+// matchByRepoBranch is Phase B: the moved-worktree fallback. It is NOT
+// path-blind. An attachment whose worktree_path still exists on disk and is
+// not the querying worktree describes a DIFFERENT, still-live checkout, and
+// matching it would let one live worktree steal another live worktree's work
+// record purely because they share a branch name — the same false-match
+// class the erratum fixed in Phase A, in the phase nobody scrutinized.
+//
+// Phase B therefore only falls back for attachments whose worktree is
+// actually gone (or is the querying worktree itself, or was never recorded).
+// "Gone" means os.IsNotExist specifically: any other stat failure
+// (permissions, EIO) is treated as still-live, so a transient filesystem
+// error can never widen matching.
+func matchByRepoBranch(records []*Record, repoID, branch, queryWorktreePath string) []*Record {
 	var out []*Record
 	for _, r := range records {
 		for _, a := range r.Attachments {
-			if a.RepoID == repoID && a.Branch == branch {
-				out = append(out, r)
-				break
+			if a.RepoID != repoID || a.Branch != branch {
+				continue
 			}
+			if a.WorktreePath != "" && a.WorktreePath != queryWorktreePath && pathExists(a.WorktreePath) {
+				continue
+			}
+			out = append(out, r)
+			break
 		}
 	}
 	return out
 }
 
-// dedupeSorted de-duplicates records by WorkID (a single record with
-// multiple matching attachments must count once) and sorts the result by
-// WorkID for deterministic output.
+// pathExists reports whether path resolves to something on disk. Only a
+// definitive "not there" answers false; every other error answers true, so
+// callers fail closed.
+func pathExists(path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		return !os.IsNotExist(err)
+	}
+	return true
+}
+
+// dedupeSorted sorts records by WorkID for deterministic candidate output
+// and drops WorkID duplicates.
+//
+// Honest note on the dedup half: on the current matching path it can never
+// fire. Each phase's inner loop `break`s after the first matching
+// attachment, so a record is appended at most once per phase, and the two
+// phases are mutually exclusive (Phase B runs only when Phase A produced
+// nothing), so no work_id can arrive from both. The dedup is retained as
+// defence for a future restructuring that drops the `break` or unions the
+// phases, and is covered directly by TestDedupeSorted so it is exercised
+// rather than merely asserted. The SORT, by contrast, is load-bearing on
+// every ambiguous resolution: callers print the candidate list.
 func dedupeSorted(records []*Record) []*Record {
 	seen := map[string]bool{}
 	var out []*Record

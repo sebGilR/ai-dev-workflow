@@ -25,6 +25,20 @@ var ErrNoActiveWork = errors.New("no active work for this context")
 // automatically.
 var ErrAmbiguousWork = errors.New("multiple work records match; specify --work")
 
+// ErrIncompleteScan is returned (always wrapped TOGETHER with
+// ErrAmbiguousWork) by Resolve when the record scan backing step 3 could not
+// read one or more record directories. An incomplete scan cannot support a
+// confident answer: the record it failed to read may well have been a second
+// match, so what looks like "exactly one candidate" may actually be
+// ambiguity in disguise.
+//
+// It is deliberately wrapped alongside ErrAmbiguousWork so every existing
+// caller's `errors.Is(err, ErrAmbiguousWork)` branch does the right thing —
+// list candidates, exit non-zero, and crucially NEVER auto-bind the session
+// — while callers that want to explain the real cause can test for
+// ErrIncompleteScan.
+var ErrIncompleteScan = errors.New("work record scan was incomplete; some records could not be read")
+
 // Mode distinguishes a delivery-style work item (branch/PR-oriented) from a
 // freeform one (not built until Cluster J).
 type Mode string
