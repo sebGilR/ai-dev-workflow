@@ -171,6 +171,31 @@ yet that session-less ambiguity (two work items truly indistinguishable by
 worktree alone, with no session context) is common enough to justify the
 added complexity. Revisit if real usage says otherwise.
 
+**Erratum (2026-09-12, surfaced during Cluster G's implementation-spec
+skeptic review) — two clarifications to step 3, needed to keep this section
+consistent with §5's "lookup/list/status never create state" invariant and
+with the survives-worktree-removal guarantee in §1/AC-G:**
+
+1. **"Bind this session to it and proceed" in step 3 applies only to
+   commands that already sit on the mutate side** — in Cluster G, that's
+   `work checkpoint --from-hook` (which has a real `session_id` from hook
+   JSON) and the explicit `work bind-session`. **`work status` and `work
+   list` run the identical resolver but never call the session-binding
+   write, regardless of how many candidates matched** — as read-only lookup
+   commands they're bound by §5's invariant, and step 3's "bind and proceed"
+   language was written from the mutate-path's perspective without saying so
+   explicitly. This was ambiguous enough on first implementation to warrant
+   spelling out.
+2. **Worktree association in step 3 must match on `repo_id` in addition to
+   `worktree_path`, never path alone.** Because a work record can outlive
+   its worktree indefinitely (that's the whole point — see §1), an ordinary
+   `git worktree remove <path> && git worktree add <path> -b other-branch`
+   reuses that filesystem path for an unrelated repo/branch. Matching on
+   path alone would silently resolve onto the old, unrelated record with no
+   ambiguity ever surfaced (exactly one path match, so the "list candidates"
+   branch never triggers). Both conditions (`worktree_path` AND `repo_id`)
+   must hold for a candidate to count as a match.
+
 ## 5. Resolver contract — three distinct concepts, never conflated
 
 Phase-1 review (Cluster B/C self-review) repeatedly surfaced bugs from
