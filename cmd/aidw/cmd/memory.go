@@ -20,14 +20,30 @@ var memoryCmd = &cobra.Command{
 	Short: "Manage persistent task memory and facts",
 }
 
-// factsScope is the constant scope value every facts row uses, migrated and
-// newly written alike (§2c decision 1 of the Cluster H spec). The original
-// design derived scope from the branch ("branch:" + slug), but that cannot
-// satisfy "the same fact looked up from a second worktree of the same
-// clone returns the same value" — git forbids checking out the same branch
-// in two worktrees, so a branch-derived scope is worktree-variant by
-// construction. All facts operations use this one constant instead.
-const factsScope = "repo"
+// factsScope is memory.FactsScope under this package's existing local name
+// (every call site below already reads `factsScope`) — declared as an alias
+// rather than a second constant so there is exactly one string literal in
+// the codebase (memory.FactsScope's doc comment). The original design
+// derived scope from the branch ("branch:" + slug), but that cannot satisfy
+// "the same fact looked up from a second worktree of the same clone returns
+// the same value" — git forbids checking out the same branch in two
+// worktrees, so a branch-derived scope is worktree-variant by construction.
+const factsScope = memory.FactsScope
+
+// warnIfUnmigrated prints the same migration hint memoryStatusCmd already
+// reports to stdout, but to STDERR instead, from the two subcommands an
+// existing user is actually likely to run without ever invoking `memory
+// status` first (`memory store`/`memory list`). Without this, H2's
+// user-visible benefit (a fact reads the same from every worktree of a
+// clone) never reaches an existing ~/.claude/memory.db unless the user
+// happens to run `status` unprompted — every pre-existing DB would stay
+// branch-keyed indefinitely. Stderr, not stdout, so the JSON contract on
+// stdout is unchanged for scripts consuming these commands' output.
+func warnIfUnmigrated(db *memory.DB) {
+	if !db.Migrated() {
+		fmt.Fprintln(os.Stderr, "[aidw] this memory.db is on the legacy schema — run 'aidw memory migrate' to move to the new schema")
+	}
+}
 
 // repoAndBranch resolves the values the memory commands actually need: the
 // repository root and slugified current branch (the legacy repo_path/branch
@@ -89,6 +105,7 @@ var memoryStoreCmd = &cobra.Command{
 			Die("memory db: %v", err)
 		}
 		defer db.Close()
+		warnIfUnmigrated(db)
 
 		var emb []float32
 		if semantic {
@@ -142,6 +159,7 @@ var memoryListCmd = &cobra.Command{
 			Die("memory db: %v", err)
 		}
 		defer db.Close()
+		warnIfUnmigrated(db)
 
 		facts, err := db.ListFacts(repoName, branch, repoID, factsScope)
 		if err != nil {

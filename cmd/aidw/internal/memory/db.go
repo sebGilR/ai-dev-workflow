@@ -19,6 +19,16 @@ const (
 	// VectorDimensions matches the default Google text-embedding-004 model.
 	VectorDimensions = 768
 
+	// FactsScope is the constant scope value every facts row uses, migrated
+	// and newly-written alike (§2c decision 1) — this package owns the
+	// schema, so it owns this value; cmd/memory.go references it rather than
+	// declaring its own copy, and rebuildToV2's INSERT binds it as a
+	// parameter rather than inlining the literal, so there is exactly one
+	// occurrence of the string in the codebase. Changing this value without
+	// also changing every already-migrated row's stored scope would make
+	// every migrated fact silently unreadable — see rebuildToV2's use.
+	FactsScope = "repo"
+
 	// memorySchemaVersion is the PRAGMA user_version value of the D1-keyed
 	// (repo_id/scope) schema. Version 1 is implicitly "the original
 	// repo_path/branch-keyed schema, never explicitly numbered until now" —
@@ -504,24 +514,28 @@ func (db *DB) rebuildToV2(ctx context.Context) (migrationCounts, error) {
 		// or writes vec_facts/vec_items at all; id preservation here is
 		// what makes that omission safe.
 		//
-		// Scope collapses to the constant "repo" for every row (§2c
+		// Scope collapses to the constant FactsScope for every row (§2c
 		// decision 1) — the legacy branch value is read above but not
-		// encoded into scope. Two legacy rows for the same (repo_id,
-		// "repo", key) therefore collide on the new UNIQUE constraint;
-		// ON CONFLICT DO UPDATE keeps whichever row has the later
-		// created_at (ties broken by higher legacy id) via the WHERE
-		// guard, and facts_collapsed (below) is derived from the resulting
-		// row-count delta.
+		// encoded into scope. Bound as a parameter, not inlined as a bare
+		// 'repo' literal, so this is the single source of that value in the
+		// codebase (see FactsScope's doc comment) — an inlined literal here
+		// could silently drift from cmd/memory.go's copy and make every
+		// migrated fact permanently unreadable with no error anywhere. Two
+		// legacy rows for the same (repo_id, "repo", key) therefore collide
+		// on the new UNIQUE constraint; ON CONFLICT DO UPDATE keeps
+		// whichever row has the later created_at (ties broken by higher
+		// legacy id) via the WHERE guard, and facts_collapsed (below) is
+		// derived from the resulting row-count delta.
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO facts_new (id, repo_id, scope, key, value, created_at)
-			VALUES (?, ?, 'repo', ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(repo_id, scope, key) DO UPDATE SET
 				id = excluded.id,
 				value = excluded.value,
 				created_at = excluded.created_at
 			WHERE excluded.created_at > facts_new.created_at
 			   OR (excluded.created_at = facts_new.created_at AND excluded.id > facts_new.id);
-		`, lf.id, repoID, lf.key, lf.value, lf.createdAt); err != nil {
+		`, lf.id, repoID, FactsScope, lf.key, lf.value, lf.createdAt); err != nil {
 			return fail(fmt.Errorf("insert facts_new row (legacy id %d): %w", lf.id, err))
 		}
 	}

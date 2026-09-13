@@ -27,6 +27,15 @@ var migrateStateCmd = &cobra.Command{
 		cleanupSources, _ := c.Flags().GetBool("cleanup-sources")
 		dryRun, _ := c.Flags().GetBool("dry-run")
 
+		if dryRun && !cleanupSources {
+			// --dry-run has no meaning outside --cleanup-sources — the
+			// plain migration path has no destructive effect to preview
+			// (it never deletes anything) and running it for real anyway
+			// would be exactly the silent-real-migration-behind-a-preview-
+			// flag surprise this refusal exists to prevent.
+			Die("migrate-state: --dry-run only applies together with --cleanup-sources (the plain migration path has nothing to preview — it never deletes anything)")
+		}
+
 		roots, err := resolveMigrateRoots(args[0], extraPaths, allRegistered)
 		if err != nil {
 			Die("migrate-state: %v", err)
