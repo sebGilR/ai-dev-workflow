@@ -1,6 +1,6 @@
 ## BEGIN AI-DEV-WORKFLOW MANAGED BLOCK
 
-Use the installed `/wip-*` skills as the default workflow for code tasks when appropriate.
+Use the installed `/wip-*` skills as the default workflow for code tasks. The only exception is a repo that ships its own workflow (see below) — task size is not an exception: small, low-risk tasks use `/wip-auto`, not no tooling.
 
 If a repository ships its own multi-step workflow (for example, a `.bmad/` setup or another project-managed orchestration), that repo's workflow owns the multi-step flow — planning, implementation, review, and PR — and `/wip-*` is reserved for ad-hoc, non-managed fixes only. On plain repositories with no such workflow installed, `/wip-*` remains the default for code tasks. When unsure, check whether the repo declares its own workflow before reaching for `/wip-*`.
 
@@ -17,15 +17,16 @@ Workflow conventions:
   - `execution.md`
   - `pr.md`
   - `status.json`
-- Prefer the `/wip-start`, `/wip-plan`, `/wip-research`, `/wip-implement`, `/wip-fanout`, `/wip-review`, `/wip-fix-review`, `/wip-resume`, and `/wip-pr` skills.
+- Prefer the `/wip-start`, `/wip-auto`, `/wip-plan`, `/wip-research`, `/wip-implement`, `/wip-fanout`, `/wip-review`, `/wip-fix-review`, `/wip-resume`, and `/wip-pr` skills.
 - Use `/wip-fanout` (coordinator-only) to dispatch 2-3 independent, non-file-overlapping work items as parallel background agents instead of running them serially.
+- Use `/wip-auto` for small, low-risk tasks (docs, boilerplate, isolated one-line fixes) — it runs Start → Plan → Implement in a single turn, so trivial tasks still get `.wip` tooling instead of being skipped.
 - Keep `.wip` files updated as work progresses.
 - Use the specialized `wip-planner`, `wip-researcher`, `wip-reviewer`, and `wip-tester` subagents when the task fits.
 - Treat Claude as the final decision maker and final editor.
 
 Default expectations:
 
-- Start a task with `/wip-start` when the repo or branch has not been initialized yet.
+- Start a task with `/wip-start` when the repo or branch has not been initialized yet. For a task small enough that a full plan/review/PR cycle is overkill, use `/wip-auto` instead of bypassing `.wip` tooling altogether.
 - Use `/wip-resume` to continue after a context reset or a new session.
 - Use `/wip-review` before `/wip-pr` for any non-trivial change.
 - Keep updates concise and useful; do not spam `.wip` files with noise.
