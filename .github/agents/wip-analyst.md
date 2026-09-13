@@ -49,3 +49,8 @@ DO NOT include raw file contents. Include distilled insights and references (fil
 4. **Deep Dive**: Use Serena/Read to inspect the candidate code blocks found during search.
 5. **Distill Context**: Produce `task-context.md`.
 
+## Delegation Policy
+
+**You are a leaf agent.** Return your findings; the coordinator chains the next pass. Do not
+attempt to dispatch further subagents — the absence of `Agent` in this file's `tools:` list is a
+deliberate context-budget choice, not a gap to route around.

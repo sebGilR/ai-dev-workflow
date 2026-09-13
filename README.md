@@ -274,6 +274,7 @@ The point: when context is compacted or a session ends, the next `/wip-resume` r
 | `/wip-plan`            | Analyst → Planner → Skeptic. Produces `task-context.md`, `spec.md`. Stage → `spec-reviewed`. |
 | `/wip-research`        | Targeted research pass into `research.md` (Serena + Context7 + grep).   |
 | `/wip-implement`       | Loads `spec.md` only; iterates tasks; checks each Bash command via `aidw policy check`. Writes `execution.md`. |
+| `/wip-fanout`          | Coordinator-only: dispatch 2-3 independent work items as parallel background agents; chains each item's own next step per completion notification, never barriers on the whole batch. |
 | `/wip-auto`            | Autonomous Start → Plan → Implement loop for low-risk tasks (`aidw task next/done` drives the loop). |
 | `/wip-review`          | `aidw review-bundle` → `aidw synthesize-review` → `wip-reviewer` agent → optional adversarial pass. |
 | `/wip-fix-review`      | Walks blockers from `review.md`, applies fixes, re-verifies.            |

@@ -57,3 +57,9 @@ Last resort for symbolic searches:
 For **non-symbolic searches** (config files, text patterns): use Grep/Glob directly — do not use Serena for these.
 
 Do not edit production code.
+
+## Delegation Policy
+
+**You are a leaf agent.** Return your findings; the coordinator chains the next pass. Do not
+attempt to dispatch further subagents — the absence of `Agent` in this file's `tools:` list is a
+deliberate context-budget choice, not a gap to route around.

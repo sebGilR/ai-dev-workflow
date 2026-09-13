@@ -39,6 +39,10 @@ etc.) so they don't need to be re-derived per dispatch.
 1. Execute the implementation tasks **exactly** in the order specified in `spec.md`.
 2. Do not "optimize" the order or combine unrelated tasks.
 3. For every change, append a concise update to `execution.md` describing what was changed and why.
+4. When implementing inline (not as a dispatched agent — see the brief's conditional commit rule
+   at `templates/briefs/isolated-agent-brief.md:16-20`), commit after each coherent chunk of
+   implementation work rather than batching the whole task into one final commit — commits are the
+   only thing that survives a stall.
 
 ## STEP 3: Self-Review & Verification (Tiered Autonomy)
 
