@@ -60,22 +60,53 @@ var workStartCmd = &cobra.Command{
 	Run: func(c *cobra.Command, args []string) {
 		title, _ := c.Flags().GetString("title")
 		branchOverride, _ := c.Flags().GetString("branch")
+		modeFlag, _ := c.Flags().GetString("mode")
+		noAttach, _ := c.Flags().GetBool("no-attach")
 
-		_, repoID, branch, normalizedTop, head, err := resolveAttachContext(args[0])
-		if err != nil {
-			Die("work start: %v", err)
+		if modeFlag != "delivery" && modeFlag != "freeform" {
+			Die("work start: --mode must be \"delivery\" or \"freeform\", got %q", modeFlag)
 		}
-		if branchOverride != "" {
-			branch = branchOverride
+		if noAttach && branchOverride != "" {
+			Die("work start: --branch is not valid with --no-attach (freeform record has no attachment to override)")
+		}
+		if noAttach && modeFlag != "freeform" {
+			Die("work start: --no-attach is only valid with --mode freeform")
 		}
 
-		r := work.New(title, work.ModeDelivery)
-		r.Attachments = append(r.Attachments, work.Attachment{
-			RepoID:       repoID,
-			WorktreePath: normalizedTop,
-			Branch:       branch,
-			Head:         head,
-		})
+		var r *work.Record
+		if noAttach {
+			// Freeform, non-git scratch directory: skip resolveAttachContext
+			// entirely — no state.RegisterRepo, no git.* call. r.Attachments
+			// stays the empty slice work.New already initializes.
+			r = work.New(title, work.ModeFreeform)
+		} else {
+			_, repoID, branch, normalizedTop, head, err := resolveAttachContext(args[0])
+			if err != nil {
+				Die("work start: %v", err)
+			}
+			if branchOverride != "" {
+				branch = branchOverride
+			}
+
+			r = work.New(title, work.Mode(modeFlag))
+			r.Attachments = append(r.Attachments, work.Attachment{
+				RepoID:       repoID,
+				WorktreePath: normalizedTop,
+				Branch:       branch,
+				Head:         head,
+			})
+		}
+
+		// Ordering: write context.md BEFORE work.Save (see Task 3's
+		// rationale) — a mid-failure here leaves an orphan context.md with
+		// no work.json, which ScanRecords treats as an absent record, not
+		// a live one with a missing file.
+		if r.Mode == work.ModeFreeform {
+			if err := work.WriteFreeformContext(state.StateDir(), r.WorkID, r.Title); err != nil {
+				Die("work start: write context.md: %v", err)
+			}
+		}
+
 		if err := work.Save(state.StateDir(), r); err != nil {
 			Die("work start: %v", err)
 		}
@@ -89,15 +120,19 @@ var workListCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		includeArchived, _ := c.Flags().GetBool("include-archived")
+		global, _ := c.Flags().GetBool("global")
 
-		top, err := state.ExecutionRoot(args[0])
-		if err != nil {
-			Die("work list: not a git repo: %v", err)
-		}
-		// Pure lookup — never calls RegisterRepo.
-		repoID, err := state.RepoIdentity(top)
-		if err != nil {
-			Die("work list: %v", err)
+		var repoID string
+		if !global {
+			top, err := state.ExecutionRoot(args[0])
+			if err != nil {
+				Die("work list: not a git repo: %v", err)
+			}
+			// Pure lookup — never calls RegisterRepo.
+			repoID, err = state.RepoIdentity(top)
+			if err != nil {
+				Die("work list: %v", err)
+			}
 		}
 
 		all, err := work.ListRecords(state.StateDir())
@@ -110,7 +145,7 @@ var workListCmd = &cobra.Command{
 		// `jq '.[]'`, which errors on null.
 		filtered := make([]*work.Record, 0, len(all))
 		for _, r := range all {
-			if !hasAttachmentForRepo(r, repoID) {
+			if !global && !hasAttachmentForRepo(r, repoID) {
 				continue
 			}
 			if !includeArchived && r.Lifecycle == work.LifecycleArchived {
@@ -138,22 +173,39 @@ var workStatusCmd = &cobra.Command{
 	Run: func(c *cobra.Command, args []string) {
 		flagWork, _ := c.Flags().GetString("work")
 
+		// D2: each of these four steps additively falls through (rather
+		// than Die-ing) when flagWork != "" — a freeform/no-attach record
+		// is only resolvable via ExplicitWorkID or session binding, and
+		// Resolve's ExplicitWorkID short-circuit never reads
+		// repoID/branch/normalizedTop, so leaving them "" here is safe.
+		// When flagWork == "", every Die below is byte-for-byte unchanged
+		// from today. This is deliberately four separate additive
+		// conditionals, not a shared helper (see D2 in the Cluster J spec).
+		var repoID, branch, normalizedTop string
 		top, err := state.ExecutionRoot(args[0])
 		if err != nil {
-			Die("work status: not a git repo: %v", err)
-		}
-		branch, err := git.CurrentBranch(top)
-		if err != nil {
-			Die("work status: %v", err)
-		}
-		// Pure lookup — never calls RegisterRepo.
-		repoID, err := state.RepoIdentity(top)
-		if err != nil {
-			Die("work status: %v", err)
-		}
-		normalizedTop, err := filepath.EvalSymlinks(top)
-		if err != nil {
-			Die("work status: %v", err)
+			if flagWork == "" {
+				Die("work status: not a git repo: %v", err)
+			}
+		} else {
+			branch, err = git.CurrentBranch(top)
+			if err != nil {
+				if flagWork == "" {
+					Die("work status: %v", err)
+				}
+			} else {
+				repoID, err = state.RepoIdentity(top)
+				if err != nil {
+					if flagWork == "" {
+						Die("work status: %v", err)
+					}
+				} else {
+					normalizedTop, err = filepath.EvalSymlinks(top)
+					if err != nil && flagWork == "" {
+						Die("work status: %v", err)
+					}
+				}
+			}
 		}
 
 		record, candidates, err := work.Resolve(work.ResolveOptions{
@@ -316,6 +368,64 @@ type purgeResult struct {
 	// reap: the record is already gone by the time this runs.
 	MappingEntriesForgotten []string `json:"mapping_entries_forgotten"`
 	MappingForgetError      string   `json:"mapping_forget_error,omitempty"`
+}
+
+// workPromoteCmd implements D3: `work promote <id> --mode delivery`
+// upgrades a freeform record to delivery mode, seeding the delivery
+// artifact set into work/<id>/attachments/ (files-first, then mode-flip;
+// see SeedDeliveryArtifacts and this Run func's mutate closure).
+var workPromoteCmd = &cobra.Command{
+	Use:   "promote <id>",
+	Short: "Promote a freeform work record to delivery mode",
+	Args:  cobra.ExactArgs(1),
+	Run: func(c *cobra.Command, args []string) {
+		modeFlag, _ := c.Flags().GetString("mode")
+		if modeFlag != "delivery" {
+			Die("work promote: --mode must be \"delivery\"")
+		}
+		workID := args[0]
+
+		// Fast-fail diagnostic pre-check (unlocked, may be stale under a
+		// race — the authoritative check is inside UpdateRecord below).
+		existing, err := work.Load(state.StateDir(), workID)
+		if err != nil {
+			Die("work promote: %v", err)
+		}
+		if existing.Mode != work.ModeFreeform {
+			Die("work promote: %v", work.ErrAlreadyDelivery)
+		}
+		if existing.Lifecycle != work.LifecycleActive && existing.Lifecycle != work.LifecyclePaused {
+			Die("work promote: %v", work.ErrNotPromotable)
+		}
+
+		r, err := work.UpdateRecord(state.StateDir(), workID, func(r *work.Record) error {
+			// Authoritative recheck, under state.AcquireLock: re-Load'd
+			// fresh by UpdateRecord itself, so this sees any concurrent
+			// `work archive <id>` that landed after the diagnostic
+			// pre-check above.
+			if r.Mode != work.ModeFreeform {
+				return work.ErrAlreadyDelivery
+			}
+			if r.Lifecycle != work.LifecycleActive && r.Lifecycle != work.LifecyclePaused {
+				return work.ErrNotPromotable
+			}
+			// Seed files INSIDE the lock, after the recheck passes and
+			// before the mode flip below — this is what closes the
+			// lock-free-race finding: if seeding fails partway, mutate
+			// returns an error, UpdateRecord does not call saveLocked, and
+			// Mode is never flipped (safe to retry `work promote`; seeding
+			// is idempotent per the seed-if-missing rule above).
+			if err := work.SeedDeliveryArtifacts(state.StateDir(), workID); err != nil {
+				return err
+			}
+			r.Mode = work.ModeDelivery
+			return nil
+		})
+		if err != nil {
+			Die("work promote: %v", err)
+		}
+		PrintJSON(r)
+	},
 }
 
 var workPurgeCmd = &cobra.Command{
@@ -602,14 +712,20 @@ func init() {
 	workCmd.AddCommand(workArchiveCmd)
 	workCmd.AddCommand(workActivateCmd)
 	workCmd.AddCommand(workPurgeCmd)
+	workCmd.AddCommand(workPromoteCmd)
 
 	workStartCmd.Flags().String("title", "", "Title for the new work record")
 	_ = workStartCmd.MarkFlagRequired("title")
 	workStartCmd.Flags().String("branch", "", "Branch name override")
+	workStartCmd.Flags().String("mode", "delivery", "Work mode: delivery or freeform")
+	workStartCmd.Flags().Bool("no-attach", false, "Skip git-repo attachment (freeform, non-git scratch directories only)")
 
 	workListCmd.Flags().Bool("include-archived", false, "Include archived work records")
+	workListCmd.Flags().Bool("global", false, "List work records across all repos, skipping git-repo resolution")
 
 	workStatusCmd.Flags().String("work", "", "Explicit work id (skips resolution)")
+
+	workPromoteCmd.Flags().String("mode", "delivery", "Target mode (only \"delivery\" is supported)")
 
 	workAttachCmd.Flags().String("work", "", "Work id to attach (required)")
 	_ = workAttachCmd.MarkFlagRequired("work")
