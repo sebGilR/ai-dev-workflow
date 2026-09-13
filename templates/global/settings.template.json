@@ -136,6 +136,12 @@
       "Bash(shopify theme list*)",
       "Bash(shopify theme dev*)",
 
+      "Bash(pnpm install --frozen-lockfile*)",
+      "Bash(curl http://localhost*)",
+      "Bash(curl * http://localhost*)",
+      "Bash(curl http://127.0.0.1*)",
+      "Bash(curl * http://127.0.0.1*)",
+
       "Read(.wip/**)",
       "Edit(.wip/**)",
       "Bash(~/.claude/ai-dev-workflow/bin/aidw bootstrap*)",
@@ -247,14 +253,10 @@
       "Bash(/usr/local/bin/aidw clear-wip --help)"
     ],
     "ask": [
-      "Bash(git commit *)",
       "Bash(git push*)",
       "Bash(git checkout *)",
       "Bash(git switch *)",
       "Bash(git reset *)",
-      "Bash(git rebase *)",
-      "Bash(npm install *)",
-      "Bash(pnpm install *)",
       "Bash(yarn add *)",
       "Bash(bun install*)",
       "Bash(bundle add *)",
@@ -317,9 +319,7 @@
       "Read(**/.env.*)",
       "Read(./secrets/**)",
       "Read(~/.aws/credentials)",
-      "Read(~/.ssh/id_*)",
-      "Bash(curl *)",
-      "Bash(wget *)"
+      "Read(~/.ssh/id_*)"
     ]
   }
 }

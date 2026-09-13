@@ -54,4 +54,16 @@ happened unless the host actually performed it.
    ~/.claude/ai-dev-workflow/bin/aidw set-stage . spec-reviewed
    ```
 
-**HALT and Ask User**: "Please review the distilled context (`task-context.md`), the implementation specification (`spec.md`), and the skeptic's feedback. If you approve, we can proceed to implementation (`/wip-implement`), or let me know what needs to change."
+**Approval gate — size/risk heuristic**: Decide whether to halt based on the spec just produced.
+
+- **Skip the halt and proceed automatically to `/wip-implement`** when the plan is small/low-risk:
+  the spec touches a single component or file cluster, the skeptic raised no High-severity
+  concerns, and there is no irreversible or outward-facing action involved (no schema/data
+  migration, no public API change, no infra/deploy step, no credential or destructive-operation
+  handling). Note in your summary that you auto-proceeded and why (small/low-risk plan, no
+  High-severity skeptic findings).
+- **HALT and Ask User** otherwise — i.e. when the spec is large (spans many files/modules or
+  multiple subsystems), the skeptic flagged a High-severity concern, or the plan involves an
+  irreversible/outward-facing action: "Please review the distilled context (`task-context.md`),
+  the implementation specification (`spec.md`), and the skeptic's feedback. If you approve, we
+  can proceed to implementation (`/wip-implement`), or let me know what needs to change."

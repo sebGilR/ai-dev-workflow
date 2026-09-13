@@ -28,10 +28,13 @@ Use the best available method in this priority order. Stop at the first that wor
 Run `aidw memory search . "your question"` first to find relevant files and patterns using natural language. Use `--global` to recall patterns from other projects.
 
 ### 2. Serena MCP (Claude Code and MCP-capable hosts)
-If `mcp__serena__*` tools are available, use them:
+If `mcp__serena__*` tools respond, use them:
 - `mcp__serena__get_symbols_overview` — understand a file's structure without reading it fully
 - `mcp__serena__find_symbol` — locate class/function definitions by name
 - `mcp__serena__find_referencing_symbols` — trace what depends on a symbol
+
+On any error, or if the tools are unavailable, fall back to step 3 (Serena bridge) or
+step 4 (grep + ranged Read) immediately — don't retry Serena MCP.
 
 ### 3. Serena bridge (`serena-query`)
 If MCP is not available but Bash is, use the bridge script:

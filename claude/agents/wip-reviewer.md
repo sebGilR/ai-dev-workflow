@@ -51,10 +51,13 @@ Your role is to provide the broader, human-level review that complements any pri
 Use the best available method in this priority order. Stop at the first that works.
 
 ### 1. Serena MCP (Claude Code and MCP-capable hosts)
-If `mcp__serena__*` tools are available, use them first:
+If `mcp__serena__*` tools respond, use them:
 - `mcp__serena__find_symbol` — look up the full definition of any changed symbol
 - `mcp__serena__find_referencing_symbols` — understand what callers are affected by a change
 - `mcp__serena__get_symbols_overview` — quickly orient in a changed file without reading it fully
+
+On any error, or if the tools are unavailable, fall back to step 3 (grep + ranged Read)
+immediately — don't retry Serena.
 
 **Proactive impact check**: For each changed public function or method:
 1. `mcp__serena__find_symbol` with the function name → note the `relative_path`

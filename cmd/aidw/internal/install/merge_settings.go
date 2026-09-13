@@ -46,6 +46,8 @@ func MergeSettings(settingsPath string, templateData []byte) error {
 
 	merged := mergeDict(existing, tmpl)
 	retractStaleAllowRules(merged)
+	retractStaleRules(merged, "deny")
+	retractStaleRules(merged, "ask")
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		return err
 	}
@@ -98,6 +100,75 @@ func retractStaleAllowRules(merged map[string]any) {
 		kept = append(kept, item)
 	}
 	perms["allow"] = kept
+}
+
+// retractedDenyPatterns are `permissions.deny` entries that earlier versions
+// of settings.template.json shipped and that must NOT survive an upgrade.
+//
+// `Bash(curl *)` and `Bash(wget *)` denied every curl/wget invocation,
+// including localhost health checks — deny beats allow, so no allow rule
+// could ever unblock them while these remained. They are replaced by
+// scoped localhost allow rules in the template.
+var retractedDenyPatterns = []string{
+	"Bash(curl *)",
+	"Bash(wget *)",
+}
+
+// retractedAskPatterns are `permissions.ask` entries that earlier versions of
+// settings.template.json shipped and that must NOT survive an upgrade.
+//
+// These `ask` rules fired on routine background-agent operations (commits,
+// rebases, dependency installs) and stalled unattended sessions waiting on a
+// prompt nobody could answer.
+var retractedAskPatterns = []string{
+	"Bash(git commit *)",
+	"Bash(git rebase *)",
+	"Bash(npm install *)",
+	"Bash(pnpm install *)",
+}
+
+// retractStaleRules removes the retracted patterns for listName ("deny" or
+// "ask") from merged["permissions"][listName] in place. It runs after the
+// merge so the written file never contains a retracted pattern regardless of
+// whether it came from the user's existing settings or from the template —
+// mergeLists is union-only and would otherwise re-add these patterns forever
+// for every already-installed user, silently undoing the template fix.
+//
+// Every shape mismatch (missing keys, wrong types, non-string entries) is a
+// no-op: this must never corrupt a settings file it does not understand.
+func retractStaleRules(merged map[string]any, listName string) {
+	var patterns []string
+	switch listName {
+	case "deny":
+		patterns = retractedDenyPatterns
+	case "ask":
+		patterns = retractedAskPatterns
+	default:
+		return
+	}
+
+	perms, ok := merged["permissions"].(map[string]any)
+	if !ok {
+		return
+	}
+	list, ok := perms[listName].([]any)
+	if !ok {
+		return
+	}
+	retract := make(map[string]bool, len(patterns))
+	for _, p := range patterns {
+		retract[p] = true
+	}
+	// Non-nil empty start: a nil slice marshals to `null`, not `[]`, which
+	// would be an invalid permissions block if every entry got retracted.
+	kept := []any{}
+	for _, item := range list {
+		if s, isStr := item.(string); isStr && retract[s] {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	perms[listName] = kept
 }
 
 func mergeDict(existing, incoming map[string]any) map[string]any {

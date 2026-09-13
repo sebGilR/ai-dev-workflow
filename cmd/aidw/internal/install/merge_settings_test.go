@@ -156,6 +156,79 @@ func TestMergeSettings_RetractsBlanketAidwAllowRule(t *testing.T) {
 	})
 }
 
+func readPermList(t *testing.T, path, listName string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse settings: %v\n%s", err, data)
+	}
+	perms, _ := parsed["permissions"].(map[string]any)
+	rawList, _ := perms[listName].([]any)
+	out := make([]string, 0, len(rawList))
+	for _, item := range rawList {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestMergeSettings_RetractsStaleDenyAndAskRules covers the upgrade path for
+// the curl/wget deny rules and the commit/rebase/install ask rules a prior
+// audit fixed by hand in an already-installed settings.json:
+// mergeLists is union-only, so without an explicit retraction step the next
+// `aidw upgrade` would silently re-add these stale rules from the template,
+// recreating the overnight-stall pattern the audit measured.
+func TestMergeSettings_RetractsStaleDenyAndAskRules(t *testing.T) {
+	tmpl := []byte(`{"permissions":{
+		"deny":["Bash(curl *)","Bash(wget *)"],
+		"ask":["Bash(git commit *)","Bash(git rebase *)","Bash(npm install *)","Bash(pnpm install *)"]
+	}}`)
+
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	// Simulate an already-installed user whose settings.json still has the
+	// stale rules from an older template (the exact scenario `aidw upgrade`
+	// must fix, not just avoid re-adding).
+	if err := os.WriteFile(settings, []byte(`{"permissions":{
+		"deny":["Read(./.env)","Bash(curl *)","Bash(wget *)"],
+		"ask":["Bash(git push*)","Bash(git commit *)","Bash(git rebase *)","Bash(npm install *)","Bash(pnpm install *)"]
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MergeSettings(settings, tmpl); err != nil {
+		t.Fatalf("MergeSettings: %v", err)
+	}
+
+	deny := readPermList(t, settings, "deny")
+	for _, stale := range []string{"Bash(curl *)", "Bash(wget *)"} {
+		if contains(deny, stale) {
+			t.Errorf("stale deny rule %q survived the merge: %v", stale, deny)
+		}
+	}
+	if !contains(deny, "Read(./.env)") {
+		t.Errorf("unrelated deny entry was dropped: %v", deny)
+	}
+
+	ask := readPermList(t, settings, "ask")
+	for _, stale := range []string{
+		"Bash(git commit *)", "Bash(git rebase *)",
+		"Bash(npm install *)", "Bash(pnpm install *)",
+	} {
+		if contains(ask, stale) {
+			t.Errorf("stale ask rule %q survived the merge: %v", stale, ask)
+		}
+	}
+	if !contains(ask, "Bash(git push*)") {
+		t.Errorf("unrelated ask entry was dropped: %v", ask)
+	}
+}
+
 // dangerousInvocations are commands that must never be covered by a
 // `permissions.allow` entry in the shipped template.
 var dangerousInvocations = []string{

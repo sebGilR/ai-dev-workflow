@@ -20,6 +20,15 @@ either tier (env `AIDW_FRONTIER_MODEL` / `AIDW_EFFICIENT_MODEL`). Respect
 an explicit user model choice without re-prompting, and never claim a
 model switch happened unless the host actually performed it.
 
+## Dispatching Isolated Work
+
+If any task in `spec.md` is delegated to a background/worktree-isolated
+subagent rather than executed inline, include
+`templates/briefs/isolated-agent-brief.md` in that agent's dispatch
+prompt — it covers the standard ground rules (branch-check-first, no
+amend/rebase, premise-check before editing, etc.) so they don't need to
+be re-derived per dispatch.
+
 ## STEP 1: Load Specification
 
 1. Strictly load only `spec.md` and `task-context.md` from the `.wip/<branch>/` directory.
