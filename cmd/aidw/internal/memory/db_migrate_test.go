@@ -227,12 +227,18 @@ func TestMigrate_IDPreservation(t *testing.T) {
 	repoA := "/nonexistent/repo/a"
 	repoB := "/nonexistent/repo/b"
 
-	insertLegacyFact(t, path, 1, repoA, "main", "k1", "v1", "2026-01-01 00:00:00")
-	insertLegacyFact(t, path, 2, repoA, "dev", "k2", "v2", "2026-01-01 00:00:01")
-	insertLegacyFact(t, path, 3, repoB, "main", "k3", "v3", "2026-01-01 00:00:02")
+	// IDs are deliberately non-sequential and inserted out of ascending
+	// order (703 before 501, both far from 1) — a rebuild that silently
+	// drops the explicit `id` column and lets SQLite AUTOINCREMENT assign
+	// fresh values would produce 1,2,3 here by coincidence if the legacy
+	// ids were themselves 1,2,3 inserted in order, giving this test zero
+	// real coverage of R1. Non-sequential, out-of-order ids close that gap.
+	insertLegacyFact(t, path, 703, repoB, "main", "k3", "v3", "2026-01-01 00:00:02")
+	insertLegacyFact(t, path, 501, repoA, "main", "k1", "v1", "2026-01-01 00:00:00")
+	insertLegacyFact(t, path, 302, repoA, "dev", "k2", "v2", "2026-01-01 00:00:01")
 
-	insertLegacyItem(t, path, 10, repoA, "README.md", "hello", "2026-01-01 00:00:00")
-	insertLegacyItem(t, path, 11, repoB, "docs/x.md", "world", "2026-01-01 00:00:01")
+	insertLegacyItem(t, path, 900, repoB, "docs/x.md", "world", "2026-01-01 00:00:01")
+	insertLegacyItem(t, path, 450, repoA, "README.md", "hello", "2026-01-01 00:00:00")
 
 	db, err := OpenAt(path)
 	if err != nil {
@@ -241,7 +247,7 @@ func TestMigrate_IDPreservation(t *testing.T) {
 	defer db.Close()
 
 	wantFacts := []factTriple{
-		{1, "k1", "v1"}, {2, "k2", "v2"}, {3, "k3", "v3"},
+		{501, "k1", "v1"}, {302, "k2", "v2"}, {703, "k3", "v3"},
 	}
 
 	summary, err := db.Migrate()
@@ -269,8 +275,8 @@ func TestMigrate_IDPreservation(t *testing.T) {
 
 	type itemTriple struct{ id int64; repoID, filePath string }
 	wantItems := []itemTriple{
-		{10, quarantineID(repoA), "README.md"},
-		{11, quarantineID(repoB), "docs/x.md"},
+		{450, quarantineID(repoA), "README.md"},
+		{900, quarantineID(repoB), "docs/x.md"},
 	}
 	gotItems := []itemTriple{}
 	irows, err := db.conn.Query("SELECT id, repo_id, file_path FROM items")
