@@ -17,7 +17,8 @@ Workflow conventions:
   - `execution.md`
   - `pr.md`
   - `status.json`
-- Prefer the `/wip-start`, `/wip-plan`, `/wip-research`, `/wip-implement`, `/wip-review`, `/wip-fix-review`, `/wip-resume`, and `/wip-pr` skills.
+- Prefer the `/wip-start`, `/wip-plan`, `/wip-research`, `/wip-implement`, `/wip-fanout`, `/wip-review`, `/wip-fix-review`, `/wip-resume`, and `/wip-pr` skills.
+- Use `/wip-fanout` (coordinator-only) to dispatch 2-3 independent, non-file-overlapping work items as parallel background agents instead of running them serially.
 - Keep `.wip` files updated as work progresses.
 - Use the specialized `wip-planner`, `wip-researcher`, `wip-reviewer`, and `wip-tester` subagents when the task fits.
 - Treat Claude as the final decision maker and final editor.
