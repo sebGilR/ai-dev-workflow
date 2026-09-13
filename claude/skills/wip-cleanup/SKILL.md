@@ -5,29 +5,78 @@ description: Keep the current branch's .wip folder intact (all files), and archi
 
 When this skill is used:
 
-1. Run a dry run first (requires `aidw` on `$PATH`):
+1. Probe for an existing migrated work record with `aidw work list .`
+   (requires `aidw` on `$PATH`). This command always exits 0 and prints `[]`
+   when nothing is found — never `null` — so a bare exit-code check is not
+   enough; read the JSON array itself.
 
-```bash
-aidw clear-others . --dry-run
-```
+2. **If `work list .` returns a non-empty array** (this repo has already
+   been migrated into the work-model store via `aidw migrate-state`):
 
-2. Read the JSON output and show the user what would be **archived** (moved
+   a. The primary action for "I'm done with this branch" is now the
+      lifecycle command, not the legacy archive pass:
+
+      ```bash
+      aidw work archive <id>
+      ```
+
+      Ask for confirmation before running it, and tell the user which
+      `<id>` you're archiving (from the probe's output) and its title.
+
+   b. After that, offer — informationally, not auto-run — to also check
+      what a legacy pass would additionally do: "There is also unmigrated
+      legacy `.wip` state still on disk for other branches on this repo;
+      here's what a legacy cleanup pass would additionally do." Only if the
+      user explicitly asks to proceed, continue with steps 3-7 below exactly
+      as the no-migrated-record path does — a migrated `work` record does
+      not disable or narrow the legacy path in any way, it only changes
+      which action this skill recommends first.
+
+3. **Global-archive disclosure guard** (runs regardless of whether step 1's
+   probe found a migrated record — `.wip/.archive/` content is orthogonal to
+   whether the *current* branch has been migrated): before offering the
+   legacy `--purge --dry-run` preview in step 6 below, check whether
+   `.wip/.archive/` is non-empty. If it is, tell the user, **before** showing
+   that preview:
+
+   > `.wip/.archive/` contains legacy archived content that has not yet been
+   > migrated into the work-model store. Running `--purge` now will
+   > permanently delete it with only the legacy archive-root-non-empty
+   > precondition — none of `work purge`'s per-record protections apply to
+   > this content because it isn't a `work` record yet. Consider running
+   > `aidw migrate-state --include-global-archive .` first to preserve it as
+   > `archived` `work` records (still deletable later via `work purge <id>`,
+   > just not lost outright).
+
+4. **If `work list .` returns `[]`** (no migrated record for this repo — a
+   pre-`migrate-state` repo, or a fresh clone), fall back to exactly today's
+   behavior, unchanged:
+
+   Run a dry run first:
+
+   ```bash
+   aidw clear-others . --dry-run
+   ```
+
+5. Read the JSON output and show the user what would be **archived** (moved
    into `.wip/.archive/`, not deleted) — the `kept` dir and the `archived`
    list. Ask for confirmation before proceeding.
-3. On confirmation, run for real:
 
-```bash
-aidw clear-others .
-```
+   On confirmation, run for real:
 
-4. Report a concise summary: which branch dir was kept, and which other dirs
-   were archived. Note that archived dirs are recoverable under
+   ```bash
+   aidw clear-others .
+   ```
+
+   Report a concise summary: which branch dir was kept, and which other
+   dirs were archived. Note that archived dirs are recoverable under
    `.wip/.archive/` — nothing was deleted.
-5. Only if the user explicitly asks to permanently delete (not just archive)
-   the other branch dirs — including anything already archived — preview the
-   purge with `--purge --dry-run`. **`--dry-run` without `--purge` previews a
-   strictly smaller set than a purge deletes**, so never use it as the preview
-   for a purge:
+
+6. Only if the user explicitly asks to permanently delete (not just archive)
+   the other branch dirs — including anything already archived — run step
+   3's disclosure guard, then preview the purge with `--purge --dry-run`.
+   **`--dry-run` without `--purge` previews a strictly smaller set than a
+   purge deletes**, so never use it as the preview for a purge:
 
 ```bash
 aidw clear-others . --purge --dry-run
@@ -36,12 +85,12 @@ aidw clear-others . --purge --dry-run
    This preview is read-only and always succeeds, even on a repo where
    nothing has been archived yet.
 
-6. Show the user the **entire** `deleted` list from that preview. It includes
+7. Show the user the **entire** `deleted` list from that preview. It includes
    everything already under `.wip/.archive/` from every prior run, not just
    the dirs about to be archived — and each `.archive/...` entry is a whole
    archived branch tree, so the listed name stands for every file inside it.
    Get explicit confirmation that all of it may be destroyed.
-7. Only then run the real purge:
+8. Only then run the real purge:
 
 ```bash
 aidw clear-others . --purge
@@ -50,10 +99,15 @@ aidw clear-others . --purge
    `--purge` is the only command in this skill that deletes bytes, and the
    only step here that can be refused. The refusal fires when
    `.wip/.archive/` is completely empty — if it refuses, run the archive pass
-   in step 3 first, then re-run this step.
+   in step 5 first, then re-run this step.
 
    Note the guard's real scope: it only checks that `.wip/.archive/` is
    non-empty overall. It does **not** guarantee that each dir being purged
    was itself previously archived — a branch dir created after the last
-   archive pass is deleted outright. Treat the step 6 confirmation, not the
+   archive pass is deleted outright. Treat the step 7 confirmation, not the
    guard, as the safety mechanism.
+
+   This legacy chain (steps 4-8), including its real (non-dry-run)
+   `--purge`, stays fully reachable on explicit user ask even after step 2's
+   `work archive` runs — a migrated `work` record does not disable or narrow
+   this path.

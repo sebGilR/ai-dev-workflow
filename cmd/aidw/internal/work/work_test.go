@@ -1005,3 +1005,268 @@ func TestResolve_EmptyRecordDirIsAbsentNotSkipped(t *testing.T) {
 		t.Fatalf("resolved %s, want %s", got.WorkID, want.WorkID)
 	}
 }
+
+// --- Cluster I: DeleteRecord / purge precondition -------------------------
+
+// TestDeleteRecord_PurgePrecondition pins AC-I2-PURGE-PRECONDITION: a
+// non-archived record refuses deletion without --force, and the directory
+// is left completely untouched.
+func TestDeleteRecord_PurgePrecondition(t *testing.T) {
+	stateDir := t.TempDir()
+	r := saveRecord(t, stateDir, "not archived yet")
+
+	err := DeleteRecord(stateDir, r.WorkID, false)
+	if !errors.Is(err, ErrNotArchived) {
+		t.Fatalf("expected ErrNotArchived, got %v", err)
+	}
+	if _, err := Load(stateDir, r.WorkID); err != nil {
+		t.Fatalf("record must still exist after a refused purge: %v", err)
+	}
+}
+
+// TestDeleteRecord_PurgeSucceeds pins AC-I2-PURGE-SUCCEEDS.
+func TestDeleteRecord_PurgeSucceeds(t *testing.T) {
+	stateDir := t.TempDir()
+	r := saveRecord(t, stateDir, "archived")
+	r.Lifecycle = LifecycleArchived
+	if err := Save(stateDir, r); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteRecord(stateDir, r.WorkID, false); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if _, err := os.Stat(Dir(stateDir, r.WorkID)); !os.IsNotExist(err) {
+		t.Fatalf("expected work/%s/ to be gone, stat err=%v", r.WorkID, err)
+	}
+	if _, err := Load(stateDir, r.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after purge, got %v", err)
+	}
+}
+
+// TestDeleteRecord_ForceBypassesPrecondition pins AC-I2-PURGE-FORCE's two
+// sub-cases: --force bypasses the precondition and reaches the identical end
+// state as an ordinary archived purge; without --force the same non-archived
+// record still refuses exactly as AC-I2-PURGE-PRECONDITION describes.
+func TestDeleteRecord_ForceBypassesPrecondition(t *testing.T) {
+	stateDir := t.TempDir()
+	r := saveRecord(t, stateDir, "not archived, forced")
+
+	if err := DeleteRecord(stateDir, r.WorkID, false); !errors.Is(err, ErrNotArchived) {
+		t.Fatalf("expected ErrNotArchived without --force, got %v", err)
+	}
+	if err := DeleteRecord(stateDir, r.WorkID, true); err != nil {
+		t.Fatalf("expected --force to bypass the precondition, got %v", err)
+	}
+	if _, err := os.Stat(Dir(stateDir, r.WorkID)); !os.IsNotExist(err) {
+		t.Fatalf("expected work/%s/ to be gone, stat err=%v", r.WorkID, err)
+	}
+	if _, err := Load(stateDir, r.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after forced purge, got %v", err)
+	}
+}
+
+// TestDeleteRecord_UnknownIDFails pins that force never bypasses Load's own
+// ErrNotFound — there is nothing to force when the record doesn't exist.
+func TestDeleteRecord_UnknownIDFails(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := DeleteRecord(stateDir, "01TESTNOSUCHRECORD00000001", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound even with force=true, got %v", err)
+	}
+}
+
+// TestDeleteRecord_LockReleaseOrdering pins AC-I2-LOCKORDER's uncontended-
+// case assertion: DeleteRecord holds the lock across RemoveAll and releases
+// last, and the operation still leaves work/<id>/ gone with a clean
+// ErrNotFound on the next Load — no error, no partial directory.
+func TestDeleteRecord_LockReleaseOrdering(t *testing.T) {
+	stateDir := t.TempDir()
+	r := saveRecord(t, stateDir, "lock ordering")
+	r.Lifecycle = LifecycleArchived
+	if err := Save(stateDir, r); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteRecord(stateDir, r.WorkID, false); err != nil {
+		t.Fatalf("DeleteRecord: %v", err)
+	}
+	if _, err := Load(stateDir, r.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected a clean ErrNotFound, got %v", err)
+	}
+	// A concurrent UpdateRecord against the same (now-deleted) id must not
+	// see a phantom/partial record — it should fail exactly like any other
+	// unknown id.
+	if _, err := UpdateRecord(stateDir, r.WorkID, func(*Record) error { return nil }); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected UpdateRecord on a purged id to fail with ErrNotFound, got %v", err)
+	}
+}
+
+// --- Cluster I: session-binding reap on purge ------------------------------
+
+// TestDeleteSessionBindingsFor_ReapsOnlyMatchingBinding pins AC-I2-SESSIONREAP:
+// only the binding for the purged id is removed; an unrelated binding is
+// untouched.
+func TestDeleteSessionBindingsFor_ReapsOnlyMatchingBinding(t *testing.T) {
+	stateDir := t.TempDir()
+	a := saveRecord(t, stateDir, "A")
+	b := saveRecord(t, stateDir, "B")
+	if err := SaveSessionBinding(stateDir, "sess-a", a.WorkID); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSessionBinding(stateDir, "sess-b", b.WorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "sess-a" {
+		t.Fatalf("removed = %v, want [sess-a]", removed)
+	}
+	if _, err := os.Stat(SessionPath(stateDir, "sess-a")); !os.IsNotExist(err) {
+		t.Errorf("sess-a binding should be gone, stat err=%v", err)
+	}
+	if _, err := os.Stat(SessionPath(stateDir, "sess-b")); err != nil {
+		t.Errorf("sess-b binding should be untouched: %v", err)
+	}
+}
+
+// TestSessionIDsBoundTo_IsReadOnly pins AC-I2-SESSIONREAP-DRYRUN's
+// underlying primitive: the preview lists the right ids without deleting
+// anything.
+func TestSessionIDsBoundTo_IsReadOnly(t *testing.T) {
+	stateDir := t.TempDir()
+	a := saveRecord(t, stateDir, "A")
+	if err := SaveSessionBinding(stateDir, "sess-a", a.WorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := SessionIDsBoundTo(stateDir, a.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "sess-a" {
+		t.Fatalf("ids = %v, want [sess-a]", ids)
+	}
+	if _, err := os.Stat(SessionPath(stateDir, "sess-a")); err != nil {
+		t.Errorf("preview must not delete anything: %v", err)
+	}
+}
+
+// TestDeleteSessionBindingsFor_DecideUnderLock pins AC-I2-SESSIONREAP-RACE:
+// a session rebound to a different, unrelated, still-live work id between
+// an initial reap call and a second one must not be deleted by the second
+// call — simpler single-process form of the race, per the AC's own
+// "call DeleteSessionBindingsFor twice... after independently rebinding
+// between the two calls" suggestion.
+func TestDeleteSessionBindingsFor_DecideUnderLock(t *testing.T) {
+	stateDir := t.TempDir()
+	a := saveRecord(t, stateDir, "A")
+	c := saveRecord(t, stateDir, "C")
+	if err := SaveSessionBinding(stateDir, "sess-s", a.WorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	// First call reaps sess-s for A.
+	removed, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "sess-s" {
+		t.Fatalf("first call removed = %v, want [sess-s]", removed)
+	}
+
+	// Rebind sess-s to unrelated, still-live work id C — simulating a
+	// concurrent SaveSessionBinding landing between an unlocked listing and
+	// this function's lock acquisition on a hypothetical second purge of A.
+	if err := SaveSessionBinding(stateDir, "sess-s", c.WorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second reap "for A" must find nothing left to remove — it must not
+	// delete sess-s's now-unrelated binding to C.
+	removed2, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed2) != 0 {
+		t.Fatalf("second call removed = %v, want none (sess-s now points at C)", removed2)
+	}
+	binding, err := LoadSessionBinding(stateDir, "sess-s")
+	if err != nil || binding == nil {
+		t.Fatalf("sess-s binding should still exist: %v (%v)", binding, err)
+	}
+	if binding.WorkID != c.WorkID {
+		t.Fatalf("sess-s binding = %q, want %q", binding.WorkID, c.WorkID)
+	}
+}
+
+// --- Cluster I: lazy self-healing reap on Resolve's lookup path ------------
+
+// TestResolve_LazyReapsSessionBindingOnConfirmedNotFound pins
+// AC-I1-SESSION-LAZYREAP's first sub-case: a binding pointing at a
+// permanently-deleted work id is deleted as a side effect of Resolve's
+// existing session-binding lookup, without changing Resolve's own
+// fall-through behavior.
+func TestResolve_LazyReapsSessionBindingOnConfirmedNotFound(t *testing.T) {
+	stateDir := t.TempDir()
+	a := saveRecord(t, stateDir, "A")
+	a.Lifecycle = LifecycleArchived
+	if err := Save(stateDir, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSessionBinding(stateDir, "sess-a", a.WorkID); err != nil {
+		t.Fatal(err)
+	}
+	// Purge WITHOUT going through DeleteSessionBindingsFor, simulating a
+	// binding a prior reap pass missed.
+	if err := os.RemoveAll(Dir(stateDir, a.WorkID)); err != nil {
+		t.Fatal(err)
+	}
+
+	here := liveWorktree(t, "wt")
+	_, _, err := Resolve(ResolveOptions{
+		StateDir: stateDir, SessionID: "sess-a", RepoID: "repoA", Branch: "main", WorktreePath: here,
+	})
+	if !errors.Is(err, ErrNoActiveWork) {
+		t.Fatalf("expected Resolve to fall through to ErrNoActiveWork unchanged, got %v", err)
+	}
+	if _, err := os.Stat(SessionPath(stateDir, "sess-a")); !os.IsNotExist(err) {
+		t.Errorf("expected the dangling binding to be reaped, stat err=%v", err)
+	}
+}
+
+// TestResolve_DoesNotReapBindingOnUnreadableNotMissing pins
+// AC-I1-SESSION-LAZYREAP's second sub-case: a bound record that exists but
+// fails to Load with a non-ErrNotFound error (unsupported schema version)
+// must NOT have its binding reaped — only a confirmed ErrNotFound triggers
+// the lazy reap.
+func TestResolve_DoesNotReapBindingOnUnreadableNotMissing(t *testing.T) {
+	stateDir := t.TempDir()
+	badID := "01TESTBADSCHEMA000000001"
+	writeRawRecord(t, stateDir, badID, map[string]any{
+		"schema_version": 99,
+		"work_id":        badID,
+	})
+	if err := SaveSessionBinding(stateDir, "sess-b", badID); err != nil {
+		t.Fatal(err)
+	}
+
+	here := liveWorktree(t, "wt2")
+	_, _, err := Resolve(ResolveOptions{
+		StateDir: stateDir, SessionID: "sess-b", RepoID: "repoB", Branch: "main", WorktreePath: here,
+	})
+	// The bound record's own unreadability makes ScanRecords report it as
+	// skipped, so Resolve's fall-through lands on ErrAmbiguousWork+
+	// ErrIncompleteScan rather than ErrNoActiveWork — that fall-through
+	// behavior itself is unchanged by this addendum (Resolve's step 3 logic
+	// is untouched); what this test actually pins is that the binding file
+	// survives regardless of which fall-through outcome results.
+	if !errors.Is(err, ErrIncompleteScan) {
+		t.Fatalf("expected Resolve to fall through unchanged (ErrIncompleteScan), got %v", err)
+	}
+	if _, err := os.Stat(SessionPath(stateDir, "sess-b")); err != nil {
+		t.Errorf("binding to an unreadable-but-present record must be left untouched: %v", err)
+	}
+}

@@ -23,14 +23,29 @@ import (
 // content) and must never be treated as a migration source.
 const globalArchiveDirName = ".archive"
 
-// SourceDir pairs one discovered legacy .wip branch directory with the
-// worktree root it was found under. WorktreePath and SourceWipDir are kept
-// as two separately-named fields end to end (hard rule 4) — they are never
-// merged into one "key" value; the mapping file (mapping.go) is the only
-// place they and workID meet.
+// SourceKind distinguishes an ordinary per-branch .wip/<branch>/ directory
+// from a whole condemned branch tree under the global archive root
+// (.wip/.archive/<branch-dir-name>[-N]/, produced by clear-wip/
+// clear-others). SourceKindBranch is the zero value so every existing
+// SourceDir{...} literal in Discover and all pre-Cluster-I tests stays
+// valid with no edits.
+type SourceKind int
+
+const (
+	SourceKindBranch SourceKind = iota
+	SourceKindGlobalArchive
+)
+
+// SourceDir pairs one discovered legacy .wip branch directory (or, for
+// Kind == SourceKindGlobalArchive, one whole condemned branch tree under
+// the global archive root) with the worktree root it was found under.
+// WorktreePath and SourceWipDir are kept as two separately-named fields end
+// to end (hard rule 4) — they are never merged into one "key" value; the
+// mapping file (mapping.go) is the only place they and workID meet.
 type SourceDir struct {
 	WorktreePath string
 	SourceWipDir string
+	Kind         SourceKind
 }
 
 // Discover implements D2's bounded inventory: for each worktree root in
@@ -79,6 +94,37 @@ func Discover(roots []string) ([]SourceDir, error) {
 			out = append(out, SourceDir{
 				WorktreePath: root,
 				SourceWipDir: filepath.Join(wipBase, e.Name()),
+			})
+		}
+	}
+	return out, nil
+}
+
+// DiscoverArchived is Discover's counterpart for the global archive root:
+// for each root, lists .wip/.archive/'s top-level entries (a missing
+// .archive dir contributes nothing for that root, same convention as
+// Discover) and returns one SourceDir per entry, Kind ==
+// SourceKindGlobalArchive. One level deep only, no recursion — archive
+// entries are never nested inside each other.
+func DiscoverArchived(roots []string) ([]SourceDir, error) {
+	var out []SourceDir
+	for _, root := range roots {
+		archiveBase := filepath.Join(root, ".wip", globalArchiveDirName)
+		entries, err := os.ReadDir(archiveBase)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", archiveBase, err)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			out = append(out, SourceDir{
+				WorktreePath: root,
+				SourceWipDir: filepath.Join(archiveBase, e.Name()),
+				Kind:         SourceKindGlobalArchive,
 			})
 		}
 	}

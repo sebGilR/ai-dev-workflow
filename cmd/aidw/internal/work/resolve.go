@@ -1,10 +1,13 @@
 package work
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"aidw/cmd/aidw/internal/state"
 )
 
 // ResolveOptions carries the caller's known context into Resolve.
@@ -87,8 +90,21 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 		// and the design's step-3 fallback exists precisely to answer this
 		// question from first principles.
 		if bindErr == nil && binding != nil {
-			if r, loadErr := Load(opts.StateDir, binding.WorkID); loadErr == nil {
+			r, loadErr := Load(opts.StateDir, binding.WorkID)
+			if loadErr == nil {
 				return r, nil, nil
+			}
+			// Lazy self-healing reap (§2.5 addendum): only when the bound
+			// record is CONFIRMED gone (ErrNotFound specifically, not
+			// merely unreadable — an ErrUnsupportedSchemaVersion or other
+			// read failure leaves the binding alone, mirroring Cluster H's
+			// R3 finding 2 distinction), delete the now-dangling binding
+			// file as a side effect of this lookup, using the same
+			// lock-then-reread discipline DeleteSessionBindingsFor uses.
+			// This never affects Resolve's own return value/behavior —
+			// it still falls through to step 3 below either way.
+			if errors.Is(loadErr, ErrNotFound) {
+				reapDanglingBinding(opts.StateDir, opts.SessionID, binding.WorkID)
 			}
 		}
 	}
@@ -132,6 +148,29 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	default:
 		return nil, candidates, ErrAmbiguousWork
 	}
+}
+
+// reapDanglingBinding deletes sessionID's binding file, but only after
+// re-confirming under the session file's own lock that it still points at
+// workID — the same decide-under-the-lock discipline
+// DeleteSessionBindingsFor uses, so a concurrent SaveSessionBinding rebind
+// racing this lookup can never have its now-unrelated binding deleted out
+// from under it. Any failure (lock busy, re-read no longer matches) is
+// swallowed silently: this is opportunistic cleanup on a read path, never
+// worth failing Resolve's caller over.
+func reapDanglingBinding(stateDir, sessionID, workID string) {
+	path := SessionPath(stateDir, sessionID)
+	release, err := state.AcquireLock(path)
+	if err != nil {
+		return
+	}
+	defer release()
+
+	binding, err := LoadSessionBinding(stateDir, sessionID)
+	if err != nil || binding == nil || binding.WorkID != workID {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func matchByWorktree(records []*Record, repoID, worktreePath string) []*Record {

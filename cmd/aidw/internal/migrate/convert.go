@@ -88,3 +88,66 @@ func Convert(src SourceDir) (*work.Record, error) {
 	})
 	return r, nil
 }
+
+// ConvertArchived builds one work.Record for src (Kind ==
+// SourceKindGlobalArchive: a whole condemned branch tree under
+// .wip/.archive/<branch-dir-name>[-N]/), per the Cluster I spec's §2.4.
+//
+// Repo identity: src.WorktreePath is the SAME real, current worktree root
+// Discover/DiscoverArchived already receive — only the branch the archived
+// tree once belonged to may no longer be checked out or exist in git at
+// all, so state.RepoIdentity(src.WorktreePath) resolves exactly as it does
+// for every other source under that root.
+//
+// Branch/stage identity comes from the archived tree's own status.json
+// (same legacyStatus shape Convert reads), falling back to
+// branchNameFromDirName(filepath.Base(src.SourceWipDir)) only when
+// status.json is missing/unparseable — Convert's existing fallback order,
+// reused verbatim. This intentionally does NOT strip any uniqueArchivePath
+// collision suffix (e.g. "foo-2" stays "foo-2", never guessed down to
+// "foo"): stripping a trailing "-N" is undecidable in general, and an
+// honest, slightly-ugly fallback beats a heuristic that is wrong exactly as
+// often as it's right.
+//
+// Head is deliberately left empty, never git.HeadSHA(src.WorktreePath):
+// Convert's normal path uses the current worktree HEAD as best-effort
+// because a LIVE branch dir's worktree is presumed to still be on (or near)
+// that branch. For an archived entry that presumption is false by
+// definition — the branch that owned this tree was condemned, and the
+// worktree is very likely on a different current branch by the time
+// migration runs. An honestly empty Head is correct; a plausible-looking
+// wrong one is not.
+//
+// The one field-level deviation from Convert: r.Lifecycle is set to
+// work.LifecycleArchived explicitly after work.New (which always defaults
+// to LifecycleActive) — Convert relies on that default, ConvertArchived
+// overrides it.
+func ConvertArchived(src SourceDir) (*work.Record, error) {
+	var status legacyStatus
+	_ = util.ReadJSON(filepath.Join(src.SourceWipDir, "status.json"), &status)
+
+	branchName := status.Branch
+	if branchName == "" {
+		branchName = branchNameFromDirName(filepath.Base(src.SourceWipDir))
+	}
+
+	repoID, err := state.RepoIdentity(src.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo identity for %s: %w", src.WorktreePath, err)
+	}
+	normalizedWorktreePath, err := filepath.EvalSymlinks(src.WorktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree path %s: %w", src.WorktreePath, err)
+	}
+
+	r := work.New(branchName, work.ModeDelivery)
+	r.Lifecycle = work.LifecycleArchived
+	r.Stage = status.Stage
+	r.Attachments = append(r.Attachments, work.Attachment{
+		RepoID:       repoID,
+		WorktreePath: normalizedWorktreePath,
+		Branch:       branchName,
+		Head:         "",
+	})
+	return r, nil
+}

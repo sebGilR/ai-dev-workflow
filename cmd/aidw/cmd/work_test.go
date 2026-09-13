@@ -330,6 +330,312 @@ func TestWorkCheckpointDirect_AmbiguousListsCandidates(t *testing.T) {
 	assertCandidateList(t, stdout, ids)
 }
 
+// TestWorkPurge_DryRunForceIsNoop pins §2.2's addendum note that --force
+// combined with --dry-run has no effect on the preview: the precondition
+// --force bypasses is already irrelevant to a dry run (which never checks
+// it), so the two flags together still only preview, exactly like
+// --dry-run alone.
+func TestWorkPurge_DryRunForceIsNoop(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "dry-run plus force")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", workID, "--dry-run", "--force")
+	if code != 0 {
+		t.Fatalf("work purge --dry-run --force exited %d\nstderr: %s", code, stderr)
+	}
+	var preview map[string]any
+	if err := json.Unmarshal([]byte(stdout), &preview); err != nil {
+		t.Fatalf("dry-run output is not JSON: %v\n%s", err, stdout)
+	}
+	if preview["work_id"] != workID {
+		t.Errorf("preview work_id = %v, want %s", preview["work_id"], workID)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID, "work.json")); err != nil {
+		t.Errorf("--dry-run --force together must still only preview: %v", err)
+	}
+}
+
+// --- Cluster I: lifecycle transitions -------------------------------------
+
+// loadRecord runs `work list <dir>` and returns the single record for id.
+// Used by the lifecycle-transition tests below to inspect the saved
+// lifecycle/stage fields without adding a new CLI surface.
+func loadRecordByID(t *testing.T, dir, stateDir, id string) work.Record {
+	t.Helper()
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "list", ".", "--include-archived")
+	if code != 0 {
+		t.Fatalf("work list exited %d\nstderr: %s", code, stderr)
+	}
+	var records []work.Record
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("work list output is not JSON: %v\n%s", err, stdout)
+	}
+	for _, r := range records {
+		if r.WorkID == id {
+			return r
+		}
+	}
+	t.Fatalf("no record %s in work list output: %s", id, stdout)
+	return work.Record{}
+}
+
+// TestWorkLifecycle_PauseDoneArchive pins AC-I1-PAUSE/AC-I1-DONE/
+// AC-I1-ARCHIVE: each verb sets exactly that lifecycle value and bumps
+// updated_at.
+func TestWorkLifecycle_PauseDoneArchive(t *testing.T) {
+	cases := []struct {
+		verb      string
+		lifecycle work.Lifecycle
+	}{
+		{"pause", work.LifecyclePaused},
+		{"done", work.LifecycleDone},
+		{"archive", work.LifecycleArchived},
+	}
+	for _, tc := range cases {
+		t.Run(tc.verb, func(t *testing.T) {
+			dir := initGitRepoWithBranch(t, "main")
+			stateDir := t.TempDir()
+			workID := startWork(t, dir, stateDir, "lifecycle-"+tc.verb)
+			before := loadRecordByID(t, dir, stateDir, workID)
+			if before.Provenance.UpdatedAt == "" {
+				t.Fatal("precondition: created record must have a non-empty updated_at")
+			}
+
+			stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", tc.verb, workID)
+			if code != 0 {
+				t.Fatalf("work %s exited %d\nstderr: %s", tc.verb, code, stderr)
+			}
+			var r work.Record
+			if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+				t.Fatalf("work %s output is not JSON: %v\n%s", tc.verb, err, stdout)
+			}
+			if r.Lifecycle != tc.lifecycle {
+				t.Errorf("lifecycle = %q, want %q", r.Lifecycle, tc.lifecycle)
+			}
+			// updated_at is RFC3339 (second resolution), so a same-second
+			// CLI round trip cannot assert strict advancement without a
+			// flaky sleep — assert it is present and not regressed
+			// (>= created_at) instead.
+			if r.Provenance.UpdatedAt == "" {
+				t.Errorf("updated_at is empty after %s", tc.verb)
+			}
+			if r.Provenance.UpdatedAt < r.Provenance.CreatedAt {
+				t.Errorf("updated_at %q regressed before created_at %q", r.Provenance.UpdatedAt, r.Provenance.CreatedAt)
+			}
+		})
+	}
+}
+
+// TestWorkLifecycle_StageInvariant pins AC-I1-STAGE: none of
+// pause/done/archive touch Stage, only Lifecycle and updated_at.
+//
+// Mutation-testing clause (Lesson 2): this test was manually verified to go
+// red by temporarily inserting `r.Stage = "started"` into each of the three
+// mutate closures in cmd/aidw/cmd/work.go's newLifecycleCmd during
+// implementation, confirming the assertion below actually exercises the
+// invariant rather than passing vacuously; the insertion was reverted
+// before landing.
+func TestWorkLifecycle_StageInvariant(t *testing.T) {
+	for _, verb := range []string{"pause", "done", "archive"} {
+		t.Run(verb, func(t *testing.T) {
+			dir := initGitRepoWithBranch(t, "main")
+			stateDir := t.TempDir()
+			workID := startWork(t, dir, stateDir, "stage-invariant-"+verb)
+
+			// Stamp a non-empty Stage directly (there is no CLI to do this
+			// yet), then re-save under the same lock discipline the CLI
+			// itself would use.
+			if _, err := work.UpdateRecord(stateDir, workID, func(r *work.Record) error {
+				r.Stage = "reviewed"
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", verb, workID)
+			if code != 0 {
+				t.Fatalf("work %s exited %d\nstderr: %s", verb, code, stderr)
+			}
+			var r work.Record
+			if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+				t.Fatalf("work %s output is not JSON: %v\n%s", verb, err, stdout)
+			}
+			if r.Stage != "reviewed" {
+				t.Errorf("stage = %q, want byte-identical %q", r.Stage, "reviewed")
+			}
+		})
+	}
+}
+
+// TestWorkList_ListVisibility pins AC-I1-LISTVISIBILITY: paused/done stay
+// visible in default `work list` output; only archived is excluded.
+func TestWorkList_ListVisibility(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+
+	pausedID := startWork(t, dir, stateDir, "paused")
+	doneID := startWork(t, dir, stateDir, "done")
+	archivedID := startWork(t, dir, stateDir, "archived")
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "pause", pausedID); code != 0 {
+		t.Fatalf("work pause exited %d", code)
+	}
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "done", doneID); code != 0 {
+		t.Fatalf("work done exited %d", code)
+	}
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "archive", archivedID); code != 0 {
+		t.Fatalf("work archive exited %d", code)
+	}
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "list", ".")
+	if code != 0 {
+		t.Fatalf("work list exited %d\nstderr: %s", code, stderr)
+	}
+	var records []work.Record
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("work list output is not JSON: %v\n%s", err, stdout)
+	}
+	seen := map[string]bool{}
+	for _, r := range records {
+		seen[r.WorkID] = true
+	}
+	if !seen[pausedID] {
+		t.Error("paused record must still be visible in default list")
+	}
+	if !seen[doneID] {
+		t.Error("done record must still be visible in default list")
+	}
+	if seen[archivedID] {
+		t.Error("archived record must be excluded from default list")
+	}
+}
+
+// --- Cluster I: work purge -------------------------------------------------
+
+// TestWorkPurge_PreconditionRefusesNonArchived pins AC-I2-PURGE-PRECONDITION
+// at the CLI layer.
+func TestWorkPurge_PreconditionRefusesNonArchived(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "not archived")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", workID)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "archive") {
+		t.Errorf("stderr = %q, want a mention of `work archive`/`--force`", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID, "work.json")); err != nil {
+		t.Errorf("record must still exist after a refused purge: %v", err)
+	}
+}
+
+// TestWorkPurge_RoundTrip pins AC-I2-PURGE-SUCCEEDS and the CLI-level round
+// trip: archive, then purge for real, then confirm gone.
+func TestWorkPurge_RoundTrip(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "to purge")
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "archive", workID); code != 0 {
+		t.Fatalf("work archive exited %d", code)
+	}
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", workID)
+	if code != 0 {
+		t.Fatalf("work purge exited %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, workID) {
+		t.Errorf("purge output = %q, want it to mention %s", stdout, workID)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID)); !os.IsNotExist(err) {
+		t.Errorf("expected work/%s/ to be gone, stat err=%v", workID, err)
+	}
+}
+
+// TestWorkPurge_ForceRoundTrip pins AC-I2-PURGE-FORCE at the CLI layer: a
+// non-archived record can be purged directly via --force, reaching the same
+// end state as the archive-then-purge round trip.
+func TestWorkPurge_ForceRoundTrip(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "forced purge")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", workID, "--force")
+	if code != 0 {
+		t.Fatalf("work purge --force exited %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, workID) {
+		t.Errorf("purge output = %q, want it to mention %s", stdout, workID)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID)); !os.IsNotExist(err) {
+		t.Errorf("expected work/%s/ to be gone, stat err=%v", workID, err)
+	}
+}
+
+// TestWorkPurge_DryRunNeverRefused pins AC-I2-PURGE-DRYRUN: a preview
+// succeeds even for a non-archived record and deletes nothing.
+func TestWorkPurge_DryRunNeverRefused(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "preview only")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", workID, "--dry-run")
+	if code != 0 {
+		t.Fatalf("work purge --dry-run exited %d\nstderr: %s", code, stderr)
+	}
+	var preview map[string]any
+	if err := json.Unmarshal([]byte(stdout), &preview); err != nil {
+		t.Fatalf("dry-run output is not JSON: %v\n%s", err, stdout)
+	}
+	if preview["work_id"] != workID {
+		t.Errorf("preview work_id = %v, want %s", preview["work_id"], workID)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID, "work.json")); err != nil {
+		t.Errorf("dry-run must not delete anything: %v", err)
+	}
+}
+
+// TestWorkPurge_DryRunListsSessionBindings pins AC-I2-SESSIONREAP-DRYRUN at
+// the CLI layer: given two bindings (one to the target id, one to an
+// unrelated id), a dry-run preview lists only the target's binding id under
+// session_bindings and deletes neither file.
+func TestWorkPurge_DryRunListsSessionBindings(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	targetID := startWork(t, dir, stateDir, "A")
+	otherID := startWork(t, dir, stateDir, "B")
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "bind-session", "--work", targetID, "--session", "sess-a"); code != 0 {
+		t.Fatalf("work bind-session (A) exited %d", code)
+	}
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "bind-session", "--work", otherID, "--session", "sess-b"); code != 0 {
+		t.Fatalf("work bind-session (B) exited %d", code)
+	}
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", targetID, "--dry-run")
+	if code != 0 {
+		t.Fatalf("work purge --dry-run exited %d\nstderr: %s", code, stderr)
+	}
+	var preview struct {
+		SessionBindings []string `json:"session_bindings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &preview); err != nil {
+		t.Fatalf("dry-run output is not JSON: %v\n%s", err, stdout)
+	}
+	if len(preview.SessionBindings) != 1 || preview.SessionBindings[0] != "sess-a" {
+		t.Errorf("session_bindings = %v, want [sess-a]", preview.SessionBindings)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-a.json")); err != nil {
+		t.Errorf("dry-run must not delete sess-a's binding: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-b.json")); err != nil {
+		t.Errorf("dry-run must not touch sess-b's binding: %v", err)
+	}
+}
+
 // TestWorkCheckpointFromHook_AmbiguousIsSilent is the counterpart: the hook
 // path stays silent on stdout (the script discards output anyway, but the
 // spec mandates silence there specifically) while still exiting non-zero.

@@ -25,6 +25,14 @@ type Summary struct {
 	SkippedReasons map[string]string `json:"skipped_reasons,omitempty"`
 }
 
+// errConcurrentlyMapped is returned by migrateNew's Update mutate closure
+// (and surfaces wrapped through migrateNew's own return) when normKey is
+// found already present in the mapping at the moment the closure runs —
+// i.e. another migrateNew call (in this process or a concurrent one) won
+// the race to map this same source first. See the duplicate-mint race fix
+// below and AC-I2-MIGRATE-NORACE.
+var errConcurrentlyMapped = errors.New("migrated concurrently by another run")
+
 func newSummary() *Summary {
 	return &Summary{
 		Migrated:       []string{},
@@ -146,14 +154,40 @@ func verifyTwoSided(sourceWipDir, attachmentsDir string, want map[string]string)
 //     Summary.Divergent, skip this entry, continue to the next one, never
 //     auto-resolve, never overwrite either side.
 //
+// Options configures RunWithOptions. The zero value matches Run's own
+// historical, unconditional-branch-dir-only behavior.
+type Options struct {
+	// IncludeGlobalArchive, when true, additionally discovers and migrates
+	// .wip/.archive/ entries (whole condemned branch trees) via
+	// DiscoverArchived/ConvertArchived, born Lifecycle: Archived. Opt-in,
+	// default false — this does not change plain migrate-state's default
+	// behavior.
+	IncludeGlobalArchive bool
+}
+
 // A lock-contention failure on the target work.json after retrying is
 // recorded into Summary.Skipped with a reason, and the run continues to the
 // next source dir. Run's caller (migrate_state.go) exits non-zero if
 // Summary.Divergent or Summary.Skipped is non-empty.
 func Run(stateDir string, roots []string) (*Summary, error) {
+	return RunWithOptions(stateDir, roots, Options{})
+}
+
+// RunWithOptions is Run, with §2.4's --include-global-archive behavior
+// folded in when opts.IncludeGlobalArchive is set. Every existing Run
+// caller/test keeps compiling and behaving unchanged (Run is now a thin
+// wrapper calling this with the zero-value Options).
+func RunWithOptions(stateDir string, roots []string, opts Options) (*Summary, error) {
 	sources, err := Discover(roots)
 	if err != nil {
 		return nil, fmt.Errorf("discover: %w", err)
+	}
+	if opts.IncludeGlobalArchive {
+		archived, err := DiscoverArchived(roots)
+		if err != nil {
+			return nil, fmt.Errorf("discover archived: %w", err)
+		}
+		sources = append(sources, archived...)
 	}
 
 	summary := newSummary()
@@ -216,7 +250,13 @@ func Run(stateDir string, roots []string) (*Summary, error) {
 // If Update itself fails, this function returns before Save ever runs, so no
 // orphan work.json is created in that failure case either.
 func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary, withRetry bool) error {
-	record, err := Convert(src)
+	var record *work.Record
+	var err error
+	if src.Kind == SourceKindGlobalArchive {
+		record, err = ConvertArchived(src)
+	} else {
+		record, err = Convert(src)
+	}
 	if err != nil {
 		return fmt.Errorf("convert %s: %w", src.SourceWipDir, err)
 	}
@@ -234,6 +274,30 @@ func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary
 	}
 
 	if err := Update(stateDir, func(m *Mapping) error {
+		// Duplicate-mint race fix (R6, AC-I2-MIGRATE-NORACE): re-check the
+		// precondition under the SAME lock Update already holds, right
+		// before writing. Two concurrent whole-process migrate-state runs
+		// discovering the same unmapped source could otherwise both reach
+		// this point (both having already converted+copied), race on this
+		// write, and let the loser mint a permanently orphaned duplicate
+		// work.Record for the same source — since both records parse
+		// cleanly, nothing in ScanRecords surfaces the duplication and it
+		// silently wedges work.Resolve behind ErrAmbiguousWork. This
+		// existence check closes that: the loser's migrateNew call now
+		// fails before work.Save ever runs, leaving only a stray,
+		// already-orphaned attachments/ copy on disk (no phantom
+		// work.Record) — the accepted, documented cost of the fix.
+		//
+		// Scoped to !withRetry (the genuinely-new-entry path, called only
+		// from Run's `!exists` branch) — withRetry==true is reverify's
+		// dangling-pointer recovery, which is deliberately called BECAUSE a
+		// stale mapping entry already exists and is legitimately being
+		// replaced; applying this same existence check there would refuse
+		// every ordinary dangling-pointer recovery, not just a genuine
+		// concurrent racer.
+		if _, exists := m.Entries[normKey]; exists && !withRetry {
+			return errConcurrentlyMapped
+		}
 		m.Entries[normKey] = MappingEntry{
 			WorkID:     record.WorkID,
 			RepoID:     repoID,

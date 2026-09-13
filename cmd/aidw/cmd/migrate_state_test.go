@@ -217,3 +217,56 @@ func TestMigrateState_DryRunWithoutCleanupSources_Refused(t *testing.T) {
 		t.Fatalf("--dry-run without --cleanup-sources must not perform a real migration, but found %d work record(s)", len(entries))
 	}
 }
+
+// --- Cluster I: --include-global-archive flag plumbing ---------------------
+
+// TestMigrateState_IncludeGlobalArchive_Plumbing pins that the CLI flag
+// actually reaches migrate.RunWithOptions: a .wip/.archive/ entry is only
+// migrated when the flag is passed, never by plain `migrate-state`.
+func TestMigrateState_IncludeGlobalArchive_Plumbing(t *testing.T) {
+	repo := initGitRepoWithBranch(t, "main")
+	archiveDir := filepath.Join(repo, ".wip", ".archive", "20260101-foo")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statusJSON := `{"branch":"foo","stage":"started"}`
+	if err := os.WriteFile(filepath.Join(archiveDir, "status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+
+	// Plain migrate-state: the archive entry must NOT be migrated.
+	plain := exec.Command(buildAidw(t), "migrate-state", ".")
+	plain.Dir = repo
+	plain.Env = append(os.Environ(), "AIDW_STATE_DIR="+stateDir)
+	if out, err := plain.CombinedOutput(); err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("run aidw migrate-state: %v\n%s", err, out)
+		}
+	}
+	workRoot := filepath.Join(stateDir, "work")
+	entries, err := os.ReadDir(workRoot)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("plain migrate-state must not migrate .wip/.archive/ entries, found %d work record(s)", len(entries))
+	}
+
+	// With --include-global-archive: the archive entry IS migrated.
+	withFlag := exec.Command(buildAidw(t), "migrate-state", ".", "--include-global-archive")
+	withFlag.Dir = repo
+	withFlag.Env = append(os.Environ(), "AIDW_STATE_DIR="+stateDir)
+	out, err := withFlag.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run aidw migrate-state --include-global-archive: %v\n%s", err, out)
+	}
+	entries, err = os.ReadDir(workRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 work record after --include-global-archive, got %d", len(entries))
+	}
+}

@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -610,5 +611,67 @@ func TestMapping_UpdateWritesOnlyWipPathsJSON(t *testing.T) {
 	}
 	if len(m.Entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(m.Entries))
+	}
+}
+
+// --- Cluster I: AC-I2-MIGRATE-NORACE ---------------------------------------
+
+// TestMigrateNew_ConcurrentCallSameSource_NoSecondRecord pins
+// AC-I2-MIGRATE-NORACE: a second migrateNew call against a SourceDir/
+// normKey that a first call already fully migrated (simulating a second,
+// independently-racing process reaching the same point) must fail wrapping
+// errConcurrentlyMapped, must never save a second work.Record, and
+// wip-paths.json must retain exactly the first call's single mapping entry.
+// The fix applies to both Convert and ConvertArchived sources since it
+// lives in the shared migrateNew code — this test exercises the ordinary
+// branch-dir (Convert) path.
+func TestMigrateNew_ConcurrentCallSameSource_NoSecondRecord(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "race-branch")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-race-branch")
+	writeStatusJSON(t, wipDir, "race-branch", "started")
+
+	normKey, err := filepath.EvalSymlinks(wipDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := SourceDir{WorktreePath: repo, SourceWipDir: wipDir}
+
+	summary := newSummary()
+	if err := migrateNew(stateDir, src, normKey, summary, false); err != nil {
+		t.Fatalf("first (legitimate winner) call failed: %v", err)
+	}
+	if len(summary.Migrated) != 1 {
+		t.Fatalf("expected 1 migrated on the first call, got %+v", summary)
+	}
+
+	// Second, independently-racing call against the identical SourceDir/
+	// normKey.
+	err = migrateNew(stateDir, src, normKey, summary, false)
+	if err == nil {
+		t.Fatal("expected the second, racing migrateNew call to fail")
+	}
+	if !errors.Is(err, errConcurrentlyMapped) {
+		t.Fatalf("expected an error wrapping errConcurrentlyMapped, got %v", err)
+	}
+
+	records, err := work.ListRecords(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 work.Record after the race, got %d: %+v", len(records), records)
+	}
+
+	mapping, err := loadMapping(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mapping.Entries) != 1 {
+		t.Fatalf("expected exactly 1 mapping entry after the race, got %d: %+v", len(mapping.Entries), mapping.Entries)
+	}
+	entry, ok := mapping.Entries[normKey]
+	if !ok || entry.WorkID != records[0].WorkID {
+		t.Fatalf("mapping entry %+v does not point at the first call's record %s", entry, records[0].WorkID)
 	}
 }

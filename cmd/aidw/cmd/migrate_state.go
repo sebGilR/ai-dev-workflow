@@ -26,6 +26,7 @@ var migrateStateCmd = &cobra.Command{
 		allRegistered, _ := c.Flags().GetBool("all-registered")
 		cleanupSources, _ := c.Flags().GetBool("cleanup-sources")
 		dryRun, _ := c.Flags().GetBool("dry-run")
+		includeGlobalArchive, _ := c.Flags().GetBool("include-global-archive")
 
 		if dryRun && !cleanupSources {
 			// --dry-run has no meaning outside --cleanup-sources — the
@@ -46,7 +47,7 @@ var migrateStateCmd = &cobra.Command{
 			return
 		}
 
-		summary, err := migrate.Run(state.StateDir(), roots)
+		summary, err := migrate.RunWithOptions(state.StateDir(), roots, migrate.Options{IncludeGlobalArchive: includeGlobalArchive})
 		if err != nil {
 			Die("migrate-state: %v", err)
 		}
@@ -179,5 +180,6 @@ func init() {
 	migrateStateCmd.Flags().Bool("all-registered", false, "Also scan every repos.json last_known_paths entry")
 	migrateStateCmd.Flags().Bool("cleanup-sources", false, "Delete legacy .wip sources that have been verified-copied (never deletes anything unverified)")
 	migrateStateCmd.Flags().Bool("dry-run", false, "With --cleanup-sources, preview what would be deleted without deleting anything (never refused)")
+	migrateStateCmd.Flags().Bool("include-global-archive", false, "Also migrate .wip/.archive/ entries as archived work records")
 	Root.AddCommand(migrateStateCmd)
 }
