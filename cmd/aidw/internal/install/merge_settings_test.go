@@ -318,3 +318,36 @@ func TestSettingsTemplateNeverAllowsGatedCommands(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsTemplateNeverReshipsRetractedRules is a regression guard: it
+// fails CI if anyone re-introduces one of the stale curl/wget deny rules or
+// the commit/rebase/install ask rules into the shipped template.
+// retractStaleRules only fixes an already-installed user's settings.json —
+// it does nothing to stop a future template edit from shipping the same
+// stalling rules to brand-new installs, which this test catches instead.
+func TestSettingsTemplateNeverReshipsRetractedRules(t *testing.T) {
+	data, err := embedfs.FS.ReadFile("templates/global/settings.template.json")
+	if err != nil {
+		t.Fatalf("read embedded template: %v", err)
+	}
+	var parsed struct {
+		Permissions struct {
+			Deny []string `json:"deny"`
+			Ask  []string `json:"ask"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("template is not valid JSON: %v", err)
+	}
+
+	for _, stale := range retractedDenyPatterns {
+		if contains(parsed.Permissions.Deny, stale) {
+			t.Errorf("template ships retracted deny rule %q", stale)
+		}
+	}
+	for _, stale := range retractedAskPatterns {
+		if contains(parsed.Permissions.Ask, stale) {
+			t.Errorf("template ships retracted ask rule %q", stale)
+		}
+	}
+}

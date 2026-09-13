@@ -23,11 +23,11 @@ model switch happened unless the host actually performed it.
 ## Dispatching Isolated Work
 
 If any task in `spec.md` is delegated to a background/worktree-isolated
-subagent rather than executed inline, include
-`templates/briefs/isolated-agent-brief.md` in that agent's dispatch
-prompt — it covers the standard ground rules (branch-check-first, no
-amend/rebase, premise-check before editing, etc.) so they don't need to
-be re-derived per dispatch.
+subagent rather than executed inline, include the contents of
+`~/.claude/ai-dev-workflow/templates/briefs/isolated-agent-brief.md` in
+that agent's dispatch prompt — it covers the standard ground rules
+(branch-check-first, no amend/rebase, premise-check before editing,
+etc.) so they don't need to be re-derived per dispatch.
 
 ## STEP 1: Load Specification
 
