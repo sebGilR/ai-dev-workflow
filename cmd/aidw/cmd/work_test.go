@@ -636,6 +636,162 @@ func TestWorkPurge_DryRunListsSessionBindings(t *testing.T) {
 	}
 }
 
+// TestWorkPurge_ForgetsMappingEntry pins review finding H1 at the CLI
+// layer: a real purge, on a record that was created by migrate-state (not
+// `work start`), forgets that source's wip-paths.json entry and reports
+// what it forgot. Without this, the entry would dangle and the next plain
+// migrate-state run would silently re-mint a record via reverify's
+// crash-recovery path, which is designed for an interrupted Save, not a
+// deliberate permanent deletion.
+func TestWorkPurge_ForgetsMappingEntry(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	wipDir := filepath.Join(dir, ".wip", "20260101000000-main")
+	if err := os.MkdirAll(wipDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statusJSON := `{"repo":"r","repo_path":"` + dir + `","branch":"main","stage":"started","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(wipDir, "status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "migrate-state", ".")
+	if code != 0 {
+		t.Fatalf("migrate-state exited %d\nstderr: %s", code, stderr)
+	}
+	var summary struct {
+		Migrated []string `json:"migrated"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("migrate-state stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if len(summary.Migrated) != 1 {
+		t.Fatalf("setup: expected exactly 1 migrated source, got %+v", summary)
+	}
+
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "list", ".")
+	if code != 0 {
+		t.Fatalf("work list exited %d\nstderr: %s", code, stderr)
+	}
+	var records []work.Record
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("work list stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if len(records) != 1 {
+		t.Fatalf("setup: expected exactly 1 record, got %d: %s", len(records), stdout)
+	}
+	workID := records[0].WorkID
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "archive", workID); code != 0 {
+		t.Fatalf("work archive exited %d", code)
+	}
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "purge", workID)
+	if code != 0 {
+		t.Fatalf("work purge exited %d\nstderr: %s", code, stderr)
+	}
+	var result struct {
+		MappingEntriesForgotten []string `json:"mapping_entries_forgotten"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("purge output is not JSON: %v\n%s", err, stdout)
+	}
+	if len(result.MappingEntriesForgotten) != 1 {
+		t.Fatalf("mapping_entries_forgotten = %+v, want exactly 1 entry", result.MappingEntriesForgotten)
+	}
+
+	mappingData, err := os.ReadFile(filepath.Join(stateDir, "migrations", "wip-paths.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mapping struct {
+		Entries map[string]any `json:"entries"`
+	}
+	if err := json.Unmarshal(mappingData, &mapping); err != nil {
+		t.Fatal(err)
+	}
+	if len(mapping.Entries) != 0 {
+		t.Errorf("expected wip-paths.json to have no entries after purge, got %+v", mapping.Entries)
+	}
+}
+
+// TestWorkPurge_RoundTrip_ReapsRealSessionBinding pins review finding M3:
+// nothing previously exercised the *wiring* of the session reap into a
+// real (non-dry-run) `work purge` — only the dry-run preview and
+// DeleteSessionBindingsFor as a standalone function were covered.
+// Deleting the DeleteSessionBindingsFor call at workPurgeCmd's call site
+// left this suite green before this test was added.
+func TestWorkPurge_RoundTrip_ReapsRealSessionBinding(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	targetID := startWork(t, dir, stateDir, "A")
+	otherID := startWork(t, dir, stateDir, "B")
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "bind-session", "--work", targetID, "--session", "sess-a"); code != 0 {
+		t.Fatalf("work bind-session (A) exited %d", code)
+	}
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "bind-session", "--work", otherID, "--session", "sess-b"); code != 0 {
+		t.Fatalf("work bind-session (B) exited %d", code)
+	}
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "archive", targetID); code != 0 {
+		t.Fatalf("work archive exited %d", code)
+	}
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "purge", targetID)
+	if code != 0 {
+		t.Fatalf("work purge exited %d\nstderr: %s", code, stderr)
+	}
+	var result struct {
+		SessionBindingsRemoved []string `json:"session_bindings_removed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("purge output is not JSON: %v\n%s", err, stdout)
+	}
+	if len(result.SessionBindingsRemoved) != 1 || result.SessionBindingsRemoved[0] != "sess-a" {
+		t.Fatalf("session_bindings_removed = %v, want [sess-a]", result.SessionBindingsRemoved)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-a.json")); !os.IsNotExist(err) {
+		t.Errorf("expected sess-a's binding to be deleted, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-b.json")); err != nil {
+		t.Errorf("expected sess-b's binding (unrelated) to survive, stat err=%v", err)
+	}
+}
+
+// TestWorkActivate_ReversesArchive pins review finding H2's inverse
+// command: `work activate <id>` sets an archived record back to `active`,
+// giving a mis-archive (e.g. from the re-routed skills) a clean, explicit
+// recovery path.
+func TestWorkActivate_ReversesArchive(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	workID := startWork(t, dir, stateDir, "mis-archived")
+
+	if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", "archive", workID); code != 0 {
+		t.Fatalf("work archive exited %d", code)
+	}
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "activate", workID)
+	if code != 0 {
+		t.Fatalf("work activate exited %d\nstderr: %s", code, stderr)
+	}
+	var r work.Record
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work activate stdout is not a record: %v\n%s", err, stdout)
+	}
+	if r.Lifecycle != work.LifecycleActive {
+		t.Errorf("lifecycle = %q, want %q", r.Lifecycle, work.LifecycleActive)
+	}
+
+	// AC-I1-LISTVISIBILITY's own invariant applies here too: an activated
+	// record must be visible in the default (non---include-archived) list.
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "list", ".")
+	if code != 0 {
+		t.Fatalf("work list exited %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, workID) {
+		t.Errorf("work list output = %s, want it to include the reactivated record %s", stdout, workID)
+	}
+}
+
 // TestWorkCheckpointFromHook_AmbiguousIsSilent is the counterpart: the hook
 // path stays silent on stdout (the script discards output anyway, but the
 // spec mandates silence there specifically) while still exiting non-zero.

@@ -92,6 +92,10 @@ func listSessionIDs(stateDir string) ([]string, error) {
 	return ids, nil
 }
 
+// afterListSessionIDsHook is nil in production. See DeleteSessionBindingsFor's
+// doc comment.
+var afterListSessionIDsHook func(sid string)
+
 // SessionIDsBoundTo returns every session id currently bound to workID,
 // without deleting anything — a read-only preview used by `work purge
 // <id> --dry-run` to show what DeleteSessionBindingsFor would reap. Unlike
@@ -141,6 +145,14 @@ func SessionIDsBoundTo(stateDir, workID string) ([]string, error) {
 // is NOT fatal to the overall reap — that file is simply skipped (not
 // included in removed); the record itself is already gone by the time this
 // runs, so there is nothing this call needs to retry or die over.
+//
+// Test seam (nil in production): afterListSessionIDsHook, when set, is
+// called once per candidate id between this function's unlocked listing and
+// its lock-acquire on that id's path — the exact window
+// AC-I2-SESSIONREAP-RACE exists to close. A test can rebind the session
+// inside the hook to exercise the decide-under-lock fix directly, rather
+// than relying on the (behaviorally identical, but not race-discriminating)
+// "reap twice" form.
 func DeleteSessionBindingsFor(stateDir, workID string) (removed []string, err error) {
 	ids, err := listSessionIDs(stateDir)
 	if err != nil {
@@ -149,6 +161,9 @@ func DeleteSessionBindingsFor(stateDir, workID string) (removed []string, err er
 
 	removed = []string{}
 	for _, sid := range ids {
+		if afterListSessionIDsHook != nil {
+			afterListSessionIDsHook(sid)
+		}
 		path := SessionPath(stateDir, sid)
 		release, lockErr := state.AcquireLock(path)
 		if lockErr != nil {

@@ -65,11 +65,18 @@ type ResolveOptions struct {
 //     branches are exactly the dangerous ones (the hook auto-binds on a
 //     single match, making a wrong resolution permanent).
 //
-// Resolve is a PURE lookup: it never calls SaveSessionBinding or any other
-// write. Callers that want the design's "auto-bind on unambiguous worktree
-// match when a session is present" behavior (only relevant to `work
-// checkpoint --from-hook`) must call SaveSessionBinding themselves after a
-// successful step-3 resolution with non-empty SessionID.
+// Resolve is pure with respect to work records: it never calls
+// SaveSessionBinding or writes a work.Record. Callers that want the
+// design's "auto-bind on unambiguous worktree match when a session is
+// present" behavior (only relevant to `work checkpoint --from-hook`) must
+// call SaveSessionBinding themselves after a successful step-3 resolution
+// with non-empty SessionID.
+//
+// It is NOT pure with respect to session-binding files: per the §2.5
+// addendum, it performs one opportunistic, best-effort deletion of a
+// session binding it discovers is confirmed-dangling (see
+// reapDanglingBinding below) — lock-guarded, failure-swallowed, and never
+// able to change what Resolve itself returns to its caller.
 func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	if opts.ExplicitWorkID != "" {
 		r, err := Load(opts.StateDir, opts.ExplicitWorkID)
@@ -158,7 +165,20 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 // from under it. Any failure (lock busy, re-read no longer matches) is
 // swallowed silently: this is opportunistic cleanup on a read path, never
 // worth failing Resolve's caller over.
+//
+// Test seam (nil in production): afterDanglingCheckHook, when set, is called
+// once between confirming the binding is dangling and acquiring its lock —
+// the same race window DeleteSessionBindingsFor's own hook exercises,
+// mirrored here so a test can rebind the session out from under this call
+// and confirm it correctly no-ops rather than deleting an unrelated binding.
+// afterDanglingCheckHook is nil in production. See reapDanglingBinding's doc
+// comment.
+var afterDanglingCheckHook func(sessionID string)
+
 func reapDanglingBinding(stateDir, sessionID, workID string) {
+	if afterDanglingCheckHook != nil {
+		afterDanglingCheckHook(sessionID)
+	}
 	path := SessionPath(stateDir, sessionID)
 	release, err := state.AcquireLock(path)
 	if err != nil {

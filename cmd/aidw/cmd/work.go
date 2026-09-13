@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"aidw/cmd/aidw/internal/git"
+	"aidw/cmd/aidw/internal/migrate"
 	"aidw/cmd/aidw/internal/state"
 	"aidw/cmd/aidw/internal/work"
 )
@@ -267,6 +268,17 @@ var workPauseCmd = newLifecycleCmd("pause", work.LifecyclePaused)
 var workDoneCmd = newLifecycleCmd("done", work.LifecycleDone)
 var workArchiveCmd = newLifecycleCmd("archive", work.LifecycleArchived)
 
+// workActivateCmd is the inverse of workArchiveCmd/workPauseCmd/workDoneCmd
+// — added per Cluster I review finding H2: without an explicit "un-archive"
+// verb, the re-routed skills' mis-selected `work archive <id>` (see
+// workPurgeCmd's neighboring history and claude/skills/wip-cleanup's
+// branch-filtered probe fix) had no clean, discoverable recovery path other
+// than the undocumented fact that `work pause <id>` also re-enters
+// resolve.go's Active||Paused candidacy. `work activate <id>` sets
+// Lifecycle back to Active explicitly, following the identical
+// UpdateRecord shape every other lifecycle verb uses.
+var workActivateCmd = newLifecycleCmd("activate", work.LifecycleActive)
+
 // purgePreview is workPurgeCmd's --dry-run output shape: everything that
 // would be permanently deleted, computed without acquiring any lock or
 // checking the archived-only precondition — a preview must always be
@@ -277,7 +289,14 @@ type purgePreview struct {
 	Lifecycle       string   `json:"lifecycle"`
 	Attachments     []string `json:"attachments"` // worktree paths
 	SessionBindings []string `json:"session_bindings"`
-	DryRun          bool     `json:"dry_run"`
+	// MappingEntries lists the wip-paths.json (normalized sourceWipDir) keys
+	// that ForgetSource would remove — added per Cluster I review finding
+	// H1: without this, a plain migrate-state run after a real purge would
+	// see this workID's mapping entry as dangling and re-mint a fresh
+	// record for the same legacy source, resurrecting content the user was
+	// told was permanently deleted.
+	MappingEntries []string `json:"mapping_entries"`
+	DryRun         bool     `json:"dry_run"`
 }
 
 // purgeResult is workPurgeCmd's real-deletion output shape.
@@ -291,6 +310,12 @@ type purgeResult struct {
 	// delete already succeeded, and a reap failure must never be confused
 	// with a record-delete failure).
 	SessionReapError string `json:"session_reap_error,omitempty"`
+	// MappingEntriesForgotten lists the wip-paths.json keys ForgetSource
+	// actually removed (review finding H1). Never confused with a
+	// record-delete failure, for the same "not fatal" reason as the session
+	// reap: the record is already gone by the time this runs.
+	MappingEntriesForgotten []string `json:"mapping_entries_forgotten"`
+	MappingForgetError      string   `json:"mapping_forget_error,omitempty"`
 }
 
 var workPurgeCmd = &cobra.Command{
@@ -315,12 +340,17 @@ var workPurgeCmd = &cobra.Command{
 			if err != nil {
 				Die("work purge: %v", err)
 			}
+			mappingEntries, err := migrate.SourcesFor(state.StateDir(), workID)
+			if err != nil {
+				Die("work purge: %v", err)
+			}
 			PrintJSON(purgePreview{
 				WorkID:          r.WorkID,
 				Title:           r.Title,
 				Lifecycle:       string(r.Lifecycle),
 				Attachments:     paths,
 				SessionBindings: bindings,
+				MappingEntries:  mappingEntries,
 				DryRun:          true,
 			})
 			return
@@ -345,6 +375,20 @@ var workPurgeCmd = &cobra.Command{
 			// fatal" rule). Report it in the output, exit code stays 0.
 			result.SessionReapError = reapErr.Error()
 			result.SessionBindingsRemoved = []string{}
+		}
+
+		// Review finding H1: forget this workID's wip-paths.json entries
+		// too, for the same "not fatal, the record delete already
+		// succeeded" reason as the session reap. Without this, the next
+		// plain migrate-state run sees a dangling mapping entry and
+		// re-mints a fresh record from the still-on-disk legacy source,
+		// resurrecting content this command just told the user was
+		// permanently deleted.
+		forgotten, forgetErr := migrate.ForgetSource(state.StateDir(), workID)
+		result.MappingEntriesForgotten = forgotten
+		if forgetErr != nil {
+			result.MappingForgetError = forgetErr.Error()
+			result.MappingEntriesForgotten = []string{}
 		}
 		PrintJSON(result)
 	},
@@ -556,6 +600,7 @@ func init() {
 	workCmd.AddCommand(workPauseCmd)
 	workCmd.AddCommand(workDoneCmd)
 	workCmd.AddCommand(workArchiveCmd)
+	workCmd.AddCommand(workActivateCmd)
 	workCmd.AddCommand(workPurgeCmd)
 
 	workStartCmd.Flags().String("title", "", "Title for the new work record")

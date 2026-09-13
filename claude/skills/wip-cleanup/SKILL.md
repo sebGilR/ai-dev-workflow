@@ -10,8 +10,19 @@ When this skill is used:
    when nothing is found — never `null` — so a bare exit-code check is not
    enough; read the JSON array itself.
 
-2. **If `work list .` returns a non-empty array** (this repo has already
-   been migrated into the work-model store via `aidw migrate-state`):
+   **`work list .` filters on repo identity only — it has no branch
+   predicate**, so a repo with several migrated branches returns several
+   records, all equally "non-empty." Filter the probe's own output down to
+   this branch's record(s) before doing anything else:
+
+   ```bash
+   aidw work list . | jq --arg b "$(git branch --show-current)" \
+     '[.[] | select(.attachments[]?.branch == $b)]'
+   ```
+
+2. **If the branch-filtered array from step 1 has exactly one record**
+   (this branch has already been migrated into the work-model store via
+   `aidw migrate-state`):
 
    a. The primary action for "I'm done with this branch" is now the
       lifecycle command, not the legacy archive pass:
@@ -21,16 +32,30 @@ When this skill is used:
       ```
 
       Ask for confirmation before running it, and tell the user which
-      `<id>` you're archiving (from the probe's output) and its title.
+      `<id>` you're archiving (the sole branch-filtered match) and its
+      title. Never pick an `<id>` from the unfiltered probe — a repo with
+      other migrated branches must not have one of those records archived
+      by a `wip-cleanup` run against a different branch.
 
-   b. After that, offer — informationally, not auto-run — to also check
-      what a legacy pass would additionally do: "There is also unmigrated
-      legacy `.wip` state still on disk for other branches on this repo;
-      here's what a legacy cleanup pass would additionally do." Only if the
-      user explicitly asks to proceed, continue with steps 3-7 below exactly
-      as the no-migrated-record path does — a migrated `work` record does
-      not disable or narrow the legacy path in any way, it only changes
-      which action this skill recommends first.
+      If a mis-archive ever happens anyway, the recovery is
+      `aidw work activate <id>` (sets the record back to `active`) — tell
+      the user this if they ask how to undo it.
+
+   b. **If the branch-filtered array has more than one record** (e.g. this
+      branch was migrated more than once, or carries both a stale `active`
+      and a fresh `archived` record per the global-archive migration's
+      documented stale-pairing behavior): do not guess. List every match's
+      `id` and `title` and ask the user which one (or ones) to archive,
+      then proceed as in 2a for each confirmed choice.
+
+   c. After archiving, offer — informationally, not auto-run — to also
+      check what a legacy pass would additionally do: "There is also
+      unmigrated legacy `.wip` state still on disk for other branches on
+      this repo; here's what a legacy cleanup pass would additionally do."
+      Only if the user explicitly asks to proceed, continue with steps 4-8
+      below exactly as the no-migrated-record path does — a migrated
+      `work` record does not disable or narrow the legacy path in any way,
+      it only changes which action this skill recommends first.
 
 3. **Global-archive disclosure guard** (runs regardless of whether step 1's
    probe found a migrated record — `.wip/.archive/` content is orthogonal to
@@ -48,9 +73,10 @@ When this skill is used:
    > `archived` `work` records (still deletable later via `work purge <id>`,
    > just not lost outright).
 
-4. **If `work list .` returns `[]`** (no migrated record for this repo — a
-   pre-`migrate-state` repo, or a fresh clone), fall back to exactly today's
-   behavior, unchanged:
+4. **If the branch-filtered array from step 1 is empty** (no migrated record
+   for *this branch* specifically — a pre-`migrate-state` repo, a fresh
+   clone, or a repo where other branches are migrated but this one isn't),
+   fall back to exactly today's behavior, unchanged:
 
    Run a dry run first:
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"aidw/cmd/aidw/internal/state"
 	"aidw/cmd/aidw/internal/util"
 )
 
@@ -1168,30 +1169,32 @@ func TestDeleteSessionBindingsFor_DecideUnderLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First call reaps sess-s for A.
+	// Rebind sess-s to unrelated, still-live work id C INSIDE the race
+	// window this function's afterListSessionIDsHook test seam exists to
+	// exercise — between the unlocked listing and the lock-acquire on
+	// sess-s's own path. Review finding M2: the previous form of this test
+	// (reap, rebind, reap again) passed identically against a
+	// decide-before-lock implementation, because by the second call the
+	// rebind had already fully completed before either implementation ever
+	// looked at the binding — it exercised the *comparison*, not the
+	// *ordering*. This form forces the rebind to land inside the single
+	// call under test.
+	afterListSessionIDsHook = func(sid string) {
+		if sid != "sess-s" {
+			return
+		}
+		if err := SaveSessionBinding(stateDir, "sess-s", c.WorkID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { afterListSessionIDsHook = nil })
+
 	removed, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 1 || removed[0] != "sess-s" {
-		t.Fatalf("first call removed = %v, want [sess-s]", removed)
-	}
-
-	// Rebind sess-s to unrelated, still-live work id C — simulating a
-	// concurrent SaveSessionBinding landing between an unlocked listing and
-	// this function's lock acquisition on a hypothetical second purge of A.
-	if err := SaveSessionBinding(stateDir, "sess-s", c.WorkID); err != nil {
-		t.Fatal(err)
-	}
-
-	// A second reap "for A" must find nothing left to remove — it must not
-	// delete sess-s's now-unrelated binding to C.
-	removed2, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed2) != 0 {
-		t.Fatalf("second call removed = %v, want none (sess-s now points at C)", removed2)
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want none — sess-s was rebound to C before this call's lock-acquire, so its fresh under-lock read must see C, not the stale target A", removed)
 	}
 	binding, err := LoadSessionBinding(stateDir, "sess-s")
 	if err != nil || binding == nil {
@@ -1199,6 +1202,35 @@ func TestDeleteSessionBindingsFor_DecideUnderLock(t *testing.T) {
 	}
 	if binding.WorkID != c.WorkID {
 		t.Fatalf("sess-s binding = %q, want %q", binding.WorkID, c.WorkID)
+	}
+}
+
+// TestDeleteSessionBindingsFor_LockBusy_SkipsWithoutFailing pins the
+// "not fatal" half of §2.5's design: a session file another process is
+// mid-rebind of (lock held elsewhere) is skipped, not treated as an error
+// for the whole reap.
+func TestDeleteSessionBindingsFor_LockBusy_SkipsWithoutFailing(t *testing.T) {
+	stateDir := t.TempDir()
+	a := saveRecord(t, stateDir, "A")
+	if err := SaveSessionBinding(stateDir, "sess-busy", a.WorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := state.AcquireLock(SessionPath(stateDir, "sess-busy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	removed, err := DeleteSessionBindingsFor(stateDir, a.WorkID)
+	if err != nil {
+		t.Fatalf("a lock-busy candidate must not fail the whole reap: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want none — sess-busy's lock could not be acquired", removed)
+	}
+	if _, statErr := os.Stat(SessionPath(stateDir, "sess-busy")); statErr != nil {
+		t.Errorf("sess-busy's binding must survive when its lock is busy: %v", statErr)
 	}
 }
 
@@ -1268,5 +1300,65 @@ func TestResolve_DoesNotReapBindingOnUnreadableNotMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(SessionPath(stateDir, "sess-b")); err != nil {
 		t.Errorf("binding to an unreadable-but-present record must be left untouched: %v", err)
+	}
+}
+
+// TestReapDanglingBinding_DecideUnderLock is reapDanglingBinding's
+// counterpart to TestDeleteSessionBindingsFor_DecideUnderLock (review
+// finding M2 — "the same seam covers reapDanglingBinding, which today has
+// no race test at all"): a concurrent SaveSessionBinding rebinds the
+// session to unrelated, still-live work id C inside the race window
+// afterDanglingCheckHook exists to exercise, between confirming the
+// binding is dangling and acquiring its lock. The fresh under-lock re-read
+// must see C and correctly no-op.
+func TestReapDanglingBinding_DecideUnderLock(t *testing.T) {
+	stateDir := t.TempDir()
+	c := saveRecord(t, stateDir, "C")
+	staleWorkID := "01TESTPURGEDWORKID000001" // simulates the now-deleted record's id
+	if err := SaveSessionBinding(stateDir, "sess-race", staleWorkID); err != nil {
+		t.Fatal(err)
+	}
+
+	afterDanglingCheckHook = func(sessionID string) {
+		if sessionID != "sess-race" {
+			return
+		}
+		if err := SaveSessionBinding(stateDir, "sess-race", c.WorkID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { afterDanglingCheckHook = nil })
+
+	reapDanglingBinding(stateDir, "sess-race", staleWorkID)
+
+	binding, err := LoadSessionBinding(stateDir, "sess-race")
+	if err != nil || binding == nil {
+		t.Fatalf("sess-race binding should exist (rebound to C, not deleted): %v (%v)", binding, err)
+	}
+	if binding.WorkID != c.WorkID {
+		t.Fatalf("sess-race binding = %q, want %q", binding.WorkID, c.WorkID)
+	}
+}
+
+// TestReapDanglingBinding_LockBusy_SkipsSilently pins the "swallowed
+// silently" half of reapDanglingBinding's doc comment: a lock-acquire
+// failure never panics, errors, or changes Resolve's own return value —
+// exercised here at the unit level directly against the helper.
+func TestReapDanglingBinding_LockBusy_SkipsSilently(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := SaveSessionBinding(stateDir, "sess-busy", "some-purged-work-id"); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := state.AcquireLock(SessionPath(stateDir, "sess-busy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	reapDanglingBinding(stateDir, "sess-busy", "some-purged-work-id")
+
+	if _, statErr := os.Stat(SessionPath(stateDir, "sess-busy")); statErr != nil {
+		t.Errorf("sess-busy's binding must survive when its lock is busy: %v", statErr)
 	}
 }

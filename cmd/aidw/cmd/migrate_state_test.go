@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -268,5 +269,71 @@ func TestMigrateState_IncludeGlobalArchive_Plumbing(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected exactly 1 work record after --include-global-archive, got %d", len(entries))
+	}
+}
+
+// TestMigrateState_CleanupSources_IncludeGlobalArchive pins review findings
+// M5/M6: --include-global-archive is no longer silently ignored under
+// --cleanup-sources — a migrated .wip/.archive/ entry is a real cleanup
+// candidate, not permanently un-removable by anything short of the legacy,
+// indiscriminate clear-wip/clear-others --purge.
+func TestMigrateState_CleanupSources_IncludeGlobalArchive(t *testing.T) {
+	repo := initGitRepoWithBranch(t, "main")
+	archiveDir := filepath.Join(repo, ".wip", ".archive", "20260101-foo")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statusJSON := `{"branch":"foo","stage":"started"}`
+	if err := os.WriteFile(filepath.Join(archiveDir, "status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	migrate := exec.Command(buildAidw(t), "migrate-state", ".", "--include-global-archive")
+	migrate.Dir = repo
+	migrate.Env = append(os.Environ(), "AIDW_STATE_DIR="+stateDir)
+	if out, err := migrate.CombinedOutput(); err != nil {
+		t.Fatalf("run aidw migrate-state --include-global-archive: %v\n%s", err, out)
+	}
+
+	// --cleanup-sources WITHOUT --include-global-archive must not see the
+	// archived entry at all (Discover alone skips .archive/ by design).
+	withoutFlag := exec.Command(buildAidw(t), "migrate-state", ".", "--cleanup-sources", "--dry-run")
+	withoutFlag.Dir = repo
+	withoutFlag.Env = append(os.Environ(), "AIDW_STATE_DIR="+stateDir)
+	out, err := withoutFlag.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run aidw migrate-state --cleanup-sources --dry-run: %v\n%s", err, out)
+	}
+	var preview struct {
+		Candidates []string `json:"candidates"`
+	}
+	if err := json.Unmarshal(out, &preview); err != nil {
+		t.Fatalf("dry-run output is not JSON: %v\n%s", err, out)
+	}
+	if len(preview.Candidates) != 0 {
+		t.Fatalf("--cleanup-sources without --include-global-archive must not see the archived entry, got %+v", preview.Candidates)
+	}
+
+	// WITH --include-global-archive: the archived entry is a real,
+	// deletable candidate.
+	withFlag := exec.Command(buildAidw(t), "migrate-state", ".", "--cleanup-sources", "--include-global-archive")
+	withFlag.Dir = repo
+	withFlag.Env = append(os.Environ(), "AIDW_STATE_DIR="+stateDir)
+	out, err = withFlag.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run aidw migrate-state --cleanup-sources --include-global-archive: %v\n%s", err, out)
+	}
+	var result struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("cleanup output is not JSON: %v\n%s", err, out)
+	}
+	if len(result.Deleted) != 1 {
+		t.Fatalf("expected exactly 1 deleted source, got %+v", result)
+	}
+	if _, statErr := os.Stat(archiveDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected %s to be deleted, stat err=%v", archiveDir, statErr)
 	}
 }

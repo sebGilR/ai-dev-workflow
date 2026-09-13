@@ -43,7 +43,7 @@ var migrateStateCmd = &cobra.Command{
 		}
 
 		if cleanupSources {
-			runCleanupSources(roots, dryRun)
+			runCleanupSources(roots, dryRun, includeGlobalArchive)
 			return
 		}
 
@@ -75,8 +75,14 @@ type cleanupResult struct {
 // wip.go:68) when PlanCleanup finds zero candidates, since running the
 // destructive path for no effect is more likely a misconfiguration than
 // intent.
-func runCleanupSources(roots []string, dryRun bool) {
-	candidates, blocked, err := migrate.PlanCleanup(state.StateDir(), roots)
+//
+// includeGlobalArchive threads --include-global-archive through to
+// PlanCleanupWithOptions (review findings M5/M6) — previously this flag was
+// silently ignored under --cleanup-sources, and a migrated .wip/.archive/
+// entry had no removal path other than the legacy, indiscriminate
+// clear-wip/clear-others --purge.
+func runCleanupSources(roots []string, dryRun bool, includeGlobalArchive bool) {
+	candidates, blocked, err := migrate.PlanCleanupWithOptions(state.StateDir(), roots, migrate.Options{IncludeGlobalArchive: includeGlobalArchive})
 	if err != nil {
 		Die("migrate-state --cleanup-sources: %v", err)
 	}

@@ -3,6 +3,7 @@ package migrate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"aidw/cmd/aidw/internal/work"
@@ -157,6 +158,114 @@ func TestPlanCleanup_DanglingMappingEntry_IsBlockedNeverCandidate(t *testing.T) 
 	}
 	if _, ok := blocked[wipDir]; !ok {
 		t.Fatalf("expected %s to be blocked, got %+v", wipDir, blocked)
+	}
+}
+
+// --- Cluster I review finding H1: ForgetSource/SourcesFor ---
+
+// TestForgetSource_RemovesOnlyMatchingEntries pins the core behavior: it
+// removes every wip-paths.json entry whose WorkID matches, and leaves every
+// other entry (a different work_id) completely untouched.
+func TestForgetSource_RemovesOnlyMatchingEntries(t *testing.T) {
+	stateDir := setStateDir(t)
+	repoA := initTestRepo(t, "a")
+	repoB := initTestRepo(t, "b")
+	writeStatusJSON(t, filepath.Join(repoA, ".wip", "20260101000000-a"), "a", "started")
+	writeStatusJSON(t, filepath.Join(repoB, ".wip", "20260101000000-b"), "b", "started")
+
+	if _, err := Run(stateDir, []string{repoA, repoB}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := work.ListRecords(stateDir)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("setup: expected 2 records, got %d, err=%v", len(records), err)
+	}
+	targetID := records[0].WorkID
+	otherID := records[1].WorkID
+
+	before, err := SourcesFor(stateDir, targetID)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("setup: expected 1 source mapped to %s, got %+v, err=%v", targetID, before, err)
+	}
+
+	removed, err := ForgetSource(stateDir, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != before[0] {
+		t.Fatalf("removed = %+v, want %+v", removed, before)
+	}
+
+	after, err := SourcesFor(stateDir, targetID)
+	if err != nil || len(after) != 0 {
+		t.Fatalf("expected 0 sources mapped to %s after ForgetSource, got %+v, err=%v", targetID, after, err)
+	}
+	otherSources, err := SourcesFor(stateDir, otherID)
+	if err != nil || len(otherSources) != 1 {
+		t.Fatalf("expected the unrelated work_id's mapping entry to survive untouched, got %+v, err=%v", otherSources, err)
+	}
+}
+
+// TestForgetSource_NoMatchingEntries_IsANoop pins that calling ForgetSource
+// for a work_id with no mapping entry (e.g. a record created directly via
+// `work start`, never migrated) succeeds and removes nothing.
+func TestForgetSource_NoMatchingEntries_IsANoop(t *testing.T) {
+	stateDir := setStateDir(t)
+	removed, err := ForgetSource(stateDir, "no-such-work-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("expected nothing removed, got %+v", removed)
+	}
+}
+
+// TestPlanCleanup_AfterForgetSource_ClassifiedAsUnmigratedNotDangling pins
+// the classification improvement half of review finding H1: once a purged
+// record's mapping entry has been forgotten (the fix `work purge` now
+// applies), PlanCleanup reports the source as ordinary "not yet migrated"
+// rather than the alarming "dangling mapping entry" — because, as far as
+// wip-paths.json is concerned, this source has never been migrated at all,
+// which is the honest, unambiguous state to leave it in after a deliberate
+// purge (§2a Q3's dangling-pointer language describes an unexpected crash,
+// not this).
+func TestPlanCleanup_AfterForgetSource_ClassifiedAsUnmigratedNotDangling(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "main")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-main")
+	writeStatusJSON(t, wipDir, "main", "started")
+
+	if _, err := Run(stateDir, []string{repo}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := work.ListRecords(stateDir)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("setup: expected 1 record, got %d, err=%v", len(records), err)
+	}
+	workID := records[0].WorkID
+
+	// Simulate the real work purge sequence: delete the record directory,
+	// then forget its mapping entries — exactly what workPurgeCmd now does.
+	if err := os.RemoveAll(work.Dir(stateDir, workID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ForgetSource(stateDir, workID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, blocked, err := PlanCleanup(stateDir, []string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason, ok := blocked[wipDir]
+	if !ok {
+		t.Fatalf("expected %s to still be blocked (never a cleanup candidate without a live record), got %+v", wipDir, blocked)
+	}
+	if strings.Contains(reason, "dangling") {
+		t.Errorf("blocked reason = %q, want the ordinary not-yet-migrated reason, not the dangling-pointer one — the mapping entry should be gone entirely after ForgetSource", reason)
+	}
+	if !strings.Contains(reason, "not yet migrated") {
+		t.Errorf("blocked reason = %q, want it to say \"not yet migrated\"", reason)
 	}
 }
 

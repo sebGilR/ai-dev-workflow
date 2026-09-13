@@ -23,10 +23,36 @@ import (
 // Every other source is blocked, with a reason recorded. PlanCleanup never
 // deletes anything itself — it only classifies. It performs no mutation of
 // wip-paths.json or any work record.
+//
+// Run(stateDir, roots) is the zero-Options-value convenience wrapper kept
+// for every existing caller/test; it does not consider .wip/.archive/
+// entries, matching its historical behavior exactly.
 func PlanCleanup(stateDir string, roots []string) (candidates []string, blocked map[string]string, err error) {
+	return PlanCleanupWithOptions(stateDir, roots, Options{})
+}
+
+// PlanCleanupWithOptions is PlanCleanup with opts.IncludeGlobalArchive
+// support (review findings M5/M6): without this, a migrated
+// .wip/.archive/ entry could never be removed by --cleanup-sources (only
+// Discover's branch-dir sources were ever considered), and
+// --include-global-archive was silently a no-op when combined with
+// --cleanup-sources at the CLI layer. Passing the SAME opt-in flag through
+// to this function, rather than refusing the combination outright, makes
+// the flag actually do what its name promises everywhere it appears, and
+// gives a migrated archive entry a real removal path other than the
+// legacy, indiscriminate clear-wip/clear-others --purge that R5's
+// disclosure guard exists to warn users away from.
+func PlanCleanupWithOptions(stateDir string, roots []string, opts Options) (candidates []string, blocked map[string]string, err error) {
 	sources, err := Discover(roots)
 	if err != nil {
 		return nil, nil, fmt.Errorf("discover: %w", err)
+	}
+	if opts.IncludeGlobalArchive {
+		archived, err := DiscoverArchived(roots)
+		if err != nil {
+			return nil, nil, fmt.Errorf("discover archived: %w", err)
+		}
+		sources = append(sources, archived...)
 	}
 
 	blocked = map[string]string{}

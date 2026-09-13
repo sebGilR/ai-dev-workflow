@@ -126,3 +126,62 @@ func Update(stateDir string, mutate func(*Mapping) error) error {
 	}
 	return nil
 }
+
+// SourcesFor returns every wip-paths.json (normalized) sourceWipDir key
+// whose entry points at workID, without deleting anything — a read-only
+// preview used by `work purge <id> --dry-run` to show what ForgetSource
+// would remove. Mirrors SessionIDsBoundTo's role for
+// DeleteSessionBindingsFor.
+func SourcesFor(stateDir, workID string) ([]string, error) {
+	m, err := loadMapping(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for key, entry := range m.Entries {
+		if entry.WorkID == workID {
+			out = append(out, key)
+		}
+	}
+	return out, nil
+}
+
+// ForgetSource removes every wip-paths.json entry whose WorkID equals
+// workID, returning the normalized sourceWipDir keys that were removed.
+//
+// Exists to close a gap Cluster I's review found: work purge deletes
+// work/<id>/ but has no knowledge of (and correctly no access to)
+// wip-paths.json — internal/work never imports internal/migrate. Without
+// this, a purged record's mapping entry survives pointing at a work_id that
+// no longer exists; the next plain migrate-state run finds that entry,
+// routes to reverify, gets ErrNotFound, and — per §2a Q3's
+// dangling-pointer-recovery rule, designed for a crash between Update and
+// Save, not for deliberate permanent deletion — re-mints a brand-new record
+// from the still-on-disk legacy source. cmd/aidw/cmd/work.go's workPurgeCmd
+// calls this immediately after DeleteRecord succeeds, exactly parallel to
+// how session-binding reap is wired there: single-responsibility, called
+// from the command that has visibility into both packages, not folded into
+// DeleteRecord itself (internal/work must not import internal/migrate).
+func ForgetSource(stateDir, workID string) (removed []string, err error) {
+	// Accumulated inside the closure, only surfaced to the caller once
+	// Update has actually committed the write — if WriteJSON fails after
+	// mutate ran, nothing was persisted, so the caller must not be told
+	// entries were removed that are, in fact, still on disk.
+	var deleted []string
+	err = Update(stateDir, func(m *Mapping) error {
+		for key, entry := range m.Entries {
+			if entry.WorkID == workID {
+				delete(m.Entries, key)
+				deleted = append(deleted, key)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return []string{}, fmt.Errorf("forget source for %s: %w", workID, err)
+	}
+	if deleted == nil {
+		deleted = []string{}
+	}
+	return deleted, nil
+}
