@@ -45,8 +45,12 @@ func TestPlanCleanup_VerifiedCopiedSource_IsCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := DeleteSources(candidates); err != nil {
+	deleted, err := DeleteSources(candidates)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != wipDir {
+		t.Fatalf("expected deleted=[%s], got %+v", wipDir, deleted)
 	}
 	if _, err := os.Stat(wipDir); !os.IsNotExist(err) {
 		t.Fatalf("expected source dir to be deleted, stat err=%v", err)
@@ -70,6 +74,38 @@ func TestPlanCleanup_VerifiedCopiedSource_IsCandidate(t *testing.T) {
 	records, err := work.ListRecords(stateDir)
 	if err != nil || len(records) != 1 {
 		t.Fatalf("expected 1 record to still exist, got %d, err=%v", len(records), err)
+	}
+}
+
+// TestDeleteSources_PartialFailure_StillReportsWhatWasDeleted pins
+// review.md #5: an undeletable candidate mid-loop must not discard the
+// record of what was already permanently removed before it.
+func TestDeleteSources_PartialFailure_StillReportsWhatWasDeleted(t *testing.T) {
+	tmp := t.TempDir()
+	before := filepath.Join(tmp, "before")
+	after := filepath.Join(tmp, "after")
+	for _, d := range []string{before, after} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A NUL byte makes the underlying syscall fail with EINVAL on every
+	// platform this repo targets, without relying on filesystem
+	// permission semantics that vary by OS/user.
+	undeletable := filepath.Join(tmp, "bad\x00path")
+
+	deleted, err := DeleteSources([]string{before, undeletable, after})
+	if err == nil {
+		t.Fatal("expected an error from the undeletable candidate")
+	}
+	if len(deleted) != 2 || deleted[0] != before || deleted[1] != after {
+		t.Fatalf("expected deleted=[%s %s] despite the mid-loop failure, got %+v", before, after, deleted)
+	}
+	if _, statErr := os.Stat(before); !os.IsNotExist(statErr) {
+		t.Fatalf("expected %s to be deleted, stat err=%v", before, statErr)
+	}
+	if _, statErr := os.Stat(after); !os.IsNotExist(statErr) {
+		t.Fatalf("expected %s to be deleted, stat err=%v", after, statErr)
 	}
 }
 

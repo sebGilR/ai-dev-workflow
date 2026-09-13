@@ -87,6 +87,47 @@ func hashesEqual(a, b map[string]string) bool {
 	return true
 }
 
+// verifyTwoSided is the single shared implementation of this cluster's most
+// safety-critical rule: a source is only "still good" if BOTH the current
+// source files AND the current destination attachment files match the
+// record's stored Provenance.SourceHashes. Comparing only the source side
+// would miss destination-side corruption/drift entirely, since an
+// unmodified source always still matches the digest that was itself
+// computed from that same source — this is what stands between
+// --cleanup-sources and deleting a source whose copy is corrupt (review.md
+// #7: this exact duplication, maintained by hand across reverify and
+// PlanCleanup, was already the proximate cause of one Batch 3 R1 test-gap
+// finding).
+//
+// It deliberately does NOT call work.Load or classify a dangling pointer —
+// reverify and PlanCleanup disagree on purpose about how to handle a load
+// failure (reverify re-migrates on ErrNotFound specifically, per Batch 3 R3
+// finding 2; PlanCleanup blocks on ANY load failure) and folding that
+// decision in here would either reintroduce the auto-repoint bug or change
+// PlanCleanup's policy. Callers load the record themselves and pass in only
+// what they already have.
+//
+// err is returned only for an I/O failure while hashing either side — the
+// two callers each route that to their own distinct failure bucket
+// (Summary.Skipped vs. a blocked reason). ok/reason report a genuine
+// checksum mismatch, which the two callers also route differently
+// (Summary.Divergent vs. a blocked reason) — the split is preserved by
+// leaving both decisions at the call site.
+func verifyTwoSided(sourceWipDir, attachmentsDir string, want map[string]string) (ok bool, reason string, err error) {
+	srcHashes, err := HashTree(sourceWipDir)
+	if err != nil {
+		return false, "", fmt.Errorf("hash source %s: %w", sourceWipDir, err)
+	}
+	destHashes, err := HashTree(attachmentsDir)
+	if err != nil {
+		return false, "", fmt.Errorf("hash destination %s: %w", attachmentsDir, err)
+	}
+	if !hashesEqual(srcHashes, want) || !hashesEqual(destHashes, want) {
+		return false, "checksum mismatch against the migrated record: source or destination has drifted since migration", nil
+	}
+	return true, "", nil
+}
+
 // Run discovers every source dir under roots, and for each one:
 //   - if wip-paths.json has no entry for it (normalized) yet: Convert +
 //     copy + verify + work.Save the new record (never a raw file write,
@@ -254,17 +295,13 @@ func reverify(stateDir string, src SourceDir, normKey string, entry MappingEntry
 		return fmt.Errorf("mapped work record %s is present but unreadable, not re-migrating: %w", entry.WorkID, err)
 	}
 
-	srcHashes, err := HashTree(src.SourceWipDir)
-	if err != nil {
-		return fmt.Errorf("hash source %s: %w", src.SourceWipDir, err)
-	}
 	attachmentsDir := filepath.Join(work.Dir(stateDir, entry.WorkID), "attachments")
-	destHashes, err := HashTree(attachmentsDir)
+	ok, _, err := verifyTwoSided(src.SourceWipDir, attachmentsDir, record.Provenance.SourceHashes)
 	if err != nil {
-		return fmt.Errorf("hash destination %s: %w", attachmentsDir, err)
+		return err
 	}
 
-	if hashesEqual(srcHashes, record.Provenance.SourceHashes) && hashesEqual(destHashes, record.Provenance.SourceHashes) {
+	if ok {
 		if err := Update(stateDir, func(m *Mapping) error {
 			entry.VerifiedAt = util.NowISO()
 			m.Entries[normKey] = entry

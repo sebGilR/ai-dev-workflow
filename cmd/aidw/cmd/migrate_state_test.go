@@ -104,6 +104,43 @@ func TestResolveMigrateRoots_DuplicatePathNotDoubled(t *testing.T) {
 	}
 }
 
+// --- resolveMigrateRoots: review.md #8 — a symlinked alias of an already-
+// discovered worktree must dedup against it, not double it. ---
+
+func TestResolveMigrateRoots_SymlinkedPathDedupedWithRealPath(t *testing.T) {
+	repo := initGitRepoWithBranch(t, "main")
+
+	// A symlink alias of the main worktree, alongside a parent dir that
+	// itself isn't the repo — mirrors macOS's real /tmp -> /private/tmp
+	// case: two distinct absolute spellings of the SAME physical
+	// directory. filepath.Abs alone would treat these as different roots;
+	// filepath.EvalSymlinks resolves both to the same key.
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "repo-alias")
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	roots, err := resolveMigrateRoots(repo, []string{alias}, false)
+	if err != nil {
+		t.Fatalf("resolveMigrateRoots: %v", err)
+	}
+
+	count := 0
+	for _, r := range roots {
+		resolved, err := filepath.EvalSymlinks(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved == repo {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected the symlinked alias to dedup with the real worktree path, got %d occurrences: %+v", count, roots)
+	}
+}
+
 // --- resolveMigrateRoots: item 3(c) — a nonexistent --path is skipped, not fatal ---
 
 func TestResolveMigrateRoots_NonexistentPathSkippedNotFatal(t *testing.T) {

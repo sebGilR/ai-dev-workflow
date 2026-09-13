@@ -89,10 +89,16 @@ func runCleanupSources(roots []string, dryRun bool) {
 		Die("migrate-state --cleanup-sources: nothing to clean up — no verified-copied sources found under the given roots (run without --cleanup-sources first, or check the %d blocked entr(y/ies) reported by --dry-run)", len(blocked))
 	}
 
-	if err := migrate.DeleteSources(candidates); err != nil {
+	deleted, err := migrate.DeleteSources(candidates)
+	if err != nil {
+		// deleted still reflects every path actually removed before the
+		// failure — print it before dying so a partial failure never
+		// leaves the user with no record of what was already permanently
+		// deleted (review.md #5).
+		PrintJSON(cleanupResult{Candidates: candidates, Blocked: blocked, Deleted: deleted, DryRun: false})
 		Die("migrate-state --cleanup-sources: %v", err)
 	}
-	PrintJSON(cleanupResult{Candidates: candidates, Blocked: blocked, Deleted: candidates, DryRun: false})
+	PrintJSON(cleanupResult{Candidates: candidates, Blocked: blocked, Deleted: deleted, DryRun: false})
 }
 
 // resolveMigrateRoots implements D2's bounded root resolution: the default
@@ -122,14 +128,27 @@ func resolveMigrateRoots(path string, extraPaths []string, allRegistered bool) (
 			fmt.Fprintf(os.Stderr, "[aidw] migrate-state: skipping unresolvable root %s: %v\n", p, err)
 			return
 		}
-		if seen[abs] {
-			return
-		}
 		if _, err := os.Stat(abs); err != nil {
 			fmt.Fprintf(os.Stderr, "[aidw] migrate-state: skipping unresolvable root %s: %v\n", p, err)
 			return
 		}
-		seen[abs] = true
+		// Dedup key must match migrate.go/cleanup.go's own source-path
+		// normalization (filepath.EvalSymlinks), not a bare Abs — on
+		// macOS /tmp is a symlink to /private/tmp, so a worktree reported
+		// by `git worktree list` and the same directory reached via
+		// --path /tmp/... would otherwise dedup as two distinct roots for
+		// one physical directory (review.md #8). A root may legitimately
+		// not exist yet by the time EvalSymlinks runs (already handled by
+		// the Stat above, but keep this belt-and-suspenders): fall back
+		// to abs if it errors.
+		key := abs
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			key = resolved
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
 		roots = append(roots, abs)
 	}
 

@@ -56,20 +56,14 @@ func PlanCleanup(stateDir string, roots []string) (candidates []string, blocked 
 			continue
 		}
 
-		srcHashes, err := HashTree(src.SourceWipDir)
-		if err != nil {
-			blocked[src.SourceWipDir] = fmt.Sprintf("hash source: %v", err)
-			continue
-		}
 		attachmentsDir := filepath.Join(work.Dir(stateDir, entry.WorkID), "attachments")
-		destHashes, err := HashTree(attachmentsDir)
+		ok, reason, err := verifyTwoSided(src.SourceWipDir, attachmentsDir, record.Provenance.SourceHashes)
 		if err != nil {
-			blocked[src.SourceWipDir] = fmt.Sprintf("hash destination: %v", err)
+			blocked[src.SourceWipDir] = err.Error()
 			continue
 		}
-
-		if !hashesEqual(srcHashes, record.Provenance.SourceHashes) || !hashesEqual(destHashes, record.Provenance.SourceHashes) {
-			blocked[src.SourceWipDir] = "checksum mismatch against the migrated record: source or destination has drifted since migration"
+		if !ok {
+			blocked[src.SourceWipDir] = reason
 			continue
 		}
 
@@ -86,11 +80,24 @@ func PlanCleanup(stateDir string, roots []string) (candidates []string, blocked 
 // wip-paths.json: a mapping entry's work_id/repo_id pointer remains valid
 // and useful after its source is deleted, so cleanup never mutates the
 // mapping.
-func DeleteSources(candidates []string) error {
+//
+// deleted always reflects every path actually removed, even when err is
+// non-nil — this is the only irreversible operation in this package, so a
+// mid-loop failure (a permission error, an NFS/EBUSY hiccup) must never
+// leave the caller with no record of what already happened. The loop does
+// not stop at the first failure; it continues so a caller sees every
+// deletion outcome, not just the first one.
+func DeleteSources(candidates []string) (deleted []string, err error) {
+	deleted = []string{}
+	var firstErr error
 	for _, c := range candidates {
-		if err := os.RemoveAll(c); err != nil {
-			return fmt.Errorf("delete %s: %w", c, err)
+		if rmErr := os.RemoveAll(c); rmErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete %s: %w", c, rmErr)
+			}
+			continue
 		}
+		deleted = append(deleted, c)
 	}
-	return nil
+	return deleted, firstErr
 }
