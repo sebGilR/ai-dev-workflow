@@ -67,6 +67,9 @@ func Load(stateDir, workID string) (*Record, error) {
 	path := RecordPath(stateDir, workID)
 	var r Record
 	if err := util.ReadJSON(path, &r); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load work record %s: %w: %w", workID, ErrNotFound, err)
+		}
 		return nil, fmt.Errorf("load work record %s: %w", workID, err)
 	}
 	if r.SchemaVersion != CurrentSchemaVersion {
