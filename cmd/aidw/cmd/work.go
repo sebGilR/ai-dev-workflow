@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"aidw/cmd/aidw/internal/git"
+	"aidw/cmd/aidw/internal/migrate"
 	"aidw/cmd/aidw/internal/state"
 	"aidw/cmd/aidw/internal/work"
 )
@@ -240,6 +241,159 @@ var workAttachCmd = &cobra.Command{
 	},
 }
 
+// newLifecycleCmd builds a `work <verb> <id>` command that sets
+// r.Lifecycle = lifecycle via UpdateRecord's load-mutate-save-under-lock
+// cycle — byte-for-byte the shape workAttachCmd/runCheckpointDirect's
+// mutate closures already establish, just a one-line mutation. Stage is
+// never touched (§2.1's invariant: lifecycle and stage are independent).
+func newLifecycleCmd(verb string, lifecycle work.Lifecycle) *cobra.Command {
+	return &cobra.Command{
+		Use:   verb + " <id>",
+		Short: fmt.Sprintf("Set a work record's lifecycle to %s", lifecycle),
+		Args:  cobra.ExactArgs(1),
+		Run: func(c *cobra.Command, args []string) {
+			r, err := work.UpdateRecord(state.StateDir(), args[0], func(r *work.Record) error {
+				r.Lifecycle = lifecycle
+				return nil
+			})
+			if err != nil {
+				Die("work %s: %v", verb, err)
+			}
+			PrintJSON(r)
+		},
+	}
+}
+
+var workPauseCmd = newLifecycleCmd("pause", work.LifecyclePaused)
+var workDoneCmd = newLifecycleCmd("done", work.LifecycleDone)
+var workArchiveCmd = newLifecycleCmd("archive", work.LifecycleArchived)
+
+// workActivateCmd is the inverse of workArchiveCmd/workPauseCmd/workDoneCmd
+// — added per Cluster I review finding H2: without an explicit "un-archive"
+// verb, the re-routed skills' mis-selected `work archive <id>` (see
+// workPurgeCmd's neighboring history and claude/skills/wip-cleanup's
+// branch-filtered probe fix) had no clean, discoverable recovery path other
+// than the undocumented fact that `work pause <id>` also re-enters
+// resolve.go's Active||Paused candidacy. `work activate <id>` sets
+// Lifecycle back to Active explicitly, following the identical
+// UpdateRecord shape every other lifecycle verb uses.
+var workActivateCmd = newLifecycleCmd("activate", work.LifecycleActive)
+
+// purgePreview is workPurgeCmd's --dry-run output shape: everything that
+// would be permanently deleted, computed without acquiring any lock or
+// checking the archived-only precondition — a preview must always be
+// computable (wip.go's dry-run-never-refused rule, §2.2).
+type purgePreview struct {
+	WorkID          string   `json:"work_id"`
+	Title           string   `json:"title"`
+	Lifecycle       string   `json:"lifecycle"`
+	Attachments     []string `json:"attachments"` // worktree paths
+	SessionBindings []string `json:"session_bindings"`
+	// MappingEntries lists the wip-paths.json (normalized sourceWipDir) keys
+	// that ForgetSource would remove — added per Cluster I review finding
+	// H1: without this, a plain migrate-state run after a real purge would
+	// see this workID's mapping entry as dangling and re-mint a fresh
+	// record for the same legacy source, resurrecting content the user was
+	// told was permanently deleted.
+	MappingEntries []string `json:"mapping_entries"`
+	DryRun         bool     `json:"dry_run"`
+}
+
+// purgeResult is workPurgeCmd's real-deletion output shape.
+type purgeResult struct {
+	WorkID                 string   `json:"work_id"`
+	Deleted                bool     `json:"deleted"`
+	SessionBindingsRemoved []string `json:"session_bindings_removed"`
+	// SessionReapError is populated when DeleteSessionBindingsFor itself
+	// failed after a successful record delete — reported here rather than
+	// flipping the command's exit code (§2.5's "not fatal" rule: the record
+	// delete already succeeded, and a reap failure must never be confused
+	// with a record-delete failure).
+	SessionReapError string `json:"session_reap_error,omitempty"`
+	// MappingEntriesForgotten lists the wip-paths.json keys ForgetSource
+	// actually removed (review finding H1). Never confused with a
+	// record-delete failure, for the same "not fatal" reason as the session
+	// reap: the record is already gone by the time this runs.
+	MappingEntriesForgotten []string `json:"mapping_entries_forgotten"`
+	MappingForgetError      string   `json:"mapping_forget_error,omitempty"`
+}
+
+var workPurgeCmd = &cobra.Command{
+	Use:   "purge <id>",
+	Short: "Permanently delete a work record and its attachments",
+	Args:  cobra.ExactArgs(1),
+	Run: func(c *cobra.Command, args []string) {
+		dryRun, _ := c.Flags().GetBool("dry-run")
+		force, _ := c.Flags().GetBool("force")
+		workID := args[0]
+
+		if dryRun {
+			r, err := work.Load(state.StateDir(), workID)
+			if err != nil {
+				Die("work purge: %v", err)
+			}
+			paths := make([]string, 0, len(r.Attachments))
+			for _, a := range r.Attachments {
+				paths = append(paths, a.WorktreePath)
+			}
+			bindings, err := work.SessionIDsBoundTo(state.StateDir(), workID)
+			if err != nil {
+				Die("work purge: %v", err)
+			}
+			mappingEntries, err := migrate.SourcesFor(state.StateDir(), workID)
+			if err != nil {
+				Die("work purge: %v", err)
+			}
+			PrintJSON(purgePreview{
+				WorkID:          r.WorkID,
+				Title:           r.Title,
+				Lifecycle:       string(r.Lifecycle),
+				Attachments:     paths,
+				SessionBindings: bindings,
+				MappingEntries:  mappingEntries,
+				DryRun:          true,
+			})
+			return
+		}
+
+		if err := work.DeleteRecord(state.StateDir(), workID, force); err != nil {
+			if errors.Is(err, work.ErrNotArchived) {
+				Die("work purge: %v (run `work archive %s` first, or pass --force)", err, workID)
+			}
+			Die("work purge: %v", err)
+		}
+
+		removed, reapErr := work.DeleteSessionBindingsFor(state.StateDir(), workID)
+		result := purgeResult{
+			WorkID:                 workID,
+			Deleted:                true,
+			SessionBindingsRemoved: removed,
+		}
+		if reapErr != nil {
+			// The record delete already succeeded — a reap failure must
+			// never be confused with a record-delete failure (§2.5's "not
+			// fatal" rule). Report it in the output, exit code stays 0.
+			result.SessionReapError = reapErr.Error()
+			result.SessionBindingsRemoved = []string{}
+		}
+
+		// Review finding H1: forget this workID's wip-paths.json entries
+		// too, for the same "not fatal, the record delete already
+		// succeeded" reason as the session reap. Without this, the next
+		// plain migrate-state run sees a dangling mapping entry and
+		// re-mints a fresh record from the still-on-disk legacy source,
+		// resurrecting content this command just told the user was
+		// permanently deleted.
+		forgotten, forgetErr := migrate.ForgetSource(state.StateDir(), workID)
+		result.MappingEntriesForgotten = forgotten
+		if forgetErr != nil {
+			result.MappingForgetError = forgetErr.Error()
+			result.MappingEntriesForgotten = []string{}
+		}
+		PrintJSON(result)
+	},
+}
+
 var workBindSessionCmd = &cobra.Command{
 	Use:   "bind-session --work <id> --session <id>",
 	Short: "Explicitly bind a session id to a work record",
@@ -443,6 +597,11 @@ func init() {
 	workCmd.AddCommand(workAttachCmd)
 	workCmd.AddCommand(workBindSessionCmd)
 	workCmd.AddCommand(workCheckpointCmd)
+	workCmd.AddCommand(workPauseCmd)
+	workCmd.AddCommand(workDoneCmd)
+	workCmd.AddCommand(workArchiveCmd)
+	workCmd.AddCommand(workActivateCmd)
+	workCmd.AddCommand(workPurgeCmd)
 
 	workStartCmd.Flags().String("title", "", "Title for the new work record")
 	_ = workStartCmd.MarkFlagRequired("title")
@@ -462,6 +621,9 @@ func init() {
 
 	workCheckpointCmd.Flags().String("work", "", "Explicit work id (skips resolution)")
 	workCheckpointCmd.Flags().Bool("from-hook", false, "Read cwd/session_id from a JSON payload on stdin")
+
+	workPurgeCmd.Flags().Bool("dry-run", false, "Preview what would be permanently deleted (never refused)")
+	workPurgeCmd.Flags().Bool("force", false, "Bypass the archived-only precondition")
 
 	Root.AddCommand(workCmd)
 }

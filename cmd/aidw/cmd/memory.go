@@ -12,6 +12,7 @@ import (
 	"aidw/cmd/aidw/internal/git"
 	"aidw/cmd/aidw/internal/memory"
 	"aidw/cmd/aidw/internal/slug"
+	"aidw/cmd/aidw/internal/state"
 )
 
 var memoryCmd = &cobra.Command{
@@ -19,24 +20,56 @@ var memoryCmd = &cobra.Command{
 	Short: "Manage persistent task memory and facts",
 }
 
-// repoAndBranch resolves the two values the memory commands actually need:
-// the repository root (the key every memory row is scoped by) and the
-// slugified current branch name. It deliberately does NOT go through
-// wip.FindBranchState/EnsureBranchState — memory is repo-scoped knowledge and
-// must work on a repo/branch with no .wip state at all (that is what
-// /wip-document-project does on a fresh repo). The slugification must stay
-// identical to wip's resolveBranchName so facts stored here are readable by
+// factsScope is memory.FactsScope under this package's existing local name
+// (every call site below already reads `factsScope`) — declared as an alias
+// rather than a second constant so there is exactly one string literal in
+// the codebase (memory.FactsScope's doc comment). The original design
+// derived scope from the branch ("branch:" + slug), but that cannot satisfy
+// "the same fact looked up from a second worktree of the same clone returns
+// the same value" — git forbids checking out the same branch in two
+// worktrees, so a branch-derived scope is worktree-variant by construction.
+const factsScope = memory.FactsScope
+
+// warnIfUnmigrated prints the same migration hint memoryStatusCmd already
+// reports to stdout, but to STDERR instead, from the two subcommands an
+// existing user is actually likely to run without ever invoking `memory
+// status` first (`memory store`/`memory list`). Without this, H2's
+// user-visible benefit (a fact reads the same from every worktree of a
+// clone) never reaches an existing ~/.claude/memory.db unless the user
+// happens to run `status` unprompted — every pre-existing DB would stay
+// branch-keyed indefinitely. Stderr, not stdout, so the JSON contract on
+// stdout is unchanged for scripts consuming these commands' output.
+func warnIfUnmigrated(db *memory.DB) {
+	if !db.Migrated() {
+		fmt.Fprintln(os.Stderr, "[aidw] this memory.db is on the legacy schema — run 'aidw memory migrate' to move to the new schema")
+	}
+}
+
+// repoAndBranch resolves the values the memory commands actually need: the
+// repository root and slugified current branch (the legacy repo_path/branch
+// identifying pair, still required for a DB that has not run
+// `aidw memory migrate` yet), and the repo_id (the new identifying value,
+// stable across worktrees of the same clone — see state.RepoIdentity). It
+// deliberately does NOT go through wip.FindBranchState/EnsureBranchState —
+// memory is repo-scoped knowledge and must work on a repo/branch with no
+// .wip state at all (that is what /wip-document-project does on a fresh
+// repo). The branch slugification must stay identical to wip's
+// resolveBranchName so legacy-schema facts stored here are readable by
 // callers that resolve the branch through the wip package.
-func repoAndBranch(repoPath string) (repo string, branch string, err error) {
+func repoAndBranch(repoPath string) (repo string, branch string, repoID string, err error) {
 	top, err := git.Toplevel(repoPath)
 	if err != nil {
-		return "", "", fmt.Errorf("not a git repo: %w", err)
+		return "", "", "", fmt.Errorf("not a git repo: %w", err)
 	}
 	b, err := git.CurrentBranch(top)
 	if err != nil {
-		return "", "", fmt.Errorf("get current branch: %w", err)
+		return "", "", "", fmt.Errorf("get current branch: %w", err)
 	}
-	return top, slug.SafeSlug(b), nil
+	id, err := state.RepoIdentity(top)
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve repo id: %w", err)
+	}
+	return top, slug.SafeSlug(b), id, nil
 }
 
 var memoryStatusCmd = &cobra.Command{
@@ -62,7 +95,7 @@ var memoryStoreCmd = &cobra.Command{
 		val := args[2]
 		semantic, _ := c.Flags().GetBool("semantic")
 
-		repo, branch, err := repoAndBranch(repoPath)
+		repo, branch, repoID, err := repoAndBranch(repoPath)
 		if err != nil {
 			Die("resolve repo: %v", err)
 		}
@@ -72,6 +105,7 @@ var memoryStoreCmd = &cobra.Command{
 			Die("memory db: %v", err)
 		}
 		defer db.Close()
+		warnIfUnmigrated(db)
 
 		var emb []float32
 		if semantic {
@@ -85,7 +119,7 @@ var memoryStoreCmd = &cobra.Command{
 			}
 		}
 
-		if err := db.StoreFact(repo, branch, key, val, emb); err != nil {
+		if err := db.StoreFact(repo, branch, repoID, factsScope, key, val, emb); err != nil {
 			Die("store: %v", err)
 		}
 
@@ -105,18 +139,19 @@ var memoryListCmd = &cobra.Command{
 	Run: func(c *cobra.Command, args []string) {
 		isGlobal, _ := c.Flags().GetBool("global")
 		
-		var repoPath, repoName, branch string
+		var repoPath, repoName, branch, repoID string
 		if !isGlobal {
 			if len(args) == 0 {
 				Die("repo path is required for local listing")
 			}
 			repoPath = args[0]
-			repo, b, err := repoAndBranch(repoPath)
+			repo, b, id, err := repoAndBranch(repoPath)
 			if err != nil {
 				Die("resolve repo: %v", err)
 			}
 			repoName = repo
 			branch = b
+			repoID = id
 		}
 
 		db, err := memory.Open()
@@ -124,8 +159,9 @@ var memoryListCmd = &cobra.Command{
 			Die("memory db: %v", err)
 		}
 		defer db.Close()
+		warnIfUnmigrated(db)
 
-		facts, err := db.ListFacts(repoName, branch)
+		facts, err := db.ListFacts(repoName, branch, repoID, factsScope)
 		if err != nil {
 			Die("list: %v", err)
 		}
@@ -164,7 +200,7 @@ var memoryIndexCmd = &cobra.Command{
 			target = args[1]
 		}
 
-		repo, _, err := repoAndBranch(repoPath)
+		repo, _, repoID, err := repoAndBranch(repoPath)
 		if err != nil {
 			Die("resolve repo: %v", err)
 		}
@@ -218,7 +254,7 @@ var memoryIndexCmd = &cobra.Command{
 				return fmt.Errorf("embed %s: %w", relPath, err)
 			}
 
-			if err := db.IndexItem(repo, relPath, content, emb); err != nil {
+			if err := db.IndexItem(repo, repoID, relPath, content, emb); err != nil {
 				return fmt.Errorf("store %s: %w", relPath, err)
 			}
 			count++
@@ -242,8 +278,8 @@ var memorySearchCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	Run: func(c *cobra.Command, args []string) {
 		isGlobal, _ := c.Flags().GetBool("global")
-		var repoPath, query string
-		
+		var repoPath, repoID, query string
+
 		if isGlobal {
 			query = args[0]
 		} else {
@@ -252,11 +288,12 @@ var memorySearchCmd = &cobra.Command{
 			}
 			repoPath = args[0]
 			query = args[1]
-			repo, _, err := repoAndBranch(repoPath)
+			repo, _, id, err := repoAndBranch(repoPath)
 			if err != nil {
 				Die("resolve repo: %v", err)
 			}
 			repoPath = repo
+			repoID = id
 		}
 
 		db, err := memory.Open()
@@ -275,7 +312,7 @@ var memorySearchCmd = &cobra.Command{
 			Die("embed query: %v", err)
 		}
 
-		results, err := db.Search(repoPath, queryEmb, 5)
+		results, err := db.Search(repoPath, repoID, queryEmb, 5)
 		if err != nil {
 			Die("search: %v", err)
 		}
@@ -288,12 +325,36 @@ var memorySearchCmd = &cobra.Command{
 	},
 }
 
+// memoryMigrateCmd is Task B.1b: the only thing that ever triggers the
+// repo_id/scope schema rebuild (Task B.2). Idempotent — a DB already on the
+// new schema reports "already migrated" and exits 0 without taking a lock.
+var memoryMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Rebuild the memory database onto the repo_id/scope schema",
+	Args:  cobra.NoArgs,
+	Run: func(c *cobra.Command, args []string) {
+		db, err := memory.Open()
+		if err != nil {
+			Die("memory db: %v", err)
+		}
+		defer db.Close()
+
+		summary, err := db.Migrate()
+		if err != nil {
+			Die("memory migrate: %v", err)
+		}
+
+		PrintJSON(summary)
+	},
+}
+
 func init() {
 	memoryCmd.AddCommand(memoryStatusCmd)
 	memoryCmd.AddCommand(memoryStoreCmd)
 	memoryCmd.AddCommand(memoryListCmd)
 	memoryCmd.AddCommand(memoryIndexCmd)
 	memoryCmd.AddCommand(memorySearchCmd)
+	memoryCmd.AddCommand(memoryMigrateCmd)
 
 	memoryStoreCmd.Flags().Bool("semantic", false, "Index the fact for semantic search")
 	memoryListCmd.Flags().Bool("global", false, "List facts from all repositories")

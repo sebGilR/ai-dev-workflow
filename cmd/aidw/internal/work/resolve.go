@@ -1,10 +1,13 @@
 package work
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"aidw/cmd/aidw/internal/state"
 )
 
 // ResolveOptions carries the caller's known context into Resolve.
@@ -62,11 +65,18 @@ type ResolveOptions struct {
 //     branches are exactly the dangerous ones (the hook auto-binds on a
 //     single match, making a wrong resolution permanent).
 //
-// Resolve is a PURE lookup: it never calls SaveSessionBinding or any other
-// write. Callers that want the design's "auto-bind on unambiguous worktree
-// match when a session is present" behavior (only relevant to `work
-// checkpoint --from-hook`) must call SaveSessionBinding themselves after a
-// successful step-3 resolution with non-empty SessionID.
+// Resolve is pure with respect to work records: it never calls
+// SaveSessionBinding or writes a work.Record. Callers that want the
+// design's "auto-bind on unambiguous worktree match when a session is
+// present" behavior (only relevant to `work checkpoint --from-hook`) must
+// call SaveSessionBinding themselves after a successful step-3 resolution
+// with non-empty SessionID.
+//
+// It is NOT pure with respect to session-binding files: per the §2.5
+// addendum, it performs one opportunistic, best-effort deletion of a
+// session binding it discovers is confirmed-dangling (see
+// reapDanglingBinding below) — lock-guarded, failure-swallowed, and never
+// able to change what Resolve itself returns to its caller.
 func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	if opts.ExplicitWorkID != "" {
 		r, err := Load(opts.StateDir, opts.ExplicitWorkID)
@@ -87,8 +97,21 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 		// and the design's step-3 fallback exists precisely to answer this
 		// question from first principles.
 		if bindErr == nil && binding != nil {
-			if r, loadErr := Load(opts.StateDir, binding.WorkID); loadErr == nil {
+			r, loadErr := Load(opts.StateDir, binding.WorkID)
+			if loadErr == nil {
 				return r, nil, nil
+			}
+			// Lazy self-healing reap (§2.5 addendum): only when the bound
+			// record is CONFIRMED gone (ErrNotFound specifically, not
+			// merely unreadable — an ErrUnsupportedSchemaVersion or other
+			// read failure leaves the binding alone, mirroring Cluster H's
+			// R3 finding 2 distinction), delete the now-dangling binding
+			// file as a side effect of this lookup, using the same
+			// lock-then-reread discipline DeleteSessionBindingsFor uses.
+			// This never affects Resolve's own return value/behavior —
+			// it still falls through to step 3 below either way.
+			if errors.Is(loadErr, ErrNotFound) {
+				reapDanglingBinding(opts.StateDir, opts.SessionID, binding.WorkID)
 			}
 		}
 	}
@@ -132,6 +155,42 @@ func Resolve(opts ResolveOptions) (*Record, []*Record, error) {
 	default:
 		return nil, candidates, ErrAmbiguousWork
 	}
+}
+
+// reapDanglingBinding deletes sessionID's binding file, but only after
+// re-confirming under the session file's own lock that it still points at
+// workID — the same decide-under-the-lock discipline
+// DeleteSessionBindingsFor uses, so a concurrent SaveSessionBinding rebind
+// racing this lookup can never have its now-unrelated binding deleted out
+// from under it. Any failure (lock busy, re-read no longer matches) is
+// swallowed silently: this is opportunistic cleanup on a read path, never
+// worth failing Resolve's caller over.
+//
+// Test seam (nil in production): afterDanglingCheckHook, when set, is called
+// once between confirming the binding is dangling and acquiring its lock —
+// the same race window DeleteSessionBindingsFor's own hook exercises,
+// mirrored here so a test can rebind the session out from under this call
+// and confirm it correctly no-ops rather than deleting an unrelated binding.
+// afterDanglingCheckHook is nil in production. See reapDanglingBinding's doc
+// comment.
+var afterDanglingCheckHook func(sessionID string)
+
+func reapDanglingBinding(stateDir, sessionID, workID string) {
+	if afterDanglingCheckHook != nil {
+		afterDanglingCheckHook(sessionID)
+	}
+	path := SessionPath(stateDir, sessionID)
+	release, err := state.AcquireLock(path)
+	if err != nil {
+		return
+	}
+	defer release()
+
+	binding, err := LoadSessionBinding(stateDir, sessionID)
+	if err != nil || binding == nil || binding.WorkID != workID {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func matchByWorktree(records []*Record, repoID, worktreePath string) []*Record {

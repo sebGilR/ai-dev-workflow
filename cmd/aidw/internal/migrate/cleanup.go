@@ -1,0 +1,129 @@
+package migrate
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"aidw/cmd/aidw/internal/work"
+)
+
+// PlanCleanup discovers every source dir under roots and classifies each one
+// as a deletion candidate or blocked. A source is a candidate only if:
+//   - it has a mapping entry in wip-paths.json, AND
+//   - work.Load succeeds for that entry's WorkID (not a dangling pointer,
+//     §2a Q3 — a load failure NEVER makes a source a candidate, regardless
+//     of how recent verified_at is), AND
+//   - recomputed sha256 hashes over BOTH the current source files and the
+//     current destination attachment files match record.Provenance.SourceHashes
+//     exactly (the same two-sided rigor as migrate.go's reverify — a
+//     source-only comparison cannot detect a corrupted/modified
+//     destination).
+//
+// Every other source is blocked, with a reason recorded. PlanCleanup never
+// deletes anything itself — it only classifies. It performs no mutation of
+// wip-paths.json or any work record.
+//
+// Run(stateDir, roots) is the zero-Options-value convenience wrapper kept
+// for every existing caller/test; it does not consider .wip/.archive/
+// entries, matching its historical behavior exactly.
+func PlanCleanup(stateDir string, roots []string) (candidates []string, blocked map[string]string, err error) {
+	return PlanCleanupWithOptions(stateDir, roots, Options{})
+}
+
+// PlanCleanupWithOptions is PlanCleanup with opts.IncludeGlobalArchive
+// support (review findings M5/M6): without this, a migrated
+// .wip/.archive/ entry could never be removed by --cleanup-sources (only
+// Discover's branch-dir sources were ever considered), and
+// --include-global-archive was silently a no-op when combined with
+// --cleanup-sources at the CLI layer. Passing the SAME opt-in flag through
+// to this function, rather than refusing the combination outright, makes
+// the flag actually do what its name promises everywhere it appears, and
+// gives a migrated archive entry a real removal path other than the
+// legacy, indiscriminate clear-wip/clear-others --purge that R5's
+// disclosure guard exists to warn users away from.
+func PlanCleanupWithOptions(stateDir string, roots []string, opts Options) (candidates []string, blocked map[string]string, err error) {
+	sources, err := Discover(roots)
+	if err != nil {
+		return nil, nil, fmt.Errorf("discover: %w", err)
+	}
+	if opts.IncludeGlobalArchive {
+		archived, err := DiscoverArchived(roots)
+		if err != nil {
+			return nil, nil, fmt.Errorf("discover archived: %w", err)
+		}
+		sources = append(sources, archived...)
+	}
+
+	blocked = map[string]string{}
+
+	for _, src := range sources {
+		normKey, err := filepath.EvalSymlinks(src.SourceWipDir)
+		if err != nil {
+			blocked[src.SourceWipDir] = fmt.Sprintf("resolve source path: %v", err)
+			continue
+		}
+
+		mapping, err := loadMapping(stateDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load mapping: %w", err)
+		}
+		entry, exists := mapping.Entries[normKey]
+		if !exists {
+			blocked[src.SourceWipDir] = "not yet migrated: no wip-paths.json entry"
+			continue
+		}
+
+		record, err := work.Load(stateDir, entry.WorkID)
+		if err != nil {
+			// Dangling pointer (§2a Q3): never trust verified_at alone when
+			// the mapped work_id has no corresponding work.json.
+			blocked[src.SourceWipDir] = fmt.Sprintf("dangling mapping entry (work_id %s): %v", entry.WorkID, err)
+			continue
+		}
+
+		attachmentsDir := filepath.Join(work.Dir(stateDir, entry.WorkID), "attachments")
+		ok, reason, err := verifyTwoSided(src.SourceWipDir, attachmentsDir, record.Provenance.SourceHashes)
+		if err != nil {
+			blocked[src.SourceWipDir] = err.Error()
+			continue
+		}
+		if !ok {
+			blocked[src.SourceWipDir] = reason
+			continue
+		}
+
+		candidates = append(candidates, src.SourceWipDir)
+	}
+
+	return candidates, blocked, nil
+}
+
+// DeleteSources permanently removes every path in candidates via
+// os.RemoveAll. Callers MUST have obtained candidates from PlanCleanup
+// immediately prior in the same run — DeleteSources trusts its input
+// completely and performs no re-verification of its own. It never touches
+// wip-paths.json: a mapping entry's work_id/repo_id pointer remains valid
+// and useful after its source is deleted, so cleanup never mutates the
+// mapping.
+//
+// deleted always reflects every path actually removed, even when err is
+// non-nil — this is the only irreversible operation in this package, so a
+// mid-loop failure (a permission error, an NFS/EBUSY hiccup) must never
+// leave the caller with no record of what already happened. The loop does
+// not stop at the first failure; it continues so a caller sees every
+// deletion outcome, not just the first one.
+func DeleteSources(candidates []string) (deleted []string, err error) {
+	deleted = []string{}
+	var firstErr error
+	for _, c := range candidates {
+		if rmErr := os.RemoveAll(c); rmErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete %s: %w", c, rmErr)
+			}
+			continue
+		}
+		deleted = append(deleted, c)
+	}
+	return deleted, firstErr
+}

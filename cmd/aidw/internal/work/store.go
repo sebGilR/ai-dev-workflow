@@ -67,6 +67,9 @@ func Load(stateDir, workID string) (*Record, error) {
 	path := RecordPath(stateDir, workID)
 	var r Record
 	if err := util.ReadJSON(path, &r); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load work record %s: %w: %w", workID, ErrNotFound, err)
+		}
 		return nil, fmt.Errorf("load work record %s: %w", workID, err)
 	}
 	if r.SchemaVersion != CurrentSchemaVersion {
@@ -167,6 +170,42 @@ func UpdateRecord(stateDir, workID string, mutate func(*Record) error) (*Record,
 		return nil, err
 	}
 	return r, nil
+}
+
+// DeleteRecord permanently deletes work/<workID>/ from disk. It acquires
+// state.AcquireLock on the record's work.json path first, Load()s the
+// record fresh under that lock (never trusts a caller-held snapshot,
+// mirroring UpdateRecord's own rationale), and — unless force is true —
+// refuses with ErrNotArchived when the record's own Lifecycle is not
+// LifecycleArchived (§2.2's per-entry precondition). force skips only that
+// one check: Load's own ErrNotFound is never bypassable, since there is
+// nothing to force in that case.
+//
+// The lock is released via defer AFTER os.RemoveAll runs, not before — see
+// the Cluster I spec's AC-I2-LOCKORDER for the accepted residual this
+// release-last ordering carries and why releasing earlier would be strictly
+// worse. This is the one sanctioned exception to "all work-record writes go
+// through Save/UpdateRecord" (hard rule 3): it is a deletion, not a write,
+// but it still goes through the same lock discipline those functions use.
+func DeleteRecord(stateDir, workID string, force bool) error {
+	path := RecordPath(stateDir, workID)
+	release, err := state.AcquireLock(path)
+	if err != nil {
+		return fmt.Errorf("delete work record %s: %w", workID, err)
+	}
+	defer release()
+
+	r, err := Load(stateDir, workID)
+	if err != nil {
+		return err
+	}
+	if !force && r.Lifecycle != LifecycleArchived {
+		return ErrNotArchived
+	}
+	if err := os.RemoveAll(Dir(stateDir, workID)); err != nil {
+		return fmt.Errorf("delete work record %s: %w", workID, err)
+	}
+	return nil
 }
 
 // ListRecords scans work/*/work.json under stateDir. A record directory

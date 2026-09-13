@@ -164,8 +164,12 @@ Implementation is intentionally not delegated to a "wip-implementer" agent — i
 
 `~/.claude/memory.db` is a SQLite database with two surfaces:
 
-- **Facts**: keyed `(repo_path, branch, key) → value` for branch-scoped notes. Set with `aidw memory store . <key> <value>`. The `wip-planner` records architectural decisions here so they survive `/clear`.
-- **Documents**: a flat `items(repo_path, file_path, content)` table indexed for semantic search.
+- **Facts**: keyed `(repo_id, scope, key) → value`. Set with `aidw memory store . <key> <value>`. The `wip-planner` records architectural decisions here so they survive `/clear`. `scope` is currently always the constant `"repo"` — a fact is repo-scoped, not branch-scoped, so it reads the same from every worktree of the same clone (`repo_id` is keyed off `--git-common-dir`, which every worktree of one clone shares).
+- **Documents**: a flat `items(repo_id, file_path, content)` table indexed for semantic search.
+
+A database created before this schema exists on the **legacy** `(repo_path, branch, key)` / `items(repo_path, file_path, content)` schema and keeps working unchanged — `aidw memory status` reports whether a given `memory.db` is `migrated: true/false`. Run `aidw memory migrate` to rebuild it onto the current schema (it backs up the original file first, as `memory.db.pre-v2.bak`, and the rebuild is atomic — an interrupted run leaves the legacy database exactly as it was).
+
+`aidw memory migrate` is **lossy by design** for facts stored under different branches of the same repo: collapsing `branch` out of the key means a legacy fact stored under two different branches with the same key becomes one row (the most recently written value wins; the older value is only recoverable from the `.pre-v2.bak` file). This trade is deliberate — it's what makes a fact visible from every worktree of the same clone, which per-branch keys could never do.
 
 When `sqlite-vec v0.1.9` is loadable (`vec_version()` succeeds), two virtual tables are created:
 
@@ -306,8 +310,13 @@ aidw synthesize-review <path>            # merge sources into review.md
 aidw adversarial-review <path>           # exec gemini/copilot/codex CLI
 
 aidw policy {init,check,allow} <path> [args]
-aidw memory  {status,store,list,index,search} [args]
+aidw memory  {status,store,list,index,search,migrate} [args]
 aidw model   route {frontier|efficient}
+
+aidw migrate-state <path> [--path <dir>]... [--all-registered]
+                                          # copy legacy .wip branch state into the work-model store
+aidw migrate-state <path> --cleanup-sources [--dry-run]
+                                          # delete only .wip sources verified as fully copied
 
 aidw migrate-wip <path>                  # YYYYMMDDHHMMSS-rename legacy dirs
 aidw cleanup-branch <path>               # keep canonical files in current branch

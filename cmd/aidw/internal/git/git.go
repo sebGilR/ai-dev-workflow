@@ -63,6 +63,42 @@ func MergeBase(dir, ref1, ref2 string) (string, error) {
 	return run(dir, "merge-base", ref1, ref2)
 }
 
+// WorktreeList returns the absolute paths of every worktree registered to
+// the repository containing dir, including the main worktree, by parsing
+// `git worktree list --porcelain` (line-oriented, not the column-aligned
+// human format). Each record is separated by a blank line; a record whose
+// lines include a bare "bare" marker (a bare repository, which has no
+// working tree and therefore can never have a .wip/ directory) is skipped
+// — migrate-state's inventory has nothing to scan there.
+func WorktreeList(dir string) ([]string, error) {
+	out, err := run(dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, record := range strings.Split(out, "\n\n") {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		var path string
+		bare := false
+		for _, line := range strings.Split(record, "\n") {
+			switch {
+			case line == "bare":
+				bare = true
+			case strings.HasPrefix(line, "worktree "):
+				path = strings.TrimPrefix(line, "worktree ")
+			}
+		}
+		if bare || path == "" {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
 // DefaultBranch dynamically detects the default branch of the repository.
 func DefaultBranch(dir string) string {
 	// 1. Try to read symbolic ref for origin/HEAD (fast, offline, usually accurate if cloned from a remote)
