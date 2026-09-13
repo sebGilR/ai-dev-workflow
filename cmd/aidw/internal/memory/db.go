@@ -709,7 +709,15 @@ func (db *DB) ListFacts(repoPath, branch, repoID, scope string) (map[string]stri
 		// Global listing (`memory list --global`) — no WHERE clause at
 		// all, unchanged by the D1 re-key (Task B.5's explicit note: this
 		// branch needs no filter and never needed a repo_id/scope
-		// parameter).
+		// parameter). repoPath=="" is the ONLY signal for this branch — a
+		// caller wanting a LOCAL (non-global) listing must always pass its
+		// real resolved repo path here even on the migrated schema, where
+		// the path itself is otherwise unused in the query below; passing
+		// "" with a real repoID/scope would silently fall into this global
+		// branch instead of filtering by repo_id (memory.go's callers
+		// always resolve a real path via git.Toplevel before calling this
+		// unless --global was explicitly requested, so this is not
+		// reachable in practice today — noted here so it stays that way).
 		rows, err = db.conn.Query("SELECT key, value FROM facts")
 	} else if db.migrated {
 		rows, err = db.conn.Query("SELECT key, value FROM facts WHERE repo_id=? AND scope=?", repoID, scope)

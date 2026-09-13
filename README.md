@@ -169,6 +169,8 @@ Implementation is intentionally not delegated to a "wip-implementer" agent — i
 
 A database created before this schema exists on the **legacy** `(repo_path, branch, key)` / `items(repo_path, file_path, content)` schema and keeps working unchanged — `aidw memory status` reports whether a given `memory.db` is `migrated: true/false`. Run `aidw memory migrate` to rebuild it onto the current schema (it backs up the original file first, as `memory.db.pre-v2.bak`, and the rebuild is atomic — an interrupted run leaves the legacy database exactly as it was).
 
+`aidw memory migrate` is **lossy by design** for facts stored under different branches of the same repo: collapsing `branch` out of the key means a legacy fact stored under two different branches with the same key becomes one row (the most recently written value wins; the older value is only recoverable from the `.pre-v2.bak` file). This trade is deliberate — it's what makes a fact visible from every worktree of the same clone, which per-branch keys could never do.
+
 When `sqlite-vec v0.1.9` is loadable (`vec_version()` succeeds), two virtual tables are created:
 
 ```sql

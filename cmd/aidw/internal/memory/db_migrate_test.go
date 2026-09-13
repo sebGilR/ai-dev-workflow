@@ -400,9 +400,20 @@ func TestMigrate_RowCount(t *testing.T) {
 	repo := "/nonexistent/repo/gone"
 	// Two legacy rows that collapse to the same (repo_id, "repo", key)
 	// post-migration: same repo, same key, different (now-discarded)
-	// branch. The later created_at (id=2) must win.
-	insertLegacyFact(t, path, 1, repo, "main", "dup", "old-value", "2026-01-01 00:00:00")
-	insertLegacyFact(t, path, 2, repo, "dev", "dup", "new-value", "2026-01-02 00:00:00")
+	// branch. The rebuild processes legacy rows via a bare
+	// "SELECT ... FROM facts" with no ORDER BY (db.go), so SQLite scans in
+	// ascending `id`/rowid order regardless of INSERT call order — an
+	// earlier fixture version relied on ascending insertion order to also
+	// mean ascending id, which coincided with ascending created_at, so a
+	// mutation that made the collapse's ON CONFLICT DO UPDATE
+	// unconditional ("last processed wins") passed by coincidence (Batch
+	// 3, R1 finding). Here id and created_at are deliberately DECOUPLED:
+	// the LOWER id (1) has the LATER created_at, so it is processed
+	// FIRST but must still win — an unconditional DO UPDATE would let the
+	// higher id (2, processed second) incorrectly overwrite it despite
+	// its earlier created_at.
+	insertLegacyFact(t, path, 1, repo, "dev", "dup", "new-value", "2026-01-02 00:00:00")
+	insertLegacyFact(t, path, 2, repo, "main", "dup", "old-value", "2026-01-01 00:00:00")
 	// A non-colliding row.
 	insertLegacyFact(t, path, 3, repo, "main", "solo", "solo-value", "2026-01-01 00:00:00")
 
@@ -538,6 +549,66 @@ func TestSecondWorktree_SameRepoIDSameFact(t *testing.T) {
 	}
 	if got != "hello" {
 		t.Errorf("GetFact from second worktree's repo_id = %q, want %q", got, "hello")
+	}
+}
+
+// TestFacts_CrossRepoIsolation closes a Batch 3, R1 mutation-testing gap: a
+// mutation that removed the `repo_id = ?` filter from GetFact/ListFacts (the
+// migrated-schema query path) left the whole suite green, because
+// TestSecondWorktree_SameRepoIDSameFact only asserts the SAME repo_id sees
+// the SAME fact — an unfiltered query trivially satisfies that too. Nothing
+// previously proved a DIFFERENT repo_id cannot see it, which is the actual
+// isolation guarantee D1's re-key exists to provide.
+func TestFacts_CrossRepoIsolation(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("AIDW_STATE_DIR", stateDir)
+
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	db, err := OpenAt(dbPath)
+	if err != nil {
+		t.Fatalf("OpenAt: %v", err)
+	}
+	defer db.Close()
+
+	const repoA = "aaaaaaaaaaaaaaaa"
+	const repoB = "bbbbbbbbbbbbbbbb"
+
+	if err := db.StoreFact("", "", repoA, "repo", "secret", "repo-a-value", nil); err != nil {
+		t.Fatalf("StoreFact repoA: %v", err)
+	}
+
+	// GetFact: repo B must never see repo A's fact under the same key.
+	got, err := db.GetFact("", "", repoB, "repo", "secret")
+	if err != nil {
+		t.Fatalf("GetFact repoB: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("cross-repo isolation broken: GetFact(repoB) returned repoA's value %q", got)
+	}
+
+	// ListFacts: repo B's listing must not contain repo A's key at all.
+	// repoPath must be a REAL (non-empty) value here — "" is ListFacts'
+	// documented --global sentinel (see its doc comment) and would
+	// silently bypass the repo_id filter entirely, which is not what this
+	// test is checking. Every real caller (memory.go) resolves a real
+	// path via git.Toplevel before calling this in local (non---global)
+	// mode, so a dummy non-empty path mirrors that correctly.
+	factsB, err := db.ListFacts("/repo/b", "", repoB, "repo")
+	if err != nil {
+		t.Fatalf("ListFacts repoB: %v", err)
+	}
+	if _, ok := factsB["secret"]; ok {
+		t.Fatalf("cross-repo isolation broken: ListFacts(repoB) contains repoA's key %+v", factsB)
+	}
+
+	// Sanity: repo A can still read its own fact (rules out a filter that's
+	// merely broken in both directions).
+	gotA, err := db.GetFact("", "", repoA, "repo", "secret")
+	if err != nil {
+		t.Fatalf("GetFact repoA: %v", err)
+	}
+	if gotA != "repo-a-value" {
+		t.Fatalf("GetFact(repoA) = %q, want %q", gotA, "repo-a-value")
 	}
 }
 

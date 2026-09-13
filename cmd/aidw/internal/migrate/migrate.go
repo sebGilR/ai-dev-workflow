@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -125,7 +126,14 @@ func Run(stateDir string, roots []string) (*Summary, error) {
 
 		mapping, err := loadMapping(stateDir)
 		if err != nil {
-			return nil, fmt.Errorf("load mapping: %w", err)
+			// A read failure here must not discard the Summary already
+			// earned by every source processed earlier in this loop
+			// (Batch 3, R3 finding 8) — record this one entry as skipped
+			// and continue to the next source, matching the "every other
+			// entry still completes" guarantee this function makes for
+			// every other kind of per-entry failure.
+			summary.recordSkipped(src.SourceWipDir, fmt.Sprintf("load mapping: %v", err))
+			continue
 		}
 		entry, exists := mapping.Entries[normKey]
 
@@ -143,13 +151,29 @@ func Run(stateDir string, roots []string) (*Summary, error) {
 	return summary, nil
 }
 
-// migrateNew converts, copies+verifies, saves, and maps one previously-
+// migrateNew converts, copies+verifies, maps, then saves one previously-
 // unmapped source dir. withRetry selects work.Save (ordinary, fail-fast —
 // nothing could be holding this brand-new work_id's lock) vs
 // saveRecordWithRetry (used only when this is really the dangling-pointer
 // recovery path inside reverify, which is executing "as if new" but for a
 // sourceWipDir that WAS previously mapped and could concurrently be
 // checkpointed against under its old, now-stale, work_id).
+//
+// The mapping write happens BEFORE work.Save, deliberately reversed from a
+// naive "save then map" order (Batch 3, R3 finding 1). Any interruption
+// between the two steps — lock contention on wip-paths.json exhausting its
+// bounded retry, a crash, a process kill — must never leave a COMPLETE,
+// VALID, unmapped work.json lying around: the next Run would see no mapping
+// entry for this source and mint a second, duplicate record for it via a
+// fresh work.New ULID, and since both records parse cleanly neither lands in
+// ScanRecords' skipped list, so nothing surfaces the duplication — it just
+// silently wedges work.Resolve behind ErrAmbiguousWork for that worktree.
+// Mapping-then-save makes the failure mode a dangling pointer instead: if
+// Update succeeds but Save fails, work.Load(record.WorkID) on the next run
+// gets ErrNotFound (nothing was ever written there), which reverify's
+// existing dangling-pointer recovery already re-migrates correctly as new.
+// If Update itself fails, this function returns before Save ever runs, so no
+// orphan work.json is created in that failure case either.
 func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary, withRetry bool) error {
 	record, err := Convert(src)
 	if err != nil {
@@ -162,14 +186,6 @@ func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary
 		return fmt.Errorf("copy attachments for %s: %w", src.SourceWipDir, err)
 	}
 	record.Provenance.SourceHashes = hashes
-
-	saveFn := work.Save
-	if withRetry {
-		saveFn = saveRecordWithRetry
-	}
-	if err := saveFn(stateDir, record); err != nil {
-		return fmt.Errorf("save work record for %s: %w", src.SourceWipDir, err)
-	}
 
 	repoID := ""
 	if len(record.Attachments) > 0 {
@@ -185,6 +201,14 @@ func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary
 		return nil
 	}); err != nil {
 		return fmt.Errorf("update mapping for %s: %w", src.SourceWipDir, err)
+	}
+
+	saveFn := work.Save
+	if withRetry {
+		saveFn = saveRecordWithRetry
+	}
+	if err := saveFn(stateDir, record); err != nil {
+		return fmt.Errorf("save work record for %s: %w", src.SourceWipDir, err)
 	}
 
 	summary.Migrated = append(summary.Migrated, src.SourceWipDir)
@@ -208,11 +232,26 @@ func migrateNew(stateDir string, src SourceDir, normKey string, summary *Summary
 func reverify(stateDir string, src SourceDir, normKey string, entry MappingEntry, summary *Summary) error {
 	record, err := work.Load(stateDir, entry.WorkID)
 	if err != nil {
-		// Dangling pointer (§2a Q3): the mapped work_id has no
-		// corresponding work.json. verified_at is NOT trusted on its own
-		// — re-run the full migration pipeline against the source files
-		// as if this entry were new, replacing the stale mapping entry.
-		return migrateNew(stateDir, src, normKey, summary, true)
+		if errors.Is(err, work.ErrNotFound) {
+			// Dangling pointer (§2a Q3): the mapped work_id has no
+			// corresponding work.json at all. verified_at is NOT trusted
+			// on its own — re-run the full migration pipeline against the
+			// source files as if this entry were new, replacing the stale
+			// mapping entry. Safe to auto-repoint: nothing valid is being
+			// orphaned, since there was never a record here to begin with.
+			return migrateNew(stateDir, src, normKey, summary, true)
+		}
+		// Present but unreadable for some OTHER reason (e.g.
+		// ErrUnsupportedSchemaVersion, corrupt JSON) — this is NOT a
+		// dangling pointer (Batch 3, R3 finding 2) and must not be
+		// silently repointed: the mapped work.json still exists on disk
+		// and may be recoverable (e.g. by a future schema migration).
+		// Auto-repointing here would orphan a real record (unmapped, but
+		// still present — it would surface as a skipped/unreadable entry
+		// in ScanRecords) while also minting a second live record for the
+		// same source. Report and leave the mapping untouched instead —
+		// a human needs to resolve this, not this migration.
+		return fmt.Errorf("mapped work record %s is present but unreadable, not re-migrating: %w", entry.WorkID, err)
 	}
 
 	srcHashes, err := HashTree(src.SourceWipDir)

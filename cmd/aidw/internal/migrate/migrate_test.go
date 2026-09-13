@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"aidw/cmd/aidw/internal/state"
 	"aidw/cmd/aidw/internal/util"
 	"aidw/cmd/aidw/internal/work"
 )
@@ -422,6 +423,126 @@ func TestRun_DanglingMappingEntry_TreatedAsUnverifiedNotSafe(t *testing.T) {
 	}
 	if _, err := work.Load(stateDir, entry.WorkID); err != nil {
 		t.Fatalf("new work_id %s should load cleanly: %v", entry.WorkID, err)
+	}
+}
+
+// --- Batch 3, R3 finding 1: mapping-write-before-save ordering prevents a
+// duplicate record when the mapping write fails after the source is already
+// converted/copied. ---
+
+func TestMigrateNew_MappingWriteFails_NeverCreatesOrphanRecord(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "main")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-main")
+	writeStatusJSON(t, wipDir, "main", "started")
+
+	// Hold the wip-paths.json lock ourselves so migrateNew's Update call
+	// exhausts its bounded retry and fails BEFORE any work.Save can run
+	// (mapping-then-save order, migrate.go). If save-then-map were still in
+	// effect, this would leave a live, unmapped work.json that a later run
+	// would duplicate.
+	release, err := state.AcquireLock(mappingPath(stateDir))
+	if err != nil {
+		t.Fatalf("acquire mapping lock for setup: %v", err)
+	}
+	first, runErr := Run(stateDir, []string{repo})
+	release()
+	if runErr != nil {
+		t.Fatalf("Run should not hard-fail, only skip: %v", runErr)
+	}
+	if len(first.Migrated) != 0 || len(first.Skipped) != 1 {
+		t.Fatalf("expected the entry to be skipped (mapping lock contention), got %+v", first)
+	}
+
+	records, err := work.ListRecords(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("mapping-write failure must leave NO orphan work.json, got %d records: %+v", len(records), records)
+	}
+
+	// A normal, uncontended re-run must now succeed cleanly with exactly one
+	// record — never a duplicate accumulated from the failed attempt.
+	second, err := Run(stateDir, []string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Migrated) != 1 {
+		t.Fatalf("expected 1 migrated on the clean re-run, got %+v", second)
+	}
+	records, err = work.ListRecords(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 record after recovery, got %d: %+v", len(records), records)
+	}
+}
+
+// --- Batch 3, R3 finding 2: a present-but-unreadable mapped record (e.g. an
+// unsupported schema version) must never be silently treated as a dangling
+// pointer and auto-repointed — that would orphan the real record instead of
+// merely a missing one. ---
+
+func TestReverify_UnreadableRecord_NeverAutoRepointed(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "main")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-main")
+	writeStatusJSON(t, wipDir, "main", "started")
+
+	first, err := Run(stateDir, []string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Migrated) != 1 {
+		t.Fatalf("expected 1 migrated, got %+v", first)
+	}
+	records, err := work.ListRecords(stateDir)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("setup: expected 1 record, got %d, err=%v", len(records), err)
+	}
+	workID := records[0].WorkID
+
+	// Corrupt the record's schema version in place — present, parseable
+	// JSON, but Load() rejects it with ErrUnsupportedSchemaVersion, NOT
+	// ErrNotFound. This must be treated differently from a truly-missing
+	// work.json.
+	recordPath := work.RecordPath(stateDir, workID)
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted := []byte(`{"schema_version": 999}`)
+	_ = data
+	if err := os.WriteFile(recordPath, corrupted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Run(stateDir, []string{repo})
+	if err == nil && len(second.Skipped) == 0 {
+		t.Fatalf("expected the unreadable-but-present record to be reported, not silently repointed: %+v", second)
+	}
+	if len(second.Migrated) != 0 {
+		t.Fatalf("must NOT mint a duplicate record for an unreadable-but-present mapped record, got %+v", second)
+	}
+
+	// The mapping must still point at the ORIGINAL (now-unreadable) work_id
+	// — never silently repointed to a fresh one.
+	mapping, err := loadMapping(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normKey, err := filepath.EvalSymlinks(wipDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := mapping.Entries[normKey]
+	if !ok {
+		t.Fatalf("mapping entry unexpectedly removed: %+v", mapping.Entries)
+	}
+	if entry.WorkID != workID {
+		t.Fatalf("mapping was silently repointed from %s to %s", workID, entry.WorkID)
 	}
 }
 

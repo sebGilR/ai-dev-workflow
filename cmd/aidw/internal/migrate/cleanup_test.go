@@ -159,6 +159,77 @@ func TestPlanCleanup_DivergentDestination_IsBlockedNeverCandidate(t *testing.T) 
 	}
 }
 
+// TestPlanCleanup_DivergentSource_IsBlockedNeverCandidate closes a
+// mutation-testing gap found in Batch 3, R1: a mutation that made
+// PlanCleanup compare only the DESTINATION side (never the source) stayed
+// green, because no fixture modified the source after migration — only the
+// destination. The two-sided check exists in cleanup.go today; this test
+// exists so a future regression on the source-side half is actually caught.
+func TestPlanCleanup_DivergentSource_IsBlockedNeverCandidate(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "main")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-main")
+	writeStatusJSON(t, wipDir, "main", "started")
+
+	if _, err := Run(stateDir, []string{repo}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate drift on the SOURCE side only (destination is untouched).
+	if err := os.WriteFile(filepath.Join(wipDir, "status.json"), []byte("drifted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, blocked, err := PlanCleanup(stateDir, []string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("divergent source must never be a candidate, got %+v", candidates)
+	}
+	if _, ok := blocked[wipDir]; !ok {
+		t.Fatalf("expected %s to be blocked, got %+v", wipDir, blocked)
+	}
+}
+
+// TestPlanCleanup_SourceFileDeleted_IsBlockedNeverCandidate closes a second
+// mutation-testing gap found in Batch 3, R1: hashesEqual's len(a) != len(b)
+// guard (migrate.go) was itself unexercised by any fixture — every existing
+// divergence test MODIFIES a file's content, never deletes one, so a set
+// comparison that forgot to check set SIZE would still pass every existing
+// test. A deleted file shrinks the hash map without changing any surviving
+// entry's digest, which only the length guard catches.
+func TestPlanCleanup_SourceFileDeleted_IsBlockedNeverCandidate(t *testing.T) {
+	stateDir := setStateDir(t)
+	repo := initTestRepo(t, "main")
+	wipDir := filepath.Join(repo, ".wip", "20260101000000-main")
+	writeStatusJSON(t, wipDir, "main", "started")
+	if err := os.WriteFile(filepath.Join(wipDir, "plan.md"), []byte("plan content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(stateDir, []string{repo}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete a file from the source after migration — every SURVIVING
+	// file's digest is unchanged, only the set's size shrank.
+	if err := os.Remove(filepath.Join(wipDir, "plan.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, blocked, err := PlanCleanup(stateDir, []string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("a source with a deleted file must never be a candidate, got %+v", candidates)
+	}
+	if _, ok := blocked[wipDir]; !ok {
+		t.Fatalf("expected %s to be blocked, got %+v", wipDir, blocked)
+	}
+}
+
 func TestPlanCleanup_MixedBatch_EligibleAndBlockedBothProcessed(t *testing.T) {
 	stateDir := setStateDir(t)
 	repoGood := initTestRepo(t, "branch-good")
