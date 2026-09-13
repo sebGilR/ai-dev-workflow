@@ -39,7 +39,7 @@ var bootstrapCmd = &cobra.Command{
 
 func init() {
 	bootstrapCmd.Flags().String("source-path", "", "If provided, symlink skills/agents from this repo")
-	bootstrapCmd.Flags().Bool("interactive", false, "Prompt for optional features (Adversarial Review, RTK)")
+	bootstrapCmd.Flags().Bool("interactive", false, "Prompt for optional features (Adversarial Review, RTK, gopls)")
 	bootstrapCmd.Flags().Bool("setup-shell", false, "Patch shell profile and create aidw.env.sh")
 	Root.AddCommand(bootstrapCmd)
 }
