@@ -7,10 +7,63 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"aidw/cmd/aidw/internal/state"
 	"aidw/cmd/aidw/internal/util"
 )
+
+// deliveryArtifactFiles is promote's artifact set (D3): the same six files
+// wip.go's wipFiles list seeds, minus status.json and task-context.md —
+// those are .wip/legacy-specific concepts with no work-model analog
+// (status.json's role is played by work.json itself; task-context.md has
+// none).
+var deliveryArtifactFiles = []string{"spec.md", "plan.md", "review.md", "research.md", "execution.md", "pr.md"}
+
+// SeedDeliveryArtifacts seed-writes (only if missing, never overwriting) the
+// six delivery-mode artifact files into work/<workID>/attachments/ — the
+// same subdirectory Cluster H's migration already populates for migrated
+// legacy records (D3). Must be called from inside UpdateRecord's mutate
+// closure (see workPromoteCmd), so the entire recheck -> seed -> mode-flip
+// sequence runs under one lock acquisition.
+func SeedDeliveryArtifacts(stateDir, workID string) error {
+	dir := filepath.Join(Dir(stateDir, workID), "attachments")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("seed delivery artifacts: mkdir: %w", err)
+	}
+	for _, filename := range deliveryArtifactFiles {
+		name := strings.ReplaceAll(strings.TrimSuffix(filename, ".md"), "-", " ")
+		content := fmt.Sprintf("# %s\n\n", workTitleCase(name))
+		if err := workSeedFileIfMissing(filepath.Join(dir, filename), content); err != nil {
+			return fmt.Errorf("seed delivery artifacts: %s: %w", filename, err)
+		}
+	}
+	return nil
+}
+
+// workSeedFileIfMissing mirrors wip.go's seedFileIfMissing exactly (write
+// only if the path does not already exist). Reimplemented locally rather
+// than imported: work never imports wip (see this file's package doc
+// comment in record.go), so the two small helpers below are duplicated
+// rather than crossing that package boundary.
+func workSeedFileIfMissing(path, content string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return util.AtomicWrite(path, []byte(content), 0o644)
+	}
+	return nil
+}
+
+// workTitleCase mirrors wip.go's titleCase exactly (capitalize the first
+// letter of each space-separated word).
+func workTitleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if w != "" {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
 
 // Dir returns the on-disk directory for one work record.
 func Dir(stateDir, workID string) string {
@@ -50,6 +103,28 @@ func New(title string, mode Mode) *Record {
 			SourceHashes:  map[string]string{},
 		},
 	}
+}
+
+// WriteFreeformContext writes work/<workID>/context.md, freeform mode's
+// only extra file (§3's layout — top-level, sibling of work.json, never
+// work/<workID>/attachments/context.md, which is a distinct file migration
+// populates for legacy-migrated delivery records; see D4 in the Cluster J
+// spec). It must be called BEFORE the caller's work.Save/New writes
+// work.json (see the call site in workStartCmd.Run): this only ever runs
+// once, immediately after work.New mints WorkID in memory, before either
+// file can exist on disk for a freeform-created record, so seed-if-missing
+// semantics are not needed here.
+func WriteFreeformContext(stateDir, workID, title string) error {
+	dir := Dir(stateDir, workID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("write freeform context.md: mkdir: %w", err)
+	}
+	content := fmt.Sprintf("# Context\n\n- Title: %s\n- Mode: freeform\n- Created at: %s\n", title, util.NowISO())
+	path := filepath.Join(dir, "context.md")
+	if err := util.AtomicWrite(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write freeform context.md: %w", err)
+	}
+	return nil
 }
 
 // Load reads work/<workID>/work.json. Returns ErrUnsupportedSchemaVersion

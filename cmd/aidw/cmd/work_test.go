@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"aidw/cmd/aidw/internal/work"
@@ -792,6 +793,198 @@ func TestWorkActivate_ReversesArchive(t *testing.T) {
 	}
 }
 
+// --- Cluster J: freeform mode golden capture (Task 1) ----------------------
+
+// stripVolatileGoldenFields deletes/normalizes the fields that legitimately
+// vary run-to-run from a decoded `work` JSON payload (a Record, or a slice
+// of them under the given path convention), so the remainder can be
+// compared byte-for-byte against a literal golden map. It mutates in place
+// and returns the same value for chaining.
+func stripVolatileRecordFields(t *testing.T, m map[string]any) map[string]any {
+	t.Helper()
+	delete(m, "work_id")
+	if prov, ok := m["provenance"].(map[string]any); ok {
+		delete(prov, "created_at")
+		delete(prov, "updated_at")
+	}
+	if atts, ok := m["attachments"].([]any); ok {
+		for _, a := range atts {
+			am, ok := a.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(am, "head")
+			delete(am, "worktree_path")
+		}
+	}
+	return m
+}
+
+// wantDeliveryGoldenShape is the literal (volatile fields excluded per
+// stripVolatileRecordFields) shape `work start --title X .` /
+// `work list .` / `work status .` must produce for a delivery-mode record
+// on a git fixture pinned to branch "main" (initGitRepoWithBranch), before
+// AND after Cluster J's edits — see Task 1/AC-J-1/AC-J-2.
+func wantDeliveryGoldenShape(title string) map[string]any {
+	return map[string]any{
+		"schema_version": float64(1),
+		"title":          title,
+		"mode":           "delivery",
+		"lifecycle":      "active",
+		"context": map[string]any{
+			"goal":           "",
+			"constraints":    []any{},
+			"decisions":      []any{},
+			"open_questions": []any{},
+			"next_action":    "",
+		},
+		"attachments": []any{
+			map[string]any{
+				"repo_id": "REPO_ID_PLACEHOLDER",
+				"branch":  "main",
+			},
+		},
+		"initiative_id": nil,
+		"provenance": map[string]any{
+			"schema_version":    float64(1),
+			"source_hashes":     map[string]any{},
+			"authoring_session": "",
+		},
+	}
+}
+
+// assertGoldenRecord decodes stdout as a single Record-shaped map, strips
+// volatile fields, blanks out the (non-deterministic, but must be
+// non-empty) repo_id, and deep-compares the result against
+// wantDeliveryGoldenShape(title).
+func assertGoldenRecord(t *testing.T, stdout, title string) {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("golden output is not JSON: %v\n%s", err, stdout)
+	}
+	stripVolatileRecordFields(t, got)
+	atts, _ := got["attachments"].([]any)
+	if len(atts) != 1 {
+		t.Fatalf("golden record has %d attachments, want exactly 1: %s", len(atts), stdout)
+	}
+	am, _ := atts[0].(map[string]any)
+	if repoID, _ := am["repo_id"].(string); repoID == "" {
+		t.Errorf("golden record's attachment repo_id is empty")
+	}
+	am["repo_id"] = "REPO_ID_PLACEHOLDER"
+
+	want := wantDeliveryGoldenShape(title)
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("golden shape mismatch:\n got: %s\nwant: %s", gotJSON, wantJSON)
+	}
+}
+
+// TestGolden_DeliveryModeUnchanged pins Task 1's baseline: `work start`
+// (no --mode), `work list`, and `work status` on a fresh
+// initGitRepoWithBranch(t, "main") fixture. This must pass before Cluster
+// J's Task 2 edit begins, and after every subsequent task — it is the
+// primary defense against Task 2's new validation branches silently
+// changing the untouched delivery default path's stdout/stderr/exit code.
+func TestGolden_DeliveryModeUnchanged(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--title", "golden task", ".")
+	if code != 0 {
+		t.Fatalf("work start exited %d\nstderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("work start stderr = %q, want empty", stderr)
+	}
+	assertGoldenRecord(t, stdout, "golden task")
+
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "list", ".")
+	if code != 0 {
+		t.Fatalf("work list exited %d\nstderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("work list stderr = %q, want empty", stderr)
+	}
+	var records []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("work list output is not JSON: %v\n%s", err, stdout)
+	}
+	if len(records) != 1 {
+		t.Fatalf("work list returned %d records, want 1: %s", len(records), stdout)
+	}
+	listJSON, _ := json.Marshal(records[0])
+	assertGoldenRecord(t, string(listJSON), "golden task")
+
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "status", ".")
+	if code != 0 {
+		t.Fatalf("work status exited %d\nstderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("work status stderr = %q, want empty", stderr)
+	}
+	assertGoldenRecord(t, stdout, "golden task")
+}
+
+// TestGolden_DeliveryModeExplicitModeFlag_MatchesDefault pins AC-J-2 /
+// Should-fix finding 7: `--mode delivery` explicitly is a no-op identical
+// to the no-flag default.
+func TestGolden_DeliveryModeExplicitModeFlag_MatchesDefault(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--title", "golden task", "--mode", "delivery", ".")
+	if code != 0 {
+		t.Fatalf("work start exited %d\nstderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("work start stderr = %q, want empty", stderr)
+	}
+	assertGoldenRecord(t, stdout, "golden task")
+}
+
+// TestWorkStart_NonGitDir_DieUnchanged pins Should-fix finding 5: `work
+// start`'s existing non-git Die path (no new flags involved) must not
+// change shape once Task 2 inserts new validation branches ahead of
+// resolveAttachContext's own git-repo check.
+func TestWorkStart_NonGitDir_DieUnchanged(t *testing.T) {
+	dir := t.TempDir() // deliberately not a git repo
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--title", "X", ".")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "not a git repo") {
+		t.Errorf("stderr = %q, want a 'not a git repo' message", stderr)
+	}
+	assertNoStateOnDisk(t, stateDir)
+}
+
+// TestWorkList_NonGitDir_DieUnchanged pins Should-fix finding 5 for `work
+// list` (no --global), guarding Task 5's edit the same way.
+func TestWorkList_NonGitDir_DieUnchanged(t *testing.T) {
+	dir := t.TempDir() // deliberately not a git repo
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "list", ".")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "not a git repo") {
+		t.Errorf("stderr = %q, want a 'not a git repo' message", stderr)
+	}
+	assertNoStateOnDisk(t, stateDir)
+}
+
 // TestWorkCheckpointFromHook_AmbiguousIsSilent is the counterpart: the hook
 // path stays silent on stdout (the script discards output anyway, but the
 // spec mandates silence there specifically) while still exiting non-zero.
@@ -809,5 +1002,494 @@ func TestWorkCheckpointFromHook_AmbiguousIsSilent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-amb.json")); !os.IsNotExist(err) {
 		t.Errorf("ambiguous hook checkpoint bound a session (err=%v)", err)
+	}
+}
+
+// --- Cluster J: freeform mode (Task 8) --------------------------------------
+
+// startFreeformNoAttach runs `work start --mode freeform --no-attach` and
+// returns the created record's work_id.
+func startFreeformNoAttach(t *testing.T, dir, stateDir, title string) string {
+	t.Helper()
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--mode", "freeform", "--no-attach", "--title", title, ".")
+	if code != 0 {
+		t.Fatalf("work start --mode freeform --no-attach exited %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var r work.Record
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work start stdout is not a record: %v\n%s", err, stdout)
+	}
+	if r.WorkID == "" {
+		t.Fatalf("work start returned an empty work_id: %s", stdout)
+	}
+	return r.WorkID
+}
+
+// snapshotWorkingDir is the cmd package's own copy of internal/work's
+// snapshotDir/mapsEqual pattern (unexported there, so re-implemented here
+// rather than crossing the package boundary) — a full byte-level map of
+// every file under dir, for a before/after "the working tree is untouched"
+// comparison.
+func snapshotWorkingDir(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	snap := map[string][]byte{}
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		snap[rel] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+func assertWorkingDirUnchanged(t *testing.T, before, after map[string][]byte) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Errorf("working dir file count changed: before=%d after=%d", len(before), len(after))
+		return
+	}
+	for k, v := range before {
+		other, ok := after[k]
+		if !ok || !bytes.Equal(v, other) {
+			t.Errorf("working dir file %q changed or disappeared", k)
+		}
+	}
+}
+
+// assertNoDeliveryArtifacts asserts none of the six delivery-mode artifact
+// files exist anywhere under work/<workID>/ (AC-J-3, AC-J-9's mirror image).
+func assertNoDeliveryArtifacts(t *testing.T, stateDir, workID string) {
+	t.Helper()
+	for _, name := range []string{"spec.md", "plan.md", "review.md", "research.md", "execution.md", "pr.md"} {
+		for _, sub := range []string{"", "attachments"} {
+			p := filepath.Join(stateDir, "work", workID, sub, name)
+			if _, err := os.Stat(p); err == nil {
+				t.Errorf("unexpected delivery artifact present: %s", p)
+			}
+		}
+	}
+}
+
+// TestWorkStart_FreeformNoAttach_TouchesOnlyOwnDir pins AC-J-4/AC-J-5: a
+// freeform/no-attach start from a non-git directory writes only
+// work.json + context.md (plus the lock sibling Save's own AcquireLock
+// leaves behind — release() unlocks and closes the fd, it does not remove
+// the lock file), never repos.json, and never touches the invocation
+// working directory at all.
+func TestWorkStart_FreeformNoAttach_TouchesOnlyOwnDir(t *testing.T) {
+	dir := t.TempDir() // deliberately not a git repo
+	stateDir := t.TempDir()
+	before := snapshotWorkingDir(t, dir)
+
+	workID := startFreeformNoAttach(t, dir, stateDir, "scratch")
+
+	if _, err := os.Stat(filepath.Join(stateDir, "repos.json")); !os.IsNotExist(err) {
+		t.Errorf("freeform --no-attach start created repos.json (err=%v)", err)
+	}
+	recordDir := filepath.Join(stateDir, "work", workID)
+	if _, err := os.Stat(filepath.Join(recordDir, "work.json")); err != nil {
+		t.Errorf("expected work.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(recordDir, "context.md")); err != nil {
+		t.Errorf("expected context.md: %v", err)
+	}
+	var unexpected []string
+	_ = filepath.Walk(recordDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil //nolint:nilerr
+		}
+		base := filepath.Base(path)
+		if base != "work.json" && base != "context.md" && base != "work.json.lock" {
+			unexpected = append(unexpected, path)
+		}
+		return nil
+	})
+	if len(unexpected) != 0 {
+		t.Errorf("unexpected files under work/%s/: %v", workID, unexpected)
+	}
+	assertNoDeliveryArtifacts(t, stateDir, workID)
+
+	after := snapshotWorkingDir(t, dir)
+	assertWorkingDirUnchanged(t, before, after)
+	for _, name := range []string{".github", ".gitignore", "GEMINI.md"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("freeform start created %s in the working tree (err=%v)", name, err)
+		}
+	}
+}
+
+// TestWorkStart_FreeformWithAttach_SameSideEffectsAsDelivery pins the
+// attach-path half of AC-J-3: repos.json IS created (same as delivery), the
+// record's mode is the only field differing from the golden shape, and no
+// delivery artifacts are seeded.
+func TestWorkStart_FreeformWithAttach_SameSideEffectsAsDelivery(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--mode", "freeform", "--title", "golden task", ".")
+	if code != 0 {
+		t.Fatalf("work start exited %d\nstderr: %s", code, stderr)
+	}
+	var r map[string]any
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work start stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if r["mode"] != "freeform" {
+		t.Fatalf("mode = %v, want freeform", r["mode"])
+	}
+	r["mode"] = "delivery" // the only field allowed to differ from the golden
+	rJSON, _ := json.Marshal(r)
+	assertGoldenRecord(t, string(rJSON), "golden task")
+
+	if _, err := os.Stat(filepath.Join(stateDir, "repos.json")); err != nil {
+		t.Errorf("expected the attach path to register the repo (repos.json): %v", err)
+	}
+	workID := r["work_id"].(string)
+	assertNoDeliveryArtifacts(t, stateDir, workID)
+	// AC-J-3 also covers the attach path (no --no-attach): context.md must
+	// exist here too, not only on the --no-attach branch — the
+	// `r.Mode == ModeFreeform` gate in workStartCmd.Run sits after both
+	// branches converge, so a future edit that moved WriteFreeformContext
+	// inside the noAttach-only branch must fail this assertion.
+	if _, err := os.Stat(filepath.Join(stateDir, "work", workID, "context.md")); err != nil {
+		t.Errorf("expected context.md on the attach-path freeform start too: %v", err)
+	}
+}
+
+// TestWorkStart_NoAttachRequiresFreeform pins AC-J-5/D5's step-6 guard.
+func TestWorkStart_NoAttachRequiresFreeform(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--no-attach", "--title", "X", ".")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "--no-attach is only valid with --mode freeform") {
+		t.Errorf("stderr = %q, want the D5 --no-attach-requires-freeform message", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work")); !os.IsNotExist(err) {
+		t.Errorf("expected no work/ directory to be created (err=%v)", err)
+	}
+}
+
+// TestWorkStart_NoAttachRejectsBranchOverride pins AC-J-11/D5.
+func TestWorkStart_NoAttachRejectsBranchOverride(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--mode", "freeform", "--no-attach", "--branch", "foo", "--title", "X", ".")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "--branch is not valid with --no-attach") {
+		t.Errorf("stderr = %q, want the D5 branch-override-rejected message", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work")); !os.IsNotExist(err) {
+		t.Errorf("expected no work/ directory to be created (err=%v)", err)
+	}
+}
+
+// TestWorkStatus_FreeformNoAttach_ResolvesViaExplicitWork pins AC-J-6/AC-J-7.
+func TestWorkStatus_FreeformNoAttach_ResolvesViaExplicitWork(t *testing.T) {
+	dir := t.TempDir() // deliberately not a git repo
+	stateDir := t.TempDir()
+	workID := startFreeformNoAttach(t, dir, stateDir, "scratch status")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "status", ".", "--work", workID)
+	if code != 0 {
+		t.Fatalf("work status --work exited %d\nstderr: %s", code, stderr)
+	}
+	var r work.Record
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work status stdout is not a record: %v\n%s", err, stdout)
+	}
+	if r.WorkID != workID {
+		t.Errorf("resolved work_id = %q, want %q", r.WorkID, workID)
+	}
+
+	// Without --work, the same non-git directory must still Die exactly as
+	// TestWorkStatus_NoActiveWork's git-repo-required path does today — the
+	// D2 fallback is strictly additive, not a relaxation of the default.
+	stdout, stderr, code = runWorkCmd(t, dir, stateDir, "", "work", "status", ".")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "not a git repo") {
+		t.Errorf("stderr = %q, want a 'not a git repo' message", stderr)
+	}
+}
+
+// TestWorkList_GlobalFlag pins AC-J-8.
+func TestWorkList_GlobalFlag(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	stateDir := t.TempDir()
+
+	idA := startFreeformNoAttach(t, dirA, stateDir, "global A")
+	idB := startFreeformNoAttach(t, dirB, stateDir, "global B")
+
+	stdout, stderr, code := runWorkCmd(t, dirA, stateDir, "", "work", "list", ".", "--global")
+	if code != 0 {
+		t.Fatalf("work list --global exited %d\nstderr: %s", code, stderr)
+	}
+	var records []work.Record
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("work list --global output is not JSON: %v\n%s", err, stdout)
+	}
+	seen := map[string]bool{}
+	for _, r := range records {
+		seen[r.WorkID] = true
+	}
+	if !seen[idA] || !seen[idB] {
+		t.Errorf("work list --global = %v, want both %s and %s", stdout, idA, idB)
+	}
+
+	// Without --global, a non-git dir still requires a git repo.
+	stdout, stderr, code = runWorkCmd(t, dirA, stateDir, "", "work", "list", ".")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "not a git repo") {
+		t.Errorf("stderr = %q, want a 'not a git repo' message", stderr)
+	}
+}
+
+// TestWorkPromote_SeedsArtifactsAndFlipsMode pins AC-J-9.
+func TestWorkPromote_SeedsArtifactsAndFlipsMode(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	workID := startFreeformNoAttach(t, dir, stateDir, "to promote")
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "promote", workID, "--mode", "delivery")
+	if code != 0 {
+		t.Fatalf("work promote exited %d\nstderr: %s", code, stderr)
+	}
+	var r work.Record
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work promote stdout is not a record: %v\n%s", err, stdout)
+	}
+	if r.Mode != work.ModeDelivery {
+		t.Errorf("mode = %q, want delivery", r.Mode)
+	}
+	recordDir := filepath.Join(stateDir, "work", workID)
+	for _, name := range []string{"spec.md", "plan.md", "review.md", "research.md", "execution.md", "pr.md"} {
+		if _, err := os.Stat(filepath.Join(recordDir, "attachments", name)); err != nil {
+			t.Errorf("expected attachments/%s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(recordDir, "context.md")); err != nil {
+		t.Errorf("expected top-level context.md to still exist unchanged: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(recordDir, "attachments", "context.md")); !os.IsNotExist(err) {
+		t.Errorf("context.md must not be duplicated into attachments/ (err=%v)", err)
+	}
+}
+
+// TestWorkPromote_AlreadyDeliveryRefuses pins AC-J-10.
+func TestWorkPromote_AlreadyDeliveryRefuses(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	workID := startFreeformNoAttach(t, dir, stateDir, "double promote")
+
+	if _, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "promote", workID, "--mode", "delivery"); code != 0 {
+		t.Fatalf("first promote exited %d\nstderr: %s", code, stderr)
+	}
+	recordDir := filepath.Join(stateDir, "work", workID)
+	before := map[string][]byte{}
+	for _, name := range []string{"spec.md", "plan.md", "review.md", "research.md", "execution.md", "pr.md"} {
+		data, err := os.ReadFile(filepath.Join(recordDir, "attachments", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = data
+	}
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "promote", workID, "--mode", "delivery")
+	if code == 0 {
+		t.Fatalf("second promote should have failed, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "already in delivery mode") {
+		t.Errorf("stderr = %q, want a mention of 'already in delivery mode'", stderr)
+	}
+	for name, data := range before {
+		after, err := os.ReadFile(filepath.Join(recordDir, "attachments", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, after) {
+			t.Errorf("attachments/%s changed after a refused re-promote", name)
+		}
+	}
+}
+
+// TestWorkPromote_UnknownIDFails pins Task 8 item 12.
+func TestWorkPromote_UnknownIDFails(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "promote", "bogus-id", "--mode", "delivery")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "work record not found") {
+		t.Errorf("stderr = %q, want a mention of ErrNotFound", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "work", "bogus-id")); !os.IsNotExist(err) {
+		t.Errorf("expected no work/bogus-id/ directory to be created (err=%v)", err)
+	}
+}
+
+// TestWorkPromote_RefusesArchivedRecord pins AC-J-15 / Blocking finding 2 —
+// covers both non-promotable lifecycle values D3 names.
+func TestWorkPromote_RefusesArchivedRecord(t *testing.T) {
+	for _, verb := range []string{"archive", "done"} {
+		t.Run(verb, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			workID := startFreeformNoAttach(t, dir, stateDir, "not promotable-"+verb)
+
+			if _, _, code := runWorkCmd(t, dir, stateDir, "", "work", verb, workID); code != 0 {
+				t.Fatalf("work %s exited %d", verb, code)
+			}
+
+			stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "promote", workID, "--mode", "delivery")
+			if code == 0 {
+				t.Fatalf("expected non-zero exit, stdout=%s", stdout)
+			}
+			if !strings.Contains(stderr, "cannot promote an archived/done record") {
+				t.Errorf("stderr = %q, want a mention of ErrNotPromotable", stderr)
+			}
+			if _, err := os.Stat(filepath.Join(stateDir, "work", workID, "attachments")); !os.IsNotExist(err) {
+				t.Errorf("expected no attachments/ directory to be created (err=%v)", err)
+			}
+
+			r, err := work.Load(stateDir, workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Mode != work.ModeFreeform {
+				t.Errorf("mode = %q, want it to remain freeform after a refused promote", r.Mode)
+			}
+			wantLifecycle := work.LifecycleArchived
+			if verb == "done" {
+				wantLifecycle = work.LifecycleDone
+			}
+			if r.Lifecycle != wantLifecycle {
+				t.Errorf("lifecycle = %q, want it to remain %q after a refused promote", r.Lifecycle, wantLifecycle)
+			}
+		})
+	}
+}
+
+// TestWorkPromote_ConcurrentArchiveRace exercises the round-2 skeptic fix
+// directly: SeedDeliveryArtifacts and the Lifecycle recheck run inside
+// UpdateRecord's single lock acquisition (store.go's Load->mutate->save
+// span), not before it. TestWorkPromote_RefusesArchivedRecord alone does
+// NOT prove this — it is purely sequential, so the unlocked diagnostic
+// pre-check in workPromoteCmd always fires first with identical stderr,
+// and removing the in-closure recheck leaves it green.
+//
+// This races `work archive` against `work promote` as real concurrent
+// subprocesses. Both orderings are legitimate outcomes (archive has no
+// Mode precondition, so "promote wins, then archive lands on the
+// now-delivery record" produces Lifecycle=archived + Mode=delivery and is
+// NOT a bug — final on-disk state alone cannot distinguish that from a
+// real guard failure). What DOES distinguish them: archive's own returned
+// record reflects the Mode it observed at the moment its closure ran. If
+// archive's response shows Mode still "freeform" (proving archive's
+// closure — and by extension the lock — ran and completed BEFORE
+// promote's closure could have flipped it) and promote's command ALSO
+// exits 0 (claiming success), promote's closure must have run against an
+// already-archived record and wrongly proceeded — that is the actual bug
+// the in-closure Lifecycle recheck exists to prevent.
+func TestWorkPromote_ConcurrentArchiveRace(t *testing.T) {
+	const trials = 200
+	for i := 0; i < trials; i++ {
+		dir := t.TempDir()
+		stateDir := t.TempDir()
+		workID := startFreeformNoAttach(t, dir, stateDir, "race trial")
+
+		var wg sync.WaitGroup
+		var archiveOut string
+		var archiveCode, promoteCode int
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			archiveOut, _, archiveCode = runWorkCmd(t, dir, stateDir, "", "work", "archive", workID)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, promoteCode = runWorkCmd(t, dir, stateDir, "", "work", "promote", workID, "--mode", "delivery")
+		}()
+		wg.Wait()
+
+		// AcquireLock is non-blocking: on lock contention, the loser exits
+		// non-zero with no JSON on stdout rather than corrupting anything.
+		// Only a successful archive's returned record tells us anything
+		// about ordering.
+		if archiveCode != 0 {
+			continue
+		}
+		var archived work.Record
+		if err := json.Unmarshal([]byte(archiveOut), &archived); err != nil {
+			t.Fatalf("trial %d: archive stdout is not a record: %v\n%s", i, err, archiveOut)
+		}
+		if archived.Mode == work.ModeFreeform && promoteCode == 0 {
+			t.Fatalf("trial %d: archive completed first (observed mode=freeform) yet the concurrent promote still exited 0 — the in-closure Lifecycle recheck did not serialize against the already-archived record", i)
+		}
+	}
+}
+
+// TestWorkStart_FreeformAttach_MatchesSkillInvocation pins AC-J-13
+// (D1-REVISED / Task 10 item 3): the exact invocation the new `/wip-start`
+// freeform section issues (attach path, no --no-attach) touches nothing
+// outside work/<id>/ in either the working tree or the state dir.
+func TestWorkStart_FreeformAttach_MatchesSkillInvocation(t *testing.T) {
+	dir := initGitRepoWithBranch(t, "main")
+	stateDir := t.TempDir()
+	before := snapshotWorkingDir(t, dir)
+
+	stdout, stderr, code := runWorkCmd(t, dir, stateDir, "", "work", "start", "--mode", "freeform", "--title", "skill invocation", ".")
+	if code != 0 {
+		t.Fatalf("work start exited %d\nstderr: %s", code, stderr)
+	}
+	var r work.Record
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("work start stdout is not a record: %v\n%s", err, stdout)
+	}
+
+	after := snapshotWorkingDir(t, dir)
+	assertWorkingDirUnchanged(t, before, after)
+	for _, name := range []string{".github", "GEMINI.md", ".gitignore"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("freeform attach-path start created %s in the working tree (err=%v)", name, err)
+		}
+	}
+	for _, name := range []string{".claude/repo-docs", ".wip"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("freeform attach-path start created %s in the working tree (err=%v)", name, err)
+		}
 	}
 }

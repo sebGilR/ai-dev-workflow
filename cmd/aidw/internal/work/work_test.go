@@ -1362,3 +1362,105 @@ func TestReapDanglingBinding_LockBusy_SkipsSilently(t *testing.T) {
 		t.Errorf("sess-busy's binding must survive when its lock is busy: %v", statErr)
 	}
 }
+
+// --- Cluster J: freeform mode (Task 8, schema-level) ------------------------
+
+// TestRecordModeRoundTrip pins Task 8 item 2: Mode survives a Save/Load
+// round trip and is written literally as "freeform" on disk (mirrors the
+// shape of TestRecordLoadSave_RoundTrip above).
+func TestRecordModeRoundTrip(t *testing.T) {
+	stateDir := t.TempDir()
+
+	r := New("freeform title", ModeFreeform)
+	if err := Save(stateDir, r); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(stateDir, r.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != ModeFreeform {
+		t.Fatalf("round-tripped Mode = %q, want %q", got.Mode, ModeFreeform)
+	}
+
+	raw, err := os.ReadFile(RecordPath(stateDir, r.WorkID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"mode": "freeform"`)) && !bytes.Contains(raw, []byte(`"mode":"freeform"`)) {
+		t.Errorf("work.json does not contain a literal freeform mode field: %s", raw)
+	}
+}
+
+// TestResolve_DetachedHeadAttachment_AlreadySupported is a regression/
+// coverage addition (Task 8 item 13, AC-J-12), not a fix: git.CurrentBranch
+// already returns the literal "detached-head" string and Resolve has no
+// special-casing for it — Phase A matches it exactly like any other branch
+// value.
+func TestResolve_DetachedHeadAttachment_AlreadySupported(t *testing.T) {
+	stateDir := t.TempDir()
+	path := liveWorktree(t, "detached")
+
+	want := saveRecord(t, stateDir, "detached head work", Attachment{
+		RepoID:       "repoDetached",
+		WorktreePath: path,
+		Branch:       "detached-head",
+		Head:         "sha-detached",
+	})
+
+	got, _, err := Resolve(ResolveOptions{
+		StateDir:     stateDir,
+		RepoID:       "repoDetached",
+		Branch:       "detached-head",
+		WorktreePath: path,
+	})
+	if err != nil {
+		t.Fatalf("detached-head attachment should resolve like any other branch: %v", err)
+	}
+	if got.WorkID != want.WorkID {
+		t.Fatalf("resolved %s, want %s", got.WorkID, want.WorkID)
+	}
+}
+
+// TestResolve_MultipleWorkIDsShareOneBranch_AlreadySupported is a
+// regression/coverage addition (Task 8 item 12/AC-J-12's other half): two
+// work records attached to the same (repo_id, branch) pair are reported as
+// ErrAmbiguousWork with both candidates, not guessed at.
+func TestResolve_MultipleWorkIDsShareOneBranch_AlreadySupported(t *testing.T) {
+	stateDir := t.TempDir()
+	path := liveWorktree(t, "shared-branch")
+
+	first := saveRecord(t, stateDir, "first on shared branch", Attachment{
+		RepoID:       "repoShared",
+		WorktreePath: path,
+		Branch:       "shared",
+		Head:         "sha1",
+	})
+	second := saveRecord(t, stateDir, "second on shared branch", Attachment{
+		RepoID:       "repoShared",
+		WorktreePath: path,
+		Branch:       "shared",
+		Head:         "sha2",
+	})
+
+	_, candidates, err := Resolve(ResolveOptions{
+		StateDir:     stateDir,
+		RepoID:       "repoShared",
+		Branch:       "shared",
+		WorktreePath: path,
+	})
+	if !errors.Is(err, ErrAmbiguousWork) {
+		t.Fatalf("expected ErrAmbiguousWork for two work items sharing one branch, got %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %+v", len(candidates), candidates)
+	}
+	seen := map[string]bool{first.WorkID: false, second.WorkID: false}
+	for _, c := range candidates {
+		seen[c.WorkID] = true
+	}
+	if !seen[first.WorkID] || !seen[second.WorkID] {
+		t.Errorf("candidate list missing one of the two shared-branch records: %+v", candidates)
+	}
+}
