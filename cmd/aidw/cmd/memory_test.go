@@ -27,9 +27,12 @@ func TestRepoAndBranch_WorksWithoutWipState(t *testing.T) {
 		t.Fatal("precondition: expected no active work in a fresh repo")
 	}
 
-	repo, branch, err := repoAndBranch(dir)
+	repo, branch, repoID, err := repoAndBranch(dir)
 	if err != nil {
 		t.Fatalf("repoAndBranch on a repo with no .wip: %v", err)
+	}
+	if repoID == "" {
+		t.Error("repoID must not be empty")
 	}
 
 	wantRepo, err := filepath.EvalSymlinks(dir)
@@ -61,7 +64,7 @@ func TestRepoAndBranch_MatchesWipBranchKey(t *testing.T) {
 		t.Fatalf("git checkout: %v\n%s", err, out)
 	}
 
-	_, branch, err := repoAndBranch(dir)
+	_, branch, _, err := repoAndBranch(dir)
 	if err != nil {
 		t.Fatalf("repoAndBranch: %v", err)
 	}
@@ -81,7 +84,7 @@ func TestRepoAndBranch_MatchesWipBranchKey(t *testing.T) {
 
 // TestRepoAndBranch_NotAGitRepo keeps the genuine error path an error.
 func TestRepoAndBranch_NotAGitRepo(t *testing.T) {
-	if _, _, err := repoAndBranch(t.TempDir()); err == nil {
+	if _, _, _, err := repoAndBranch(t.TempDir()); err == nil {
 		t.Error("expected an error outside a git repo")
 	}
 }
