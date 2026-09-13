@@ -13,9 +13,10 @@ import (
 )
 
 // migrateStateCmd is H1: copy legacy .wip branch state into the work-model
-// store. It never deletes a migration source (that is Batch 2 Lane D's
-// `--cleanup-sources`, out of scope here — see spec §1) and never touches
-// .wip's own reads (D3, "read-through").
+// store, and (Batch 2 Lane D) optionally clean up already-verified-copied
+// sources via --cleanup-sources. It never touches .wip's own reads (D3,
+// "read-through"), and --cleanup-sources only ever deletes a source that
+// migrate.PlanCleanup classifies as verified-copied (hard rule 3).
 var migrateStateCmd = &cobra.Command{
 	Use:   "migrate-state <path>",
 	Short: "Migrate legacy .wip branch state into the work-model store",
@@ -23,10 +24,17 @@ var migrateStateCmd = &cobra.Command{
 	Run: func(c *cobra.Command, args []string) {
 		extraPaths, _ := c.Flags().GetStringArray("path")
 		allRegistered, _ := c.Flags().GetBool("all-registered")
+		cleanupSources, _ := c.Flags().GetBool("cleanup-sources")
+		dryRun, _ := c.Flags().GetBool("dry-run")
 
 		roots, err := resolveMigrateRoots(args[0], extraPaths, allRegistered)
 		if err != nil {
 			Die("migrate-state: %v", err)
+		}
+
+		if cleanupSources {
+			runCleanupSources(roots, dryRun)
+			return
 		}
 
 		summary, err := migrate.Run(state.StateDir(), roots)
@@ -38,6 +46,44 @@ var migrateStateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 	},
+}
+
+// cleanupResult is the JSON shape printed by --cleanup-sources, covering
+// both the --dry-run preview and the real-deletion run (Deleted is empty on
+// a dry run — nothing was actually removed).
+type cleanupResult struct {
+	Candidates []string          `json:"candidates"`
+	Blocked    map[string]string `json:"blocked"`
+	Deleted    []string          `json:"deleted"`
+	DryRun     bool              `json:"dry_run"`
+}
+
+// runCleanupSources implements Lane D's CLI behavior (spec §7): --dry-run is
+// a read-only preview and is NEVER refused, even when there is nothing to
+// clean up yet — mirroring wip.go's --dry-run discipline. Without --dry-run,
+// the command refuses (mirroring requireArchiveBeforePurge's shape,
+// wip.go:68) when PlanCleanup finds zero candidates, since running the
+// destructive path for no effect is more likely a misconfiguration than
+// intent.
+func runCleanupSources(roots []string, dryRun bool) {
+	candidates, blocked, err := migrate.PlanCleanup(state.StateDir(), roots)
+	if err != nil {
+		Die("migrate-state --cleanup-sources: %v", err)
+	}
+
+	if dryRun {
+		PrintJSON(cleanupResult{Candidates: candidates, Blocked: blocked, Deleted: nil, DryRun: true})
+		return
+	}
+
+	if len(candidates) == 0 {
+		Die("migrate-state --cleanup-sources: nothing to clean up — no verified-copied sources found under the given roots (run without --cleanup-sources first, or check the %d blocked entr(y/ies) reported by --dry-run)", len(blocked))
+	}
+
+	if err := migrate.DeleteSources(candidates); err != nil {
+		Die("migrate-state --cleanup-sources: %v", err)
+	}
+	PrintJSON(cleanupResult{Candidates: candidates, Blocked: blocked, Deleted: candidates, DryRun: false})
 }
 
 // resolveMigrateRoots implements D2's bounded root resolution: the default
@@ -103,5 +149,7 @@ func resolveMigrateRoots(path string, extraPaths []string, allRegistered bool) (
 func init() {
 	migrateStateCmd.Flags().StringArray("path", nil, "Additional worktree root to scan (repeatable)")
 	migrateStateCmd.Flags().Bool("all-registered", false, "Also scan every repos.json last_known_paths entry")
+	migrateStateCmd.Flags().Bool("cleanup-sources", false, "Delete legacy .wip sources that have been verified-copied (never deletes anything unverified)")
+	migrateStateCmd.Flags().Bool("dry-run", false, "With --cleanup-sources, preview what would be deleted without deleting anything (never refused)")
 	Root.AddCommand(migrateStateCmd)
 }
