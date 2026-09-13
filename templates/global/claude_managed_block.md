@@ -29,12 +29,15 @@ Default expectations:
 - Use `/wip-review` before `/wip-pr` for any non-trivial change.
 - Keep updates concise and useful; do not spam `.wip` files with noise.
 - Use `/wip-upgrade` when `.wip` files appear in the wrong directory, or after pulling updates to `ai-dev-workflow`.
+- Proceed on a stated default rather than pausing to confirm it; list the assumptions you made at the end of your response instead of asking upfront.
+- Only block and ask the user for irreversible or outward-facing actions (e.g. force-push, deleting data, sending a message, publishing something public).
+- Try your own tools/credentials first — a local command, an available MCP tool, a config you can read yourself — before asking the user for information you could get directly.
 
 ## Repository Intelligence Tools
 
-**IMPORTANT: Do NOT use the `Explore` subagent for code navigation. Use Serena MCP tools directly.**
+If `mcp__serena__*` tools respond, use them for code navigation instead of the `Explore` subagent. On any error, or if the tools are unavailable, fall back to Grep/Read/Glob immediately — don't retry Serena.
 
-### When to use Serena (always try first)
+### When Serena is available, use it for
 
 Use `mcp__serena__*` tools directly — not through a subagent — for any of these:
 
@@ -54,7 +57,7 @@ Use `mcp__serena__*` tools directly — not through a subagent — for any of th
 
 ### Prohibited fallback
 
-**Never use `Agent(subagent_type="Explore")` for code navigation.** The built-in Explore subagent reads entire files and consumes excessive tokens. Serena + Grep cover all legitimate navigation needs. (This does not apply to named workflow subagents like `wip-researcher`.)
+**Avoid `Agent(subagent_type="Explore")` for code navigation when Serena or Grep can answer instead.** The built-in Explore subagent reads entire files and consumes excessive tokens. Serena (when available) + Grep cover all legitimate navigation needs. (This does not apply to named workflow subagents like `wip-researcher`.)
 
 ### External libraries and APIs
 
@@ -78,11 +81,13 @@ RTK is most valuable when commands produce large outputs that would otherwise co
 
 ### When to bypass RTK (full output needed)
 
-**Always ask the user before bypassing RTK.** If you need full uncompressed output to see complete stack traces or sequential log context, explain why and get confirmation:
+**In the main/coordinating session** (the one talking to the user): ask before bypassing RTK. If you need full uncompressed output to see complete stack traces or sequential log context, explain why and get confirmation:
 
 > "I need full uncompressed output from `<cmd>` to [specific reason]. Run without RTK compression? [y/N]"
 
 Only proceed with `rtk proxy <command>` after the user confirms.
+
+**In a subagent** (no interactive user to ask): run `rtk proxy <cmd>` directly when uncompressed output is needed, and note in your final report that you bypassed RTK and why. Do not block waiting on a confirmation that can't arrive.
 
 ### Failure log convention
 

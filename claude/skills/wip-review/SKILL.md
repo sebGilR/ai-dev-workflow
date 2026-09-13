@@ -46,8 +46,17 @@ When this skill is used:
    b. Check the `AIDW_REVIEW_MODEL` environment variable:
    - If set to `"opus"` → use the deepest-analysis model tier (CI override, no prompt)
    - If set to `"sonnet"` → use the default model tier (CI override, no prompt)
-   - If unset → ask the user: **"Escalate to a deeper-analysis model for this review? [y/N]"**
-     Default (no answer / N) → the default model tier
+   - If unset → do NOT ask the user by default. Use the default model tier and proceed
+     automatically, **unless** either of these holds, in which case escalate to the
+     deeper-analysis tier without prompting:
+     - the diff stat from step 4a shows more than ~400 changed lines or more than
+       ~15 files touched (a reasonable proxy for "large enough that missed findings
+       are expensive"), or
+     - the user has already passed an explicit flag/preference for this run (e.g.
+       invoked with an escalation flag, or stated a model preference earlier in
+       the conversation).
+     Mention which path was taken (default tier vs. auto-escalated, and why) in
+     the review output instead of pausing to ask.
 
 5. Use the `wip-reviewer` subagent to fill in the `## Claude Review` section of the already-written `review.md`.
 

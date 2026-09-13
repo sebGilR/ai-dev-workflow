@@ -20,6 +20,15 @@ either tier (env `AIDW_FRONTIER_MODEL` / `AIDW_EFFICIENT_MODEL`). Respect
 an explicit user model choice without re-prompting, and never claim a
 model switch happened unless the host actually performed it.
 
+## Dispatching Isolated Work
+
+If any task in `spec.md` is delegated to a background/worktree-isolated
+subagent rather than executed inline, include the contents of
+`~/.claude/ai-dev-workflow/templates/briefs/isolated-agent-brief.md` in
+that agent's dispatch prompt — it covers the standard ground rules
+(branch-check-first, no amend/rebase, premise-check before editing,
+etc.) so they don't need to be re-derived per dispatch.
+
 ## STEP 1: Load Specification
 
 1. Strictly load only `spec.md` and `task-context.md` from the `.wip/<branch>/` directory.
@@ -30,6 +39,10 @@ model switch happened unless the host actually performed it.
 1. Execute the implementation tasks **exactly** in the order specified in `spec.md`.
 2. Do not "optimize" the order or combine unrelated tasks.
 3. For every change, append a concise update to `execution.md` describing what was changed and why.
+4. When implementing inline (not as a dispatched agent — see the brief's conditional commit rule
+   at `templates/briefs/isolated-agent-brief.md:16-20`), commit after each coherent chunk of
+   implementation work rather than batching the whole task into one final commit — commits are the
+   only thing that survives a stall.
 
 ## STEP 3: Self-Review & Verification (Tiered Autonomy)
 
