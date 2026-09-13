@@ -21,6 +21,7 @@ type BootstrapResult struct {
 	MCPJSON   string   `json:"mcp_json"`
 	Gitignore string   `json:"gitignore"`
 	SqliteVec string   `json:"sqlite_vec"`
+	Gopls     string   `json:"gopls,omitempty"`
 	Skills    []string `json:"skills"`
 	Agents    []string `json:"agents"`
 	RepoPath  string   `json:"repo_path,omitempty"`
@@ -31,7 +32,7 @@ type BootstrapResult struct {
 type BootstrapOptions struct {
 	RepoPath    string // Path to a specific repository to bootstrap.
 	SourcePath  string // If provided, symlink skills/agents from this repo instead of copying from embedded FS.
-	Interactive bool   // If true, prompt for optional features (Adversarial Review, RTK).
+	Interactive bool   // If true, prompt for optional features (Adversarial Review, RTK, gopls).
 	SetupShell  bool   // If true, patch shell profile and create aidw.env.sh.
 }
 
@@ -81,7 +82,23 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.SqliteVec = "installed"
 	}
 
-	// 4. Configure MCP
+	// 4. Detect gopls (Serena's Go language server dependency)
+	fmt.Fprintln(w, "→ Checking for gopls...")
+	goplsStatus := DetectGopls(opts.Interactive, w)
+	switch {
+	case goplsStatus.Installed:
+		result.Gopls = "installed"
+		fmt.Fprintln(w, "  gopls is on PATH.")
+	case goplsStatus.GoplsPresent:
+		result.Gopls = "present"
+		fmt.Fprintln(w, "  gopls already installed.")
+	case goplsStatus.GoPresent:
+		result.Gopls = "missing"
+		result.Warnings = append(result.Warnings, goplsStatus.Warning)
+		fmt.Fprintf(w, "  %s\n", goplsStatus.Warning)
+	}
+
+	// 5. Configure MCP
 	fmt.Fprintln(w, "→ Configuring MCP servers...")
 	if err := MergeMCPJSON(w); err != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("mcp: %v", err))
@@ -90,7 +107,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.MCPJSON = filepath.Join(claudeHome, "mcp.json")
 	}
 
-	// 5. Configure Settings
+	// 6. Configure Settings
 	fmt.Fprintln(w, "→ Merging Claude settings...")
 	settingsPath := filepath.Join(claudeHome, "settings.json")
 	settingsTmpl, err := embedfs.FS.ReadFile("templates/global/settings.template.json")
@@ -105,7 +122,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("settings template missing: %v", err))
 	}
 
-	// 6. Merge CLAUDE.md (Global)
+	// 7. Merge CLAUDE.md (Global)
 	fmt.Fprintln(w, "→ Updating global CLAUDE.md...")
 	claudeMDPath := filepath.Join(claudeHome, "CLAUDE.md")
 	snippet, err := embedfs.FS.ReadFile("templates/global/claude_managed_block.md")
@@ -120,7 +137,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("claude.md snippet missing: %v", err))
 	}
 
-	// 7. Merge GEMINI.md (Global)
+	// 8. Merge GEMINI.md (Global)
 	fmt.Fprintln(w, "→ Updating global GEMINI.md...")
 	geminiHome := filepath.Join(home, ".gemini")
 	os.MkdirAll(geminiHome, 0o755)
@@ -137,7 +154,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("gemini.md snippet missing: %v", err))
 	}
 
-	// 8. Update global gitignore
+	// 9. Update global gitignore
 	fmt.Fprintln(w, "→ Updating global gitignore...")
 	if err := UpdateGlobalGitignore(); err != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("gitignore: %v", err))
@@ -146,7 +163,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		result.Gitignore = "updated"
 	}
 
-	// 9. Setup Shell and Environment
+	// 10. Setup Shell and Environment
 	if opts.SetupShell {
 		fmt.Fprintln(w, "→ Setting up shell profile and environment...")
 		if err := SetupShell(opts.Interactive, w); err != nil {
@@ -154,7 +171,7 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		}
 	}
 
-	// 10. Repo-specific bootstrap
+	// 11. Repo-specific bootstrap
 	if opts.RepoPath != "" {
 		fmt.Fprintf(w, "→ Bootstrapping repository: %s\n", opts.RepoPath)
 		if _, err := wip.EnsureRepo(opts.RepoPath); err != nil {

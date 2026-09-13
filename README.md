@@ -234,15 +234,16 @@ The review bundle (`review-bundle.json`) caps total diff at 50 KB and is fingerp
    - Without `--source-path`: extracts the embedded `claude/skills` and `claude/agents` from the binary into `~/.claude/skills/`, `~/.copilot/skills/`, and `~/.claude/agents/`.
    - With `--source-path`: symlinks them from your local checkout for live editing (use this when developing the project).
 3. Downloads `sqlite-vec` `v0.1.9` for the host triple (`darwin-aarch64`, `linux-x86_64`, …) and unpacks `vec0.{dylib,so}` to `~/.claude/lib/`.
-4. **Merges JSON**: `templates/global/settings.template.json` is deep-merged into `~/.claude/settings.json` with these rules (`cmd/aidw/internal/install/merge_settings.go`):
+4. **Detects `gopls`**: if `go` is on `PATH` but `gopls` isn't, Serena's Go language server won't start. This always runs (including on `aidw upgrade`) and surfaces as a warning in the JSON output; with `--interactive` it also offers to run `go install golang.org/x/tools/gopls@latest` for you (see `cmd/aidw/internal/install/gopls.go`).
+5. **Merges JSON**: `templates/global/settings.template.json` is deep-merged into `~/.claude/settings.json` with these rules (`cmd/aidw/internal/install/merge_settings.go`):
    - Objects: recursive merge.
    - Arrays: union, deduped by JSON serialisation of each element.
    - Scalars: **user value wins** — the template never overwrites your existing scalars.
    - Invalid existing JSON is backed up to `settings.json.bak` and the template alone is written.
-5. **Merges MCP servers** into `~/.claude/mcp.json`. Adds (or refreshes if `command`/`args` drift): `serena`, `context7`, `sequential-thinking`. User-added fields on existing entries are preserved.
-6. **Patches `CLAUDE.md` and `GEMINI.md`** with `BEGIN/END … MANAGED BLOCK` sentinels, so re-runs replace only the managed region without disturbing your additions.
-7. **Patches your shell profile** (`.zshrc` / `.bashrc` / `.bash_profile`) with `source ~/.claude/ai-dev-workflow/aidw.env.sh`, also wrapped in a managed block.
-8. **Repo bootstrap** (when a `[REPO_PATH]` arg is given): creates `.wip/`, `.claude/repo-docs/`, seeds `.github/copilot-instructions.md`, `.github/skills/`, `.github/agents/` (with MCP-only sections stripped — see `cmd/aidw/internal/install/generate_github_agents.go`), and adds `.wip/`, `.claude/repo-docs/`, `.claude/settings.local.json` to `~/.config/git/ignore`.
+6. **Merges MCP servers** into `~/.claude/mcp.json`. Adds (or refreshes if `command`/`args` drift): `serena`, `context7`, `sequential-thinking`. User-added fields on existing entries are preserved.
+7. **Patches `CLAUDE.md` and `GEMINI.md`** with `BEGIN/END … MANAGED BLOCK` sentinels, so re-runs replace only the managed region without disturbing your additions.
+8. **Patches your shell profile** (`.zshrc` / `.bashrc` / `.bash_profile`) with `source ~/.claude/ai-dev-workflow/aidw.env.sh`, also wrapped in a managed block.
+9. **Repo bootstrap** (when a `[REPO_PATH]` arg is given): creates `.wip/`, `.claude/repo-docs/`, seeds `.github/copilot-instructions.md`, `.github/skills/`, `.github/agents/` (with MCP-only sections stripped — see `cmd/aidw/internal/install/generate_github_agents.go`), and adds `.wip/`, `.claude/repo-docs/`, `.claude/settings.local.json` to `~/.config/git/ignore`.
 
 Re-run `aidw upgrade .` after pulling new versions; it's the same path with extra `migrate-wip` and skill-refresh logic.
 
