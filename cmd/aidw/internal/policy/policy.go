@@ -18,6 +18,12 @@ type Rule struct {
 // Config represents the policy configuration stored in .aidw/policy.json.
 type Config struct {
 	Rules []Rule `json:"rules"`
+	// WipGate, when case-insensitively "disabled", opts a repo out of the
+	// opt-in PreToolUse workflow-gate hook. It is independent of Rules and
+	// is consumed by cmd/aidw/internal/hookgate, not by Evaluate. Set it
+	// safely with `aidw policy set-wip-gate <path> off` (see SetWipGate),
+	// not by hand-writing this field directly.
+	WipGate string `json:"wip_gate,omitempty"`
 }
 
 // Verdict returned by the policy engine.
@@ -41,7 +47,60 @@ func Load(repoPath string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse policy.json: %w", err)
 	}
+
+	// Backfill default rules only when the file doesn't declare its own
+	// "rules" key at all (e.g. a hand-written file containing only
+	// {"wip_gate": "disabled"}) — never override an explicit "rules": [].
+	// This keeps every dynamic Load() call current with DefaultConfig(),
+	// rather than freezing a repo to whatever rules existed the moment
+	// some file happened to be written without a rules key.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err == nil {
+		if _, hasRules := probe["rules"]; !hasRules {
+			cfg.Rules = DefaultConfig().Rules
+		}
+	}
 	return &cfg, nil
+}
+
+// SetWipGate persists (or clears) a per-repo opt-out for the workflow-gate
+// PreToolUse hook. Operates on the raw JSON map, not the typed Config
+// struct, so it never writes a "rules" key that wasn't already present —
+// a repo with no prior policy.json gets exactly {"wip_gate":"disabled"}
+// and nothing else. Load()'s rules-backfill (above) supplies current
+// defaults dynamically on every future read instead of this setter
+// freezing a point-in-time snapshot to disk.
+func SetWipGate(repoPath string, disabled bool) error {
+	dir := filepath.Join(repoPath, ".aidw")
+	path := filepath.Join(dir, "policy.json")
+
+	raw := map[string]json.RawMessage{}
+	fileExisted := false
+	if data, err := os.ReadFile(path); err == nil {
+		fileExisted = true
+		_ = json.Unmarshal(data, &raw) // best-effort; corrupt file -> start fresh rather than fail the opt-out
+	}
+
+	if disabled {
+		raw["wip_gate"] = json.RawMessage(`"disabled"`)
+	} else {
+		delete(raw, "wip_gate")
+	}
+
+	// Re-enabling (disabled == false) on a repo with no prior policy.json,
+	// or one whose only content was the wip_gate key we just deleted, has
+	// nothing left to persist — writing a stray {} file would just be
+	// clutter with no effect (Load() already returns DefaultConfig() when
+	// the file is absent). No-op rather than create it.
+	if !disabled && !fileExisted && len(raw) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, _ := json.MarshalIndent(raw, "", "  ")
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 // DefaultConfig provides a reasonable set of safe and restricted commands.

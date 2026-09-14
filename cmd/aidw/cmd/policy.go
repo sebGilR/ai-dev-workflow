@@ -63,10 +63,37 @@ var policyAllowCmd = &cobra.Command{
 	},
 }
 
+var policySetWipGateCmd = &cobra.Command{
+	Use:   "set-wip-gate <path> <on|off>",
+	Short: "Persistently opt this repo in or out of the workflow-gate PreToolUse hook",
+	Args:  cobra.ExactArgs(2),
+	Run: func(c *cobra.Command, args []string) {
+		repoPath := args[0]
+		switch args[1] {
+		case "on":
+			if err := policy.SetWipGate(repoPath, false); err != nil {
+				fmt.Fprintln(os.Stderr, "[aidw]", err)
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "wip_gate opt-out cleared (hook re-enabled if it's merged into settings.json).")
+		case "off":
+			if err := policy.SetWipGate(repoPath, true); err != nil {
+				fmt.Fprintln(os.Stderr, "[aidw]", err)
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "wip_gate disabled for this repo.")
+		default:
+			fmt.Fprintln(os.Stderr, "[aidw] expected \"on\" or \"off\"")
+			os.Exit(1)
+		}
+	},
+}
+
 func init() {
 	policyCmd.AddCommand(policyInitCmd)
 	policyCmd.AddCommand(policyCheckCmd)
 	policyCmd.AddCommand(policyAllowCmd)
+	policyCmd.AddCommand(policySetWipGateCmd)
 
 	policyAllowCmd.Flags().String("reason", "User authorized always", "Reason for whitelisting")
 

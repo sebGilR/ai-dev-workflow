@@ -206,6 +206,10 @@ Verdicts: `allow`, `prompt`, `audit`, `deny`. Default-fallback is `prompt`.
 
 This is a soft layer — Claude Code's own permission system still governs execution. Policy provides a second, repo-local check that makes autonomous loops (`/wip-auto`) safer without manually pre-approving every test command.
 
+`.aidw/policy.json` also carries an optional top-level `"wip_gate": "disabled"` field, independent of the `rules` array, consumed by the opt-in workflow-gate hook (see [Hooks (Claude Code)](#hooks-claude-code)) rather than by `Evaluate`. Set it with `aidw policy set-wip-gate . off`, and clear it with `aidw policy set-wip-gate . on` — the setter only adds or removes the `wip_gate` key itself; it never rewrites the *content* of an existing `rules` array (note the file is still fully re-serialized, so whitespace/key-order can change even though values don't). Hand-writing a file containing just `{"wip_gate": "disabled"}` is equally safe: `Load()` backfills the current default rules whenever the file declares no `"rules"` key at all, so a `wip_gate`-only file never silently tightens the repo's Bash policy, and never freezes it to a stale snapshot either. An explicit `"rules": []` is respected as a deliberate choice.
+
+Note this backfill is a deliberate, repo-wide change in behavior, not scoped only to `wip_gate`: **any** existing `.aidw/policy.json` that predates this feature and doesn't declare its own `"rules"` key now dynamically picks up `DefaultConfig()`'s rules on every `Load()` call (previously it would have gotten `Rules == nil`, i.e. everything falls through to `Evaluate`'s `"prompt"` default). `aidw policy check` runs before every Bash call in `/wip-implement`/`/wip-auto`, so a handful of previously-`prompt` commands (`git status`, `go test`, `ls`, ...) now verdict `allow` for such repos. This is the intended baseline (the defaults exist precisely to be a reasonable starting point), but it's a real behavior change worth knowing about if you maintain a `policy.json` that intentionally omits `rules`.
+
 ---
 
 ## Adversarial review
@@ -240,6 +244,8 @@ The review bundle (`review-bundle.json`) caps total diff at 50 KB and is fingerp
    - Arrays: union, deduped by JSON serialisation of each element.
    - Scalars: **user value wins** — the template never overwrites your existing scalars.
    - Invalid existing JSON is backed up to `settings.json.bak` and the template alone is written.
+
+   A second, independent `MergeSettings` call, gated on an interactive y/N prompt, optionally merges `templates/global/settings.wip-gate-fragment.json` — see [Hooks (Claude Code)](#hooks-claude-code) below. This fragment is never touched by the unconditional step-5 merge.
 6. **Merges MCP servers** into `~/.claude/mcp.json`. Adds (or refreshes if `command`/`args` drift): `serena`, `context7`, `sequential-thinking`. User-added fields on existing entries are preserved.
 7. **Patches `CLAUDE.md` and `GEMINI.md`** with `BEGIN/END … MANAGED BLOCK` sentinels, so re-runs replace only the managed region without disturbing your additions.
 8. **Patches your shell profile** (`.zshrc` / `.bashrc` / `.bash_profile`) with `source ~/.claude/ai-dev-workflow/aidw.env.sh`, also wrapped in a managed block.
@@ -251,7 +257,7 @@ Re-run `aidw upgrade .` after pulling new versions; it's the same path with extr
 
 ## Hooks (Claude Code)
 
-Three hook entries land in `~/.claude/settings.json`:
+Several hook entries (`Stop`, `PreCompact`, `SessionEnd`, `SessionStart`) land in `~/.claude/settings.json` on every bootstrap/upgrade — always installed, no opt-in:
 
 ```json
 "hooks": {
@@ -264,6 +270,14 @@ Three hook entries land in `~/.claude/settings.json`:
 `save-wip-snapshot.sh` resolves the current `.wip/<dated-slug>/` (mirroring the Go resolution logic so they can't drift) and writes `handoff.md` containing `git status --short --branch`, the last 8 commits, changed files, and `git diff --stat`. A line is appended to `progress.log` for every fire.
 
 The point: when context is compacted or a session ends, the next `/wip-resume` reads `handoff.md` and `context-summary.md` instead of replaying the entire chat.
+
+**Workflow gate (opt-in).** `aidw bootstrap --interactive` / `aidw upgrade --interactive` offers to add a `PreToolUse` hook (`Edit|Write|NotebookEdit`) that denies the call when: the cwd is inside a git repo, the repo has no `.bmad/` (or other declared competing workflow), `.aidw/policy.json` doesn't set `wip_gate: "disabled"`, and no `.wip` session exists for the current branch. The deny reason tells Claude to run `/wip-auto` or `/wip-start`. It is opt-in and additive-only — declining, or never running `--interactive`, leaves your settings untouched; there is no automated way to remove it once merged (hand-edit `~/.claude/settings.json`, or use the per-repo/one-shot opt-outs below). Bypass once with `AIDW_SKIP_GATE=1`; opt a whole repo out persistently with `aidw policy set-wip-gate . off`.
+
+**Rendering contract — the hook only ever emits `deny`, never `allow`.** Claude Code's PreToolUse contract treats an explicit `permissionDecision` as an affirmative override: `"deny"` blocks the call outright, and `"allow"` would grant it outright, *bypassing your own configured `permissions.ask`/`permissions.deny` rules for that tool* — it is not a neutral "this hook doesn't object." Only empty stdout (exit 0, no output) means "no opinion, defer to your normal permission flow." Since this hook is only supposed to have an opinion in exactly one case (no `.wip` session), every other path — not a git repo, `.bmad/` present, `wip_gate: disabled`, an active session, the `aidw` binary missing, an internal error — produces **no output at all**, never an explicit `"allow"`. Enabling this feature therefore never weakens any permission rule you already have configured for `Edit`/`Write`/`NotebookEdit`; it can only add one narrow, additional `deny`.
+
+**Known limitations (stated honestly, not oversold):** (1) a model can dodge the gate entirely via `Bash("cat > file <<EOF")` or any other Bash-based write — the hook only matches the `Edit`/`Write`/`NotebookEdit` tool names, not arbitrary Bash. (2) subagent tool calls (`agent_id` present) are never independently gated — only the top-level session that spawned them is expected to have started a `.wip` session. Both are accepted trade-offs: the goal is to stop *habitual/incidental* skipping of the `/wip-*` workflow, not to build an airtight sandbox.
+
+The decision logic lives in `cmd/aidw/internal/hookgate` (`aidw hook-gate` is the stdin/stdout entrypoint); `templates/global/scripts/wip-gate.sh` is a thin wrapper that resolves the `aidw` binary and `exec`s into it, failing open (producing no output, per the rendering contract above) if the binary can't be found.
 
 ---
 
@@ -311,9 +325,10 @@ aidw review-bundle <path>                # build diff bundle (cached by fingerpr
 aidw synthesize-review <path>            # merge sources into review.md
 aidw adversarial-review <path>           # exec gemini/copilot/codex CLI
 
-aidw policy {init,check,allow} <path> [args]
+aidw policy {init,check,allow,set-wip-gate} <path> [args]
 aidw memory  {status,store,list,index,search,migrate} [args]
 aidw model   route {frontier|efficient}
+aidw hook-gate                            # PreToolUse workflow-gate hook (stdin JSON -> stdout JSON)
 
 aidw migrate-state <path> [--path <dir>]... [--all-registered]
                                           # copy legacy .wip branch state into the work-model store
