@@ -119,6 +119,13 @@ func Evaluate(raw []byte, getenv func(string) string) Decision {
 	}
 }
 
+// caseInsensitiveFS reports whether the host OS's default filesystem is
+// case-preserving-but-insensitive (macOS, Windows) — a package variable
+// rather than an inline runtime.GOOS check so tests can exercise both
+// branches of targetOutsideRepo's case-fold fallback deterministically,
+// regardless of which OS actually runs the test suite.
+var caseInsensitiveFS = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+
 // targetOutsideRepo inspects tool_input's file_path/notebook_path field
 // (best-effort: absent or non-string values are a no-op, never a panic) and
 // reports whether the edit target resolves to a path outside repoTop. cwd is
@@ -146,10 +153,8 @@ func targetOutsideRepo(input HookInput, repoTop string) bool {
 	if isWithin(target, top, false) {
 		return false
 	}
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
-		if isWithin(target, top, true) {
-			return false
-		}
+	if caseInsensitiveFS && isWithin(target, top, true) {
+		return false
 	}
 	return true
 }

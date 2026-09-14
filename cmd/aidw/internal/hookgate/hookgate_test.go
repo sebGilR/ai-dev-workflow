@@ -252,6 +252,79 @@ func TestTargetOutsideRepo_CaseFold(t *testing.T) {
 	}
 }
 
+// TestEvaluate_CaseFoldGate_ThroughFullDecisionChain exercises the MAJOR 3
+// fix through Evaluate itself (not just isWithin directly), on both settings
+// of caseInsensitiveFS via the package var — a test that only called
+// isWithin could pass even if targetOutsideRepo's GOOS-gating were deleted
+// entirely, since deleting that gate breaks no test that never calls
+// Evaluate along this path. This one would.
+//
+// Constructing a genuine case-only path difference without a spurious
+// symlink-resolution mismatch (e.g. macOS's /tmp -> /private/tmp) requires
+// resolving the repo dir once up front and deriving both the "top" and the
+// case-flipped "target" from that same resolved base — otherwise
+// resolveSymlinksBestEffort's independent per-side resolution (the
+// MEDIUM-4-adjacent fix already in this package) can introduce an unrelated
+// prefix mismatch that has nothing to do with case-folding.
+func TestEvaluate_CaseFoldGate_ThroughFullDecisionChain(t *testing.T) {
+	// t.TempDir()'s own leaf component is typically a bare numeric counter
+	// ("001") with no letters to case-flip, so nest a lowercase-named repo
+	// dir underneath it rather than case-flipping t.TempDir()'s leaf itself.
+	parent := t.TempDir()
+	raw := filepath.Join(parent, "reponame")
+	if err := os.Mkdir(raw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, raw, "init", "-q", "-b", "main")
+	run(t, raw, "config", "user.email", "test@test.com")
+	run(t, raw, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(raw, ".gitkeep"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, raw, "add", ".")
+	run(t, raw, "commit", "-q", "-m", "init")
+
+	dir, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", raw, err)
+	}
+	upperBase := strings.ToUpper(filepath.Base(dir))
+	if upperBase == filepath.Base(dir) {
+		t.Fatal("expected the repo dir's own base name to contain case-foldable letters")
+	}
+	caseFlippedDir := filepath.Join(filepath.Dir(dir), upperBase)
+	target := filepath.Join(caseFlippedDir, "x.go")
+	in := payload(t, map[string]any{"tool_name": "Edit", "cwd": dir, "tool_input": map[string]any{"file_path": target}})
+
+	orig := caseInsensitiveFS
+	defer func() { caseInsensitiveFS = orig }()
+
+	caseInsensitiveFS = true
+	d := Evaluate(in, noSkipGetenv)
+	if d.Allow != false || d.Reason != DenyReason {
+		t.Fatalf("with caseInsensitiveFS=true, a case-only target must fall through to normal gate logic (deny, no session); got %+v", d)
+	}
+
+	caseInsensitiveFS = false
+	d = Evaluate(in, noSkipGetenv)
+	if !d.Allow || !strings.Contains(d.Reason, "outside repo") {
+		t.Fatalf("with caseInsensitiveFS=false, a case-only difference on a case-sensitive filesystem should be treated as outside repo; got %+v", d)
+	}
+}
+
+// TestEvaluate_NotebookPathField covers the notebook_path branch of
+// targetOutsideRepo, which had zero test coverage despite NotebookEdit being
+// one of the three gated tools — every other Task 1 AC exercised file_path.
+func TestEvaluate_NotebookPathField(t *testing.T) {
+	dir := initGitRepo(t, "main")
+	outside := t.TempDir()
+	in := payload(t, map[string]any{"tool_name": "NotebookEdit", "cwd": dir, "tool_input": map[string]any{"notebook_path": filepath.Join(outside, "nb.ipynb")}})
+	d := Evaluate(in, noSkipGetenv)
+	if !d.Allow || !strings.Contains(d.Reason, "outside repo") {
+		t.Fatalf("got %+v", d)
+	}
+}
+
 func TestEvaluate_NonStringFilePathDoesNotPanic(t *testing.T) {
 	dir := initGitRepo(t, "main")
 	in := payload(t, map[string]any{"tool_name": "Edit", "cwd": dir, "tool_input": map[string]any{"file_path": 42}})

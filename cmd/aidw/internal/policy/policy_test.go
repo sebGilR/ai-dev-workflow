@@ -163,3 +163,20 @@ func TestSetWipGate_On_ClearsField(t *testing.T) {
 		t.Fatalf("expected wip_gate cleared, got %q", cfg.WipGate)
 	}
 }
+
+// TestSetWipGate_OnWithNoPriorFile_NoOp is a LOW-severity code-review fix:
+// re-enabling (disabled=false) on a repo with no pre-existing policy.json
+// has nothing to persist (Load() already returns DefaultConfig() when the
+// file is absent) — it must not create a stray {"}"} file as clutter.
+func TestSetWipGate_OnWithNoPriorFile_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetWipGate(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".aidw", "policy.json")
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected no policy.json to be created, but found one at %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}

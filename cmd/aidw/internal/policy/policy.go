@@ -75,7 +75,9 @@ func SetWipGate(repoPath string, disabled bool) error {
 	path := filepath.Join(dir, "policy.json")
 
 	raw := map[string]json.RawMessage{}
+	fileExisted := false
 	if data, err := os.ReadFile(path); err == nil {
+		fileExisted = true
 		_ = json.Unmarshal(data, &raw) // best-effort; corrupt file -> start fresh rather than fail the opt-out
 	}
 
@@ -83,6 +85,15 @@ func SetWipGate(repoPath string, disabled bool) error {
 		raw["wip_gate"] = json.RawMessage(`"disabled"`)
 	} else {
 		delete(raw, "wip_gate")
+	}
+
+	// Re-enabling (disabled == false) on a repo with no prior policy.json,
+	// or one whose only content was the wip_gate key we just deleted, has
+	// nothing left to persist — writing a stray {} file would just be
+	// clutter with no effect (Load() already returns DefaultConfig() when
+	// the file is absent). No-op rather than create it.
+	if !disabled && !fileExisted && len(raw) == 0 {
+		return nil
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
