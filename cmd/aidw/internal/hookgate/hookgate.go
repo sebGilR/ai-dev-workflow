@@ -159,19 +159,35 @@ func targetOutsideRepo(input HookInput, repoTop string) bool {
 	return true
 }
 
-// resolveSymlinksBestEffort resolves symlinks in path, falling back to
-// resolving just its parent directory (rejoined with the original base name)
-// when path itself doesn't exist yet — e.g. a Write target about to be
-// created. If neither resolves, the input is returned unchanged. Never
-// errors: a symlink-resolution failure must not change the gate decision.
+// resolveSymlinksBestEffort resolves symlinks in path, walking upward
+// through parent directories until one resolves (or the filesystem root is
+// reached) and rejoining the unresolved tail — e.g. a `Write` target like
+// <repo>/newpkg/sub/file.go where `Write` will create both `newpkg` and
+// `sub` and neither exists yet. A single-level fallback (path's immediate
+// parent only) would leave such a target fully unresolved while repoTop
+// (from `git rev-parse --show-toplevel`) *is* resolved, producing a false
+// "outside repo" on a symlinked root (e.g. macOS's /tmp -> /private/tmp) —
+// exactly the silent-bypass class this package must never introduce. If no
+// ancestor resolves, the input is returned unchanged. Never errors: a
+// symlink-resolution failure must not change the gate decision.
 func resolveSymlinksBestEffort(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
+	clean := filepath.Clean(path)
+	var tail []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			// Reached the root without anything resolving.
+			return path
+		}
+		tail = append(tail, filepath.Base(clean))
+		clean = parent
 	}
-	if resolved, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
-		return filepath.Join(resolved, filepath.Base(path))
-	}
-	return path
 }
 
 // isWithin reports whether target is top or lives under top, optionally

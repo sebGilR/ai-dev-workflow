@@ -325,6 +325,72 @@ func TestEvaluate_NotebookPathField(t *testing.T) {
 	}
 }
 
+// TestResolveSymlinksBestEffort_NestedNotYetExistingPath is the M3 fix
+// regression test: a Write target several directory levels deep, none of
+// which exist yet (Write creates missing parents), must still resolve
+// through a symlinked ancestor rather than only checking one level up. This
+// is exactly the class of bug execution.md records already being hit once
+// during development (both-sides-must-resolve).
+func TestResolveSymlinksBestEffort_NestedNotYetExistingPath(t *testing.T) {
+	realDir := t.TempDir()
+	// EvalSymlinks always returns the fully canonicalized path, resolving
+	// every symlink in the chain -- including ones inside t.TempDir()'s own
+	// path (e.g. macOS's /var -> /private/var) -- not just the one this
+	// test adds. Resolve realDir up front so "want" reflects the same full
+	// canonicalization resolveSymlinksBestEffort will apply, rather than
+	// asserting against realDir's unresolved spelling.
+	realDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", realDir, err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "symlinked-root")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlinks unavailable on this host: %v", err)
+	}
+	nested := filepath.Join(linkDir, "newpkg", "sub", "file.go")
+	got := resolveSymlinksBestEffort(nested)
+	want := filepath.Join(realDir, "newpkg", "sub", "file.go")
+	if got != want {
+		t.Fatalf("resolveSymlinksBestEffort(%q) = %q, want %q", nested, got, want)
+	}
+}
+
+// TestEvaluate_RelativeFilePathJoinedAgainstCwd covers hookgate.go's
+// relative-path branch (filepath.Join(input.Cwd, target)), previously
+// untested — every other Task 1 AC used an absolute file_path.
+func TestEvaluate_RelativeFilePathJoinedAgainstCwd(t *testing.T) {
+	dir := initGitRepo(t, "main")
+	in := payload(t, map[string]any{"tool_name": "Edit", "cwd": dir, "tool_input": map[string]any{"file_path": "relative/x.go"}})
+	d := Evaluate(in, noSkipGetenv)
+	// relative/x.go under cwd=dir resolves inside the repo, so this must
+	// fall through to normal gate logic (deny, no session) rather than the
+	// "outside repo" allow-path.
+	if d.Allow {
+		t.Fatalf("expected deny (relative path resolves inside repo), got %+v", d)
+	}
+	if d.Reason != DenyReason {
+		t.Fatalf("reason mismatch: %q", d.Reason)
+	}
+}
+
+// TestEvaluate_BmadAsFileNotDirectory covers isDir's guard against a stray
+// .bmad *file* (not a directory) being mistaken for a declared competing
+// workflow — previously untested.
+func TestEvaluate_BmadAsFileNotDirectory(t *testing.T) {
+	dir := initGitRepo(t, "main")
+	if err := os.WriteFile(filepath.Join(dir, ".bmad"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := payload(t, map[string]any{"tool_name": "Edit", "cwd": dir, "tool_input": map[string]any{"file_path": filepath.Join(dir, "x.go")}})
+	d := Evaluate(in, noSkipGetenv)
+	if d.Allow {
+		t.Fatalf("a .bmad FILE (not a directory) must not be treated as a declared workflow; got %+v", d)
+	}
+	if d.Reason != DenyReason {
+		t.Fatalf("reason mismatch: %q", d.Reason)
+	}
+}
+
 func TestEvaluate_NonStringFilePathDoesNotPanic(t *testing.T) {
 	dir := initGitRepo(t, "main")
 	in := payload(t, map[string]any{"tool_name": "Edit", "cwd": dir, "tool_input": map[string]any{"file_path": 42}})
