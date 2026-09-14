@@ -319,6 +319,7 @@ func extractEmbedded(claudeHome, copilotHome string, w io.Writer) ([]string, []s
 		"templates/global/scripts/save-wip-snapshot.sh":       "save-wip-snapshot.sh",
 		"templates/global/scripts/session-start-context.sh":   "session-start-context.sh",
 		"templates/global/scripts/get-embeddings.template.sh": "get-embeddings.sh",
+		"templates/global/scripts/wip-gate.sh":                "wip-gate.sh",
 		"bin/serena-query": "bin/serena-query",
 	}
 	for src, name := range scripts {

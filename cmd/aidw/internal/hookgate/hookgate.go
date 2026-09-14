@@ -229,8 +229,11 @@ func RenderOutput(d Decision) []byte {
 // AllowOutput is the hardcoded allow-JSON literal, exported so
 // cmd/aidw/cmd/hook_gate.go's panic-recovery path and wip-gate.sh's own
 // missing-binary fallback can both use byte-identical text where relevant.
+// This exact string is pinned against templates/global/scripts/wip-gate.sh's
+// own hardcoded allow_json literal by
+// cmd/aidw/internal/install/wip_gate_hook_test.go — keep them in sync.
 func AllowOutput() []byte {
-	return []byte(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"wip-gate: internal error; failing open"}}`)
+	return []byte(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"wip-gate: aidw binary unavailable; failing open"}}`)
 }
 
 type hookOutput struct {
