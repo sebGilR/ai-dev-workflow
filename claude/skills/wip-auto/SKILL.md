@@ -7,7 +7,7 @@ effort: medium
 
 # Workflow: Autonomous Auto-Pilot
 
-**Best for**: Documentation, unit test boilerplate, minor refactors.
+**Best for**: Documentation, unit test boilerplate, minor refactors, isolated one-line fixes.
 
 ## Model guidance
 
