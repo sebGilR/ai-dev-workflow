@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -64,7 +63,13 @@ func wipGateTestEnv(t *testing.T) (home string) {
 	return home
 }
 
-func TestWipGateScript_ActiveWipSession_Allows(t *testing.T) {
+// TestWipGateScript_ActiveWipSession_ProducesNoOutput: an active .wip
+// session is an allow decision, which — per the rendering-contract
+// correction (see hookgate.RenderOutput's doc comment) — must produce zero
+// bytes of stdout, not an explicit "allow" JSON. Empty stdout is Claude
+// Code's documented "no opinion, defer to the normal permission flow"
+// signal; this hook only ever has an opinion in the no-session deny case.
+func TestWipGateScript_ActiveWipSession_ProducesNoOutput(t *testing.T) {
 	home := wipGateTestEnv(t)
 	dir := initHookGitRepo(t, "main")
 
@@ -80,9 +85,8 @@ func TestWipGateScript_ActiveWipSession_Allows(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
-	decision, _ := permissionDecision(t, stdout)
-	if decision != "allow" {
-		t.Fatalf("decision = %q, want allow", decision)
+	if stdout != "" {
+		t.Fatalf("expected empty stdout for an allow decision, got %q", stdout)
 	}
 }
 
@@ -104,7 +108,12 @@ func TestWipGateScript_NoWipSession_Denies(t *testing.T) {
 	}
 }
 
-func TestWipGateScript_BinaryMissing_AllowsHardcodedLiteral(t *testing.T) {
+// TestWipGateScript_BinaryMissing_ProducesNoOutput: when aidw can't be
+// resolved at all, the script must fail open by producing NO output (empty
+// stdout, exit 0) — never an explicit "allow" JSON, which would be an
+// affirmative decision overriding the user's own permission rules rather
+// than a neutral "this hook has no opinion."
+func TestWipGateScript_BinaryMissing_ProducesNoOutput(t *testing.T) {
 	home := t.TempDir() // no aidw binary anywhere under this HOME
 	scriptSrc := filepath.Join(repoRoot(t), "templates", "global", "scripts", "wip-gate.sh")
 	scriptData, err := os.ReadFile(scriptSrc)
@@ -124,8 +133,8 @@ func TestWipGateScript_BinaryMissing_AllowsHardcodedLiteral(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if strings.TrimSpace(stdout) != string(hookgate.AllowOutput()) {
-		t.Fatalf("stdout = %q, want the hardcoded allow literal %q", stdout, hookgate.AllowOutput())
+	if stdout != "" {
+		t.Fatalf("expected empty stdout when aidw is unresolvable, got %q", stdout)
 	}
 }
 
@@ -146,22 +155,23 @@ func TestBootstrap_ExtractsWipGateScript(t *testing.T) {
 	}
 }
 
-// TestWipGateScript_AllowJSONLiteralPinnedToAllowOutput is the MINOR 2 fix:
-// the script's hardcoded allow_json literal and hookgate.AllowOutput() are
-// independently maintained strings that must stay byte-identical, or a
-// future edit to one that forgets the other drifts silently.
-func TestWipGateScript_AllowJSONLiteralPinnedToAllowOutput(t *testing.T) {
+// TestWipGateScript_NeverHardcodesAPermissionDecision is the MINOR 2 fix,
+// revised for the rendering-contract correction: the script used to carry
+// its own hardcoded allow_json literal (pinned against hookgate.AllowOutput()
+// by an earlier version of this test), which this correction deleted
+// entirely — every allow path is now silence, not JSON. Pin the absence
+// instead of a literal that no longer exists: the script's source must
+// contain no "permissionDecision" string of its own. The only place that
+// string may ever appear in this hook's output is inside JSON produced by
+// `aidw hook-gate` itself (the deny path), which this script always execs
+// into rather than constructing output by hand.
+func TestWipGateScript_NeverHardcodesAPermissionDecision(t *testing.T) {
 	scriptSrc := filepath.Join(repoRoot(t), "templates", "global", "scripts", "wip-gate.sh")
 	data, err := os.ReadFile(scriptSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	re := regexp.MustCompile(`allow_json='({.*})'`)
-	m := re.FindSubmatch(data)
-	if m == nil {
-		t.Fatal("could not find allow_json literal in wip-gate.sh")
-	}
-	if string(m[1]) != string(hookgate.AllowOutput()) {
-		t.Fatalf("wip-gate.sh allow_json = %q, hookgate.AllowOutput() = %q", m[1], hookgate.AllowOutput())
+	if strings.Contains(string(data), "permissionDecision") {
+		t.Fatalf("wip-gate.sh must never hardcode a permissionDecision literal of its own — every decision must come from `aidw hook-gate`'s output:\n%s", data)
 	}
 }

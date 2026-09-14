@@ -262,16 +262,43 @@ func TestEvaluate_NonStringFilePathDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestRenderOutputAndAllowOutput_RoundTrip(t *testing.T) {
-	for _, d := range []Decision{{Allow: true, Reason: "x"}, {Allow: false, Reason: DenyReason}} {
-		out := RenderOutput(d)
-		var v map[string]any
-		if err := json.Unmarshal(out, &v); err != nil {
-			t.Fatalf("RenderOutput not valid JSON: %v (%s)", err, out)
-		}
+// TestRenderOutput_AllowIsEmpty is the rendering-contract regression test
+// (see spec.md's "Rendering-contract correction"): an allow Decision must
+// render to zero bytes, never JSON — empty stdout is Claude Code's
+// documented "no opinion, defer to the normal permission flow" signal, and
+// any explicit permissionDecision (including "allow") is an affirmative
+// decision that overrides the user's own permissions.ask/deny rules. This
+// hook must never do that for a case it doesn't actually care about.
+func TestRenderOutput_AllowIsEmpty(t *testing.T) {
+	out := RenderOutput(Decision{Allow: true, Reason: "some allow reason"})
+	if len(out) != 0 {
+		t.Fatalf("expected zero bytes for an allow decision, got %q", out)
 	}
-	var v map[string]any
-	if err := json.Unmarshal(AllowOutput(), &v); err != nil {
-		t.Fatalf("AllowOutput not valid JSON: %v", err)
+}
+
+// TestRenderOutput_DenyShape asserts actual field values, not just "is this
+// valid JSON" — a value round-trip test that only checks json.Unmarshal
+// succeeds would pass even if permissionDecision were inverted or
+// hookEventName were dropped.
+func TestRenderOutput_DenyShape(t *testing.T) {
+	out := RenderOutput(Decision{Allow: false, Reason: DenyReason})
+	var v struct {
+		HookSpecificOutput struct {
+			HookEventName            string `json:"hookEventName"`
+			PermissionDecision       string `json:"permissionDecision"`
+			PermissionDecisionReason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatalf("RenderOutput not valid JSON: %v (%s)", err, out)
+	}
+	if v.HookSpecificOutput.HookEventName != "PreToolUse" {
+		t.Fatalf("hookEventName = %q, want PreToolUse", v.HookSpecificOutput.HookEventName)
+	}
+	if v.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("permissionDecision = %q, want deny", v.HookSpecificOutput.PermissionDecision)
+	}
+	if v.HookSpecificOutput.PermissionDecisionReason != DenyReason {
+		t.Fatalf("permissionDecisionReason = %q, want %q", v.HookSpecificOutput.PermissionDecisionReason, DenyReason)
 	}
 }

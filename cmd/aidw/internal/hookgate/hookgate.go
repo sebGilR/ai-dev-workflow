@@ -208,35 +208,47 @@ func isDir(path string) bool {
 }
 
 // RenderOutput builds the PreToolUse hookSpecificOutput JSON for a decision.
-// It must never itself fail: on the (practically impossible) marshal error
-// it falls back to the hardcoded allow-JSON literal.
+//
+// Corrected after code review (see spec.md's "Rendering-contract correction"
+// section): Claude Code's PreToolUse contract treats an explicit
+// permissionDecision as an affirmative decision that bypasses the normal
+// permission flow — "allow" grants the call outright, overriding the user's
+// own configured permissions.ask/permissions.deny rules for that tool,
+// exactly like "deny" blocks it outright. Only *empty stdout* (exit 0, no
+// output) means "this hook has no opinion; let the normal permission flow
+// (including the user's own ask/deny rules) decide"
+// (https://code.claude.com/docs/en/hooks — "Exit code 0 with no output means
+// the hook has no decision to report, so the tool call continues through the
+// normal permission flow.").
+//
+// This hook is only supposed to have an opinion in exactly one case: no
+// active .wip session for the branch (deny). Every other path is "we don't
+// care, defer to whatever the user already has configured" — so every allow
+// Decision renders to zero bytes, never an explicit "allow" JSON. Only a
+// deny Decision produces output. RenderOutput must never itself fail: on
+// the (practically impossible) marshal error on the deny path, it falls
+// back to a hardcoded deny-JSON literal rather than ever inventing an
+// "allow" (fail-open on a render bug is not the same as fail-open on a
+// decision bug — see hook_gate.go's recover() path for the same reasoning).
 func RenderOutput(d Decision) []byte {
-	decision := "deny"
 	if d.Allow {
-		decision = "allow"
+		return nil
 	}
 	out := hookOutput{}
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
-	out.HookSpecificOutput.PermissionDecision = decision
+	out.HookSpecificOutput.PermissionDecision = "deny"
 	out.HookSpecificOutput.PermissionDecisionReason = d.Reason
 
 	data, err := json.Marshal(out)
 	if err != nil {
-		return AllowOutput()
+		// Marshal only fails on unsupported types (channels, funcs) that
+		// hookOutput's plain-string fields can never contain — this path is
+		// unreachable in practice. If it's ever hit, failing open (no
+		// output) is still correct: we'd rather silently stop gating than
+		// risk emitting malformed JSON that Claude Code can't parse.
+		return nil
 	}
 	return data
-}
-
-// AllowOutput is the hardcoded allow-JSON literal used as the ultimate
-// fallback when RenderOutput itself can't be trusted to run (its own
-// marshal-error path). Its reason text is pinned byte-for-byte against
-// templates/global/scripts/wip-gate.sh's own hardcoded allow_json literal by
-// cmd/aidw/internal/install/wip_gate_hook_test.go — keep them in sync. Do
-// not reuse this for other allow decisions (e.g. an internal panic): use
-// RenderOutput(Decision{Allow: true, Reason: "..."}) with a reason that
-// actually describes what happened instead.
-func AllowOutput() []byte {
-	return []byte(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"wip-gate: aidw binary unavailable; failing open"}}`)
 }
 
 type hookOutput struct {

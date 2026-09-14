@@ -30,22 +30,19 @@ func runAidwStdin(t *testing.T, dir, stdin string, args ...string) (string, stri
 	return stdout.String(), stderr.String(), exitCode
 }
 
-func TestHookGate_EmptyStdin_Allows(t *testing.T) {
+// TestHookGate_EmptyStdin_ProducesNoOutput asserts the rendering-contract
+// fix: an allow decision (empty/unparseable stdin falls through to allow)
+// must produce zero bytes of stdout, not an explicit "allow" JSON. Empty
+// stdout is Claude Code's documented "no opinion, defer to the normal
+// permission flow" signal — see hookgate.RenderOutput's doc comment.
+func TestHookGate_EmptyStdin_ProducesNoOutput(t *testing.T) {
 	dir := initTestGitRepo(t)
 	stdout, _, code := runAidwStdin(t, dir, `{}`, "hook-gate")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	var v struct {
-		HookSpecificOutput struct {
-			PermissionDecision string `json:"permissionDecision"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
-		t.Fatalf("stdout not valid JSON: %v (%q)", err, stdout)
-	}
-	if v.HookSpecificOutput.PermissionDecision != "allow" {
-		t.Fatalf("decision = %q, want allow", v.HookSpecificOutput.PermissionDecision)
+	if stdout != "" {
+		t.Fatalf("expected empty stdout for an allow decision, got %q", stdout)
 	}
 }
 
@@ -73,7 +70,7 @@ func TestHookGate_DenyShapedPayload_ExactReason(t *testing.T) {
 	}
 }
 
-func TestHookGate_NoStdin_DoesNotBlock_AllowsAndExitsZero(t *testing.T) {
+func TestHookGate_NoStdin_DoesNotBlock_ProducesNoOutput(t *testing.T) {
 	dir := initTestGitRepo(t)
 	cmd := exec.Command(buildAidw(t), "hook-gate")
 	cmd.Dir = dir
@@ -84,15 +81,7 @@ func TestHookGate_NoStdin_DoesNotBlock_AllowsAndExitsZero(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run aidw hook-gate: %v (%s)", err, stderr.String())
 	}
-	var v struct {
-		HookSpecificOutput struct {
-			PermissionDecision string `json:"permissionDecision"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &v); err != nil {
-		t.Fatalf("stdout not valid JSON: %v (%q)", err, stdout.String())
-	}
-	if v.HookSpecificOutput.PermissionDecision != "allow" {
-		t.Fatalf("decision = %q, want allow", v.HookSpecificOutput.PermissionDecision)
+	if stdout.String() != "" {
+		t.Fatalf("expected empty stdout for an allow decision, got %q", stdout.String())
 	}
 }
