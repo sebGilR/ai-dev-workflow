@@ -22,6 +22,7 @@ type BootstrapResult struct {
 	Gitignore string   `json:"gitignore"`
 	SqliteVec string   `json:"sqlite_vec"`
 	Gopls     string   `json:"gopls,omitempty"`
+	WipGate   string   `json:"wip_gate,omitempty"`
 	Skills    []string `json:"skills"`
 	Agents    []string `json:"agents"`
 	RepoPath  string   `json:"repo_path,omitempty"`
@@ -120,6 +121,23 @@ func Bootstrap(opts BootstrapOptions, w io.Writer) (*BootstrapResult, error) {
 		}
 	} else {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("settings template missing: %v", err))
+	}
+
+	// 6b. Offer the opt-in workflow-gate hook (never silently enabled). A
+	// second, independent MergeSettings call from step 6's — gated on an
+	// interactive y/N prompt, and short-circuited if already merged — so a
+	// plain `aidw upgrade` never starts denying an existing user's edits.
+	gateStatus := AskEnableWipGate(opts.Interactive, w, settingsPath)
+	switch {
+	case gateStatus.AlreadyEnabled:
+		result.WipGate = "already-enabled"
+	case gateStatus.Enabled:
+		result.WipGate = "enabled"
+	case gateStatus.Warning != "":
+		result.Warnings = append(result.Warnings, fmt.Sprintf("wip-gate: %s", gateStatus.Warning))
+		result.WipGate = "failed"
+	default:
+		result.WipGate = "skipped"
 	}
 
 	// 7. Merge CLAUDE.md (Global)
