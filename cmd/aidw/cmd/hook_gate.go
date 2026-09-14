@@ -21,7 +21,15 @@ var hookGateCmd = &cobra.Command{
 	Run: func(c *cobra.Command, args []string) {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Println(string(hookgate.AllowOutput()))
+				// A distinct decision/reason from AllowOutput()'s
+				// binary-unavailable literal (that one is pinned
+				// byte-for-byte to wip-gate.sh's own fallback and means a
+				// different thing) — this is an internal Evaluate panic,
+				// not a missing binary, but still an unconditional allow.
+				fmt.Println(string(hookgate.RenderOutput(hookgate.Decision{
+					Allow:  true,
+					Reason: "wip-gate: internal error; failing open",
+				})))
 			}
 		}()
 		var body []byte

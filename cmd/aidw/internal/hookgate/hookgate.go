@@ -12,6 +12,7 @@ package hookgate
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -202,7 +203,7 @@ func extractStringField(toolInput map[string]json.RawMessage, key string) string
 }
 
 func isDir(path string) bool {
-	fi, err := statFunc(path)
+	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
 }
 
@@ -226,12 +227,14 @@ func RenderOutput(d Decision) []byte {
 	return data
 }
 
-// AllowOutput is the hardcoded allow-JSON literal, exported so
-// cmd/aidw/cmd/hook_gate.go's panic-recovery path and wip-gate.sh's own
-// missing-binary fallback can both use byte-identical text where relevant.
-// This exact string is pinned against templates/global/scripts/wip-gate.sh's
-// own hardcoded allow_json literal by
-// cmd/aidw/internal/install/wip_gate_hook_test.go — keep them in sync.
+// AllowOutput is the hardcoded allow-JSON literal used as the ultimate
+// fallback when RenderOutput itself can't be trusted to run (its own
+// marshal-error path). Its reason text is pinned byte-for-byte against
+// templates/global/scripts/wip-gate.sh's own hardcoded allow_json literal by
+// cmd/aidw/internal/install/wip_gate_hook_test.go — keep them in sync. Do
+// not reuse this for other allow decisions (e.g. an internal panic): use
+// RenderOutput(Decision{Allow: true, Reason: "..."}) with a reason that
+// actually describes what happened instead.
 func AllowOutput() []byte {
 	return []byte(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"wip-gate: aidw binary unavailable; failing open"}}`)
 }

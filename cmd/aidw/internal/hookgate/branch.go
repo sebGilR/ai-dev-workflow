@@ -1,16 +1,11 @@
 package hookgate
 
 import (
-	"os"
 	"os/exec"
 	"strings"
 
 	"aidw/cmd/aidw/internal/git"
 )
-
-// statFunc is os.Stat, aliased so isDir has a single call site to swap in
-// tests if ever needed.
-var statFunc = os.Stat
 
 // resolveGateBranch resolves the current branch name in a way that works
 // even on an unborn HEAD (a git repo with zero commits), unlike

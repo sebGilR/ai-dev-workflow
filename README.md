@@ -206,7 +206,7 @@ Verdicts: `allow`, `prompt`, `audit`, `deny`. Default-fallback is `prompt`.
 
 This is a soft layer — Claude Code's own permission system still governs execution. Policy provides a second, repo-local check that makes autonomous loops (`/wip-auto`) safer without manually pre-approving every test command.
 
-`.aidw/policy.json` also carries an optional top-level `"wip_gate": "disabled"` field, independent of the `rules` array, consumed by the opt-in workflow-gate hook (see [Hooks (Claude Code)](#hooks-claude-code)) rather than by `Evaluate`. Set it safely with `aidw policy set-wip-gate . off` (round-trips through the existing rules so you don't accidentally reset them to `[]`, which would make every Bash command fall through to `Evaluate`'s `"prompt"` default) — do not hand-write a `policy.json` containing only `{"wip_gate": "disabled"}`.
+`.aidw/policy.json` also carries an optional top-level `"wip_gate": "disabled"` field, independent of the `rules` array, consumed by the opt-in workflow-gate hook (see [Hooks (Claude Code)](#hooks-claude-code)) rather than by `Evaluate`. Set it with `aidw policy set-wip-gate . off`, and clear it with `aidw policy set-wip-gate . on` — the setter edits only that one key and leaves any existing `rules` untouched. Hand-writing a file containing just `{"wip_gate": "disabled"}` is equally safe: `Load()` backfills the current default rules whenever the file declares no `"rules"` key at all, so a `wip_gate`-only file never silently tightens the repo's Bash policy, and never freezes it to a stale snapshot either. An explicit `"rules": []` is respected as a deliberate choice.
 
 ---
 
@@ -255,7 +255,7 @@ Re-run `aidw upgrade .` after pulling new versions; it's the same path with extr
 
 ## Hooks (Claude Code)
 
-Three hook entries land in `~/.claude/settings.json` on every bootstrap/upgrade (always installed, no opt-in):
+Several hook entries (`Stop`, `PreCompact`, `SessionEnd`, `SessionStart`) land in `~/.claude/settings.json` on every bootstrap/upgrade — always installed, no opt-in:
 
 ```json
 "hooks": {
