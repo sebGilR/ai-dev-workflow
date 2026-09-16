@@ -35,6 +35,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
           chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
 
+      - name: Diagnose zig cc directly (before involving go build/cgo)
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
+        run: |
+          set -x
+          uname -a
+          zig version
+          echo 'int main(void) { return 0; } ' > /tmp/t.c
+          zig cc -target aarch64-macos-none -v -c /tmp/t.c -o /tmp/t.o || echo "DIAG_EXIT=$?"
+          zig cc -target x86_64-linux-gnu -v -c /tmp/t.c -o /tmp/t2.o || echo "DIAG_EXIT2=$?"
+
       - name: Cross-compile all four release targets with -tags sqlite_ext
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
