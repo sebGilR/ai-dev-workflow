@@ -8,6 +8,9 @@ name: verify-sqlite-ext-build
 # branch.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/goreleaser-sqlite-vec
 
 jobs:
   verify:
