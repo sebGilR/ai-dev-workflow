@@ -35,7 +35,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
           chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
 
-      - name: Cross-compile all four release targets with -tags sqlite_ext
+      - name: Bisect the hang — native cc vs zig cc (no flock) vs zig cc (bounded flock), linux/amd64 only
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
           ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
@@ -43,39 +43,27 @@ jobs:
           GOTMPDIR: ${{ runner.temp }}/go-tmp
           XDG_CACHE_HOME: ${{ runner.temp }}/.cache
         run: |
-          set -euxo pipefail
-          declare -A targets=(
-            ["darwin amd64"]="x86_64-macos-none"
-            ["darwin arm64"]="aarch64-macos-none"
-            ["linux amd64"]="x86_64-linux-gnu"
-            ["linux arm64"]="aarch64-linux-gnu"
-          )
+          set -x
           mkdir -p /tmp/out
+
+          echo "### 1. native cc (no zig at all) ###"
+          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -x -tags sqlite_ext -o /tmp/out/native-linux-amd64 ./cmd/aidw
+          echo "exit=$?"
+
+          echo "### 2. zig cc directly as CC, no flock wrapper ###"
+          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux-gnu" \
+            go build -x -tags sqlite_ext -o /tmp/out/zigdirect-linux-amd64 ./cmd/aidw
+          echo "exit=$?"
+
+          echo "### 3. zig cc via flock wrapper, BOUNDED wait (fails fast instead of hanging) ###"
           chmod +x scripts/zigcc.sh
-          for pair in "${!targets[@]}"; do
-            read -r goos goarch <<< "$pair"
-            triple="${targets[$pair]}"
-            echo "=== building $goos/$goarch (zig target $triple) ==="
-            CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="$PWD/scripts/zigcc.sh -target $triple" \
-              go build -tags sqlite_ext -o "/tmp/out/aidw-$goos-$goarch" ./cmd/aidw
-            file "/tmp/out/aidw-$goos-$goarch"
-          done
+          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 ZIGCC_FLOCK_TIMEOUT=30 \
+            CC="$PWD/scripts/zigcc.sh -target x86_64-linux-gnu" \
+            go build -x -tags sqlite_ext -o /tmp/out/zigflock-linux-amd64 ./cmd/aidw
+          echo "exit=$?"
 
-      - name: Confirm the CGO sqlite_ext driver (not the pure-Go fallback) is linked into every binary
+      - name: Report which of the three bisect builds actually produced a binary
         run: |
-          set -euxo pipefail
-          for f in /tmp/out/aidw-*; do
-            echo "=== $f ==="
-            if strings "$f" | grep -q "sqlite3_with_vec"; then
-              echo "OK: sqlite3_with_vec driver name present"
-            else
-              echo "FAIL: sqlite3_with_vec driver name NOT found in $f"
-              exit 1
-            fi
-          done
-
-      - name: Run the native linux/amd64 binary end-to-end
-        run: |
-          set -euxo pipefail
-          /tmp/out/aidw-linux-amd64 --version
-          echo "native linux/amd64 binary executes correctly"
+          set -x
+          ls -la /tmp/out/ || true

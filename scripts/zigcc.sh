@@ -12,4 +12,8 @@ set -euo pipefail
 
 lockfile="${ZIGCC_LOCKFILE:-${TMPDIR:-/tmp}/aidw-zigcc.lock}"
 
+if [[ -n "${ZIGCC_FLOCK_TIMEOUT:-}" ]]; then
+  exec flock -w "$ZIGCC_FLOCK_TIMEOUT" "$lockfile" zig cc "$@"
+fi
+
 exec flock "$lockfile" zig cc "$@"
