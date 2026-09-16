@@ -3,14 +3,9 @@ name: verify-sqlite-ext-build
 # Scratch verification workflow for the .goreleaser.yaml CGO+Zig
 # cross-compile change (sqlite_ext build tag). Not part of the release
 # pipeline itself — manually triggered, builds nothing that gets published.
-# Safe to delete once the goreleaser change is confirmed working; kept
-# committed only so workflow_dispatch has something to run against on this
-# branch.
+# Safe to delete once the goreleaser change is confirmed working.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/goreleaser-sqlite-vec
 
 jobs:
   verify:
@@ -35,7 +30,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
           chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
 
-      - name: Bisect the hang — native cc vs zig cc (no flock) vs zig cc (bounded flock), linux/amd64 only
+      - name: Cross-compile all four release targets with -tags sqlite_ext (direct zig cc, no wrapper)
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
           ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
@@ -43,27 +38,67 @@ jobs:
           GOTMPDIR: ${{ runner.temp }}/go-tmp
           XDG_CACHE_HOME: ${{ runner.temp }}/.cache
         run: |
-          set -x
+          set +e
+          declare -A targets=(
+            ["darwin amd64"]="x86_64-macos-none"
+            ["darwin arm64"]="aarch64-macos-none"
+            ["linux amd64"]="x86_64-linux-gnu"
+            ["linux arm64"]="aarch64-linux-gnu"
+          )
           mkdir -p /tmp/out
+          overall=0
+          for pair in "${!targets[@]}"; do
+            read -r goos goarch <<< "$pair"
+            triple="${targets[$pair]}"
+            echo "=== building $goos/$goarch (zig target $triple) ==="
+            time timeout 900 env CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="zig cc -target $triple" \
+              go build -tags sqlite_ext -o "/tmp/out/aidw-$goos-$goarch" ./cmd/aidw
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              echo "RESULT $goos/$goarch: OK"
+              file "/tmp/out/aidw-$goos-$goarch"
+            else
+              echo "RESULT $goos/$goarch: FAILED (exit $rc)"
+              overall=1
+            fi
+          done
+          exit $overall
 
-          echo "### 1. native cc (no zig at all) ###"
-          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -x -tags sqlite_ext -o /tmp/out/native-linux-amd64 ./cmd/aidw
-          echo "exit=$?"
-
-          echo "### 2. zig cc directly as CC, no flock wrapper ###"
-          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux-gnu" \
-            go build -x -tags sqlite_ext -o /tmp/out/zigdirect-linux-amd64 ./cmd/aidw
-          echo "exit=$?"
-
-          echo "### 3. zig cc via flock wrapper, BOUNDED wait (fails fast instead of hanging) ###"
-          chmod +x scripts/zigcc.sh
-          time timeout 180 env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 ZIGCC_FLOCK_TIMEOUT=30 \
-            CC="$PWD/scripts/zigcc.sh -target x86_64-linux-gnu" \
-            go build -x -tags sqlite_ext -o /tmp/out/zigflock-linux-amd64 ./cmd/aidw
-          echo "exit=$?"
-
-      - name: Report which of the three bisect builds actually produced a binary
+      - name: Confirm the CGO sqlite_ext driver (not the pure-Go fallback) is linked into whatever built
+        if: always()
         run: |
           set -x
           ls -la /tmp/out/ || true
+          for f in /tmp/out/aidw-*; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="
+            if strings "$f" | grep -q "sqlite3_with_vec"; then
+              echo "OK: sqlite3_with_vec driver name present"
+            else
+              echo "FAIL: sqlite3_with_vec driver name NOT found in $f"
+            fi
+          done
+
+      - name: Run the native linux/amd64 binary end-to-end
+        if: always()
+        run: |
+          set -x
+          if [ -f /tmp/out/aidw-linux-amd64 ]; then
+            /tmp/out/aidw-linux-amd64 --version
+          else
+            echo "linux/amd64 binary was not produced; skipping"
+          fi
+
+      - name: Dry-run the actual .goreleaser.yaml (not just hand-rolled go build)
+        if: always()
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
+          TMPDIR: ${{ runner.temp }}/go-tmp
+          GOTMPDIR: ${{ runner.temp }}/go-tmp
+          XDG_CACHE_HOME: ${{ runner.temp }}/.cache
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --snapshot --clean --timeout 60m
