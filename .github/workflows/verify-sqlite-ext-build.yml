@@ -1,0 +1,66 @@
+name: verify-sqlite-ext-build
+
+# Scratch verification workflow for the .goreleaser.yaml CGO+Zig
+# cross-compile change (sqlite_ext build tag). Not part of the release
+# pipeline itself — manually triggered, builds nothing that gets published.
+# Safe to delete once the goreleaser change is confirmed working; kept
+# committed only so workflow_dispatch has something to run against on this
+# branch.
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Cross-compile all four release targets with -tags sqlite_ext
+        run: |
+          set -euxo pipefail
+          declare -A targets=(
+            ["darwin amd64"]="x86_64-macos-none"
+            ["darwin arm64"]="aarch64-macos-none"
+            ["linux amd64"]="x86_64-linux-gnu"
+            ["linux arm64"]="aarch64-linux-gnu"
+          )
+          mkdir -p /tmp/out
+          for pair in "${!targets[@]}"; do
+            read -r goos goarch <<< "$pair"
+            triple="${targets[$pair]}"
+            echo "=== building $goos/$goarch (zig target $triple) ==="
+            CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="zig cc -target $triple" \
+              go build -tags sqlite_ext -o "/tmp/out/aidw-$goos-$goarch" ./cmd/aidw
+            file "/tmp/out/aidw-$goos-$goarch"
+          done
+
+      - name: Confirm the CGO sqlite_ext driver (not the pure-Go fallback) is linked into every binary
+        run: |
+          set -euxo pipefail
+          for f in /tmp/out/aidw-*; do
+            echo "=== $f ==="
+            if strings "$f" | grep -q "sqlite3_with_vec"; then
+              echo "OK: sqlite3_with_vec driver name present"
+            else
+              echo "FAIL: sqlite3_with_vec driver name NOT found in $f"
+              exit 1
+            fi
+          done
+
+      - name: Run the native linux/amd64 binary end-to-end
+        run: |
+          set -euxo pipefail
+          /tmp/out/aidw-linux-amd64 --version
+          echo "native linux/amd64 binary executes correctly"

@@ -7,11 +7,24 @@ before:
     - go mod tidy
 
 builds:
+  # CGO_ENABLED=1 + the sqlite_ext build tag pull in the CGO mattn/go-sqlite3
+  # driver (cmd/aidw/internal/memory/driver_sqlite_ext.go), which is required
+  # for aidw's optional vector/semantic-search extension loading. Without
+  # both, the build silently falls back to the pure-Go modernc.org/sqlite
+  # driver (driver_modernc.go) and semantic search is permanently
+  # unavailable in the released binary — see docs/release-notes.md and the
+  # "Semantic search" section of README.md. CC is set to `zig cc -target
+  # <triple>` per build so each of the four release targets gets a real C
+  # cross-compiler without needing per-platform sysroots on the ubuntu-latest
+  # runner; Zig is already installed by .github/workflows/release.yml.
   - id: aidw-darwin-amd64
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=zig cc -target x86_64-macos-none
+    tags:
+      - sqlite_ext
     ldflags:
       - -X 'aidw/cmd/aidw/cmd.Version={{.Version}}'
     goos:
@@ -23,7 +36,10 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=zig cc -target aarch64-macos-none
+    tags:
+      - sqlite_ext
     ldflags:
       - -X 'aidw/cmd/aidw/cmd.Version={{.Version}}'
     goos:
@@ -35,7 +51,10 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=zig cc -target x86_64-linux-gnu
+    tags:
+      - sqlite_ext
     ldflags:
       - -X 'aidw/cmd/aidw/cmd.Version={{.Version}}'
     goos:
@@ -47,7 +66,10 @@ builds:
     main: ./cmd/aidw
     binary: aidw
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=zig cc -target aarch64-linux-gnu
+    tags:
+      - sqlite_ext
     ldflags:
       - -X 'aidw/cmd/aidw/cmd.Version={{.Version}}'
     goos:
