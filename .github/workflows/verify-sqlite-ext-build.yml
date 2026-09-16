@@ -35,18 +35,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
           chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
 
-      - name: Diagnose zig cc directly (before involving go build/cgo)
-        env:
-          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
-          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
-        run: |
-          set -x
-          uname -a
-          zig version
-          echo 'int main(void) { return 0; } ' > /tmp/t.c
-          zig cc -target aarch64-macos-none -v -c /tmp/t.c -o /tmp/t.o || echo "DIAG_EXIT=$?"
-          zig cc -target x86_64-linux-gnu -v -c /tmp/t.c -o /tmp/t2.o || echo "DIAG_EXIT2=$?"
-
       - name: Cross-compile all four release targets with -tags sqlite_ext
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
@@ -63,11 +51,12 @@ jobs:
             ["linux arm64"]="aarch64-linux-gnu"
           )
           mkdir -p /tmp/out
+          chmod +x scripts/zigcc.sh
           for pair in "${!targets[@]}"; do
             read -r goos goarch <<< "$pair"
             triple="${targets[$pair]}"
             echo "=== building $goos/$goarch (zig target $triple) ==="
-            CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="zig cc -target $triple" \
+            CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="$PWD/scripts/zigcc.sh -target $triple" \
               go build -tags sqlite_ext -o "/tmp/out/aidw-$goos-$goarch" ./cmd/aidw
             file "/tmp/out/aidw-$goos-$goarch"
           done
