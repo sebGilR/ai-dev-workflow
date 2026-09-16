@@ -30,7 +30,18 @@ jobs:
         with:
           version: 0.13.0
 
+      - name: Prepare compiler caches
+        run: |
+          mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
+          chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
+
       - name: Cross-compile all four release targets with -tags sqlite_ext
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
+          TMPDIR: ${{ runner.temp }}/go-tmp
+          GOTMPDIR: ${{ runner.temp }}/go-tmp
+          XDG_CACHE_HOME: ${{ runner.temp }}/.cache
         run: |
           set -euxo pipefail
           declare -A targets=(
