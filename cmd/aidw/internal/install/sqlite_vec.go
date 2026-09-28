@@ -10,12 +10,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"aidw/cmd/aidw/internal/memory"
 )
 
 const sqliteVecVersion = "v0.1.9"
 
 // InstallSqliteVec downloads and installs the sqlite-vec loadable extension.
 func InstallSqliteVec(w io.Writer) error {
+	if !memory.HasVectorDriver() {
+		fmt.Fprintln(w, "  Note: this aidw binary was built without the sqlite_ext tag (CGO driver),")
+		fmt.Fprintln(w, "  so semantic search stays permanently unavailable even after this install.")
+		fmt.Fprintln(w, "  Build locally with `make build` for a binary that can load vec0.")
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

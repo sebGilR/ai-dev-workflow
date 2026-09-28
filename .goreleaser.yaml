@@ -18,18 +18,22 @@ builds:
   # Linux only for now: CC=zig cc -target <triple> cross-compiles cleanly
   # from the ubuntu-latest runner (Zig is already installed by
   # .github/workflows/release.yml) — verified directly and via a real
-  # `goreleaser build --snapshot` dry run.
+  # `goreleaser release --snapshot --skip=publish` dry run in CI
+  # (.github/workflows/verify-goreleaser.yml). Building this config locally
+  # (e.g. `goreleaser build --snapshot`) also requires `zig` on PATH.
   #
   # Darwin is intentionally still CGO_ENABLED=0 (pure-Go driver, no vector
-  # search in the Homebrew binary): zig cc's macOS cross-target fails CGO
-  # compilation with "error: unable to create compilation: AccessDenied",
-  # reproduced consistently (solo, sequential, and inside goreleaser's
-  # parallel build) — a real Zig 0.13 limitation, not a flakiness/ordering
-  # issue. Fixing it properly means building darwin natively (e.g. on a
-  # macos-latest runner) instead of cross-compiling with zig; that's a
-  # separate, larger change to the release pipeline. Until then, macOS users
-  # who want semantic search should build locally with `make build` (see
-  # README.md), which already uses native CGO + -tags sqlite_ext.
+  # search in the Homebrew binary): zig cc's macOS cross-target consistently
+  # fails CGO compilation with "error: unable to create compilation:
+  # AccessDenied" (reproduced solo, sequential, and inside goreleaser's
+  # parallel build — so not a concurrency/ordering artifact). The exact root
+  # cause (a Zig 0.13 bug vs. a missing macOS SDK component vs. something
+  # else) was not isolated further. Fixing it properly means building darwin
+  # natively (e.g. on a macos-latest runner) instead of cross-compiling with
+  # zig; that's a separate, larger change to the release pipeline. Until
+  # then, macOS users who want semantic search should build locally with
+  # `make build` (see README.md), which already uses native CGO +
+  # -tags sqlite_ext.
   - id: aidw-darwin-amd64
     main: ./cmd/aidw
     binary: aidw
