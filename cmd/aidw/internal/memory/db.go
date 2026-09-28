@@ -280,6 +280,12 @@ func (db *DB) Close() error { return db.conn.Close() }
 
 func (db *DB) VectorEnabled() bool { return db.vectorEnabled }
 
+// HasVectorDriver reports whether this binary was built with the sqlite_ext
+// tag (the CGO mattn/go-sqlite3 driver, which supports LoadExtension). When
+// false, semantic search is permanently unavailable in this binary no matter
+// what's installed at ~/.claude/lib — see README's "Semantic search" section.
+func HasVectorDriver() bool { return driverName == "sqlite3_with_vec" }
+
 // Migrated reports whether this handle's DB file is on the new repo_id/
 // scope schema (PRAGMA user_version == memorySchemaVersion) as of Open().
 func (db *DB) Migrated() bool { return db.migrated }
@@ -289,9 +295,13 @@ func (db *DB) Status() map[string]any {
 		"vector_extension_loaded": db.vectorEnabled,
 		"database_connected":      db.conn != nil,
 		"migrated":                db.migrated,
+		"driver":                  driverName,
 	}
 	if !db.migrated {
 		status["hint"] = "run 'aidw memory migrate' to move to the new schema"
+	}
+	if !db.vectorEnabled && !HasVectorDriver() {
+		status["hint_vector"] = "this binary was built without the sqlite_ext tag (CGO driver); semantic search is permanently unavailable regardless of vec0 install — see README's Semantic search section"
 	}
 	return status
 }

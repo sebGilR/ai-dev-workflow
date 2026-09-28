@@ -30,3 +30,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Build (sqlite_ext, CGO)
+        run: CGO_ENABLED=1 go build -tags sqlite_ext ./...
+
+      - name: Test (sqlite_ext, CGO)
+        run: CGO_ENABLED=1 go test -tags sqlite_ext ./...

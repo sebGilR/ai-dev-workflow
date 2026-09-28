@@ -77,7 +77,7 @@ The full skill catalogue is in [Skill catalogue](#skill-catalogue); the full CLI
 
 Three things, glued together:
 
-1. **`aidw`** — a single static Go binary (`cmd/aidw`, ~5 MB, no CGO). Manages `.wip/`, runs an embedded SQLite + `sqlite-vec` memory store, evaluates a per-repo command policy, builds review bundles from git diffs, and shells out to external review CLIs.
+1. **`aidw`** — a single Go binary (`cmd/aidw`, ~5 MB). Manages `.wip/`, runs an embedded SQLite + `sqlite-vec` memory store, evaluates a per-repo command policy, builds review bundles from git diffs, and shells out to external review CLIs.
 2. **`claude/skills/` and `claude/agents/`** — Markdown skill files (`/wip-start`, `/wip-plan`, `/wip-implement`, …) and subagent definitions, embedded into the binary via `//go:embed` (`embed.go`) and extracted to `~/.claude/skills/`, `~/.copilot/skills/`, `~/.claude/agents/`. Skills are scripts; the model executes the steps verbatim.
 3. **A bootstrap layer** that idempotently merges templates into `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, `~/.claude/mcp.json`, `~/.gemini/GEMINI.md`, your shell profile, and the repo's `.github/copilot-instructions.md`.
 
@@ -87,8 +87,8 @@ Three things, glued together:
 
 The original installer was a 22 KB bash script (`install.sh`, still in the tree as a fallback). It was rewritten in Go because:
 
-- **One artifact, no runtime deps.** GoReleaser cross-compiles for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, `linux/arm64`. Skills, agents, templates, and the `serena-query` helper are all embedded — see `embed.go`.
-- **CGO disabled.** Uses `modernc.org/sqlite` (pure-Go SQLite driver) so the binary stays portable. The `sqlite-vec` extension is loaded at runtime as a `.dylib`/`.so` from `~/.claude/lib/` (downloaded by `bootstrap`, see `cmd/aidw/internal/install/sqlite_vec.go`).
+- **One artifact, minimal runtime deps.** GoReleaser cross-compiles for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, `linux/arm64`. Skills, agents, templates, and the `serena-query` helper are all embedded — see `embed.go`.
+- **Semantic search needs CGO — a build-time tradeoff, per platform.** `sqlite-vec` extension loading (`conn.LoadExtension`, a `dlopen` under the hood) only works through the CGO `mattn/go-sqlite3` driver (`-tags sqlite_ext`, `cmd/aidw/internal/memory/driver_sqlite_ext.go`); the default pure-Go `modernc.org/sqlite` driver (`driver_modernc.go`) can't load extensions at all, so a binary built without the tag has semantic search *permanently* disabled, not just unconfigured (`aidw memory status` reports which driver a given binary was built with). The released **Linux** binaries are built with `CGO_ENABLED=1 -tags sqlite_ext` (cross-compiled via Zig — see `.goreleaser.yaml`), which means they're dynamically linked against glibc and won't run on musl-based distros (Alpine, `scratch`/`distroless` containers). The released **macOS** binaries are still `CGO_ENABLED=0` (Zig can't yet cross-compile CGO to Darwin from this pipeline) — build locally with `make build` for a macOS binary with semantic search. The `sqlite-vec` extension itself is downloaded separately at bootstrap time as a `.dylib`/`.so` into `~/.claude/lib/` (see `cmd/aidw/internal/install/sqlite_vec.go`) — installing it does nothing for a binary that can't load extensions in the first place.
 - **Determinism.** Stage transitions, file verification, JSON merging, and atomic writes need to be reliable across `bash`, `zsh`, macOS, and Linux. Go gives test coverage (`*_test.go`) and structured error handling that bash didn't.
 
 ---

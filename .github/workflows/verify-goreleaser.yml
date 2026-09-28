@@ -1,0 +1,117 @@
+name: verify-goreleaser
+
+# Dry-runs the real .goreleaser.yaml on every change to it (or to files that
+# affect what it builds), so a bad release config is caught here instead of
+# by a public tag push. release.yml itself only fires on `push: tags: v*`
+# with no dry-run gate, so this is the only thing that exercises the
+# release build config before a real release.
+#
+# Mirrors release.yml's GoReleaser step as closely as possible (same pinned
+# version, same env vars including HOME) so a green run here is meaningful
+# evidence about the real release, not just a similar-looking one.
+on:
+  pull_request:
+    paths:
+      - '.goreleaser.yaml'
+      - '.github/workflows/verify-goreleaser.yml'
+      - '.github/workflows/release.yml'
+      - 'cmd/aidw/internal/memory/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+  push:
+    branches:
+      - main
+    paths:
+      - '.goreleaser.yaml'
+      - '.github/workflows/verify-goreleaser.yml'
+      - '.github/workflows/release.yml'
+      - 'cmd/aidw/internal/memory/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Prepare compiler caches
+        run: |
+          mkdir -p "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
+          chmod -R 777 "$RUNNER_TEMP/zig-global-cache" "$RUNNER_TEMP/zig-local-cache" "$RUNNER_TEMP/go-tmp" "$RUNNER_TEMP/.cache"
+
+      # --skip=publish still runs archives/checksum/brews templating (unlike
+      # `build`, which skips them entirely) without actually pushing
+      # anything, so a bad archives.name_template or brews: field is caught
+      # here too. HOMEBREW_TAP_GITHUB_TOKEN only needs to resolve the
+      # template, never dial the network, since publish is skipped.
+      - name: goreleaser release --skip=publish (real dry run of .goreleaser.yaml, same env as the real release)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "2.18.2"
+          args: release --clean --snapshot --skip=publish --parallelism 1
+        env:
+          HOME: ${{ runner.temp }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/.cache
+          TMPDIR: ${{ runner.temp }}/go-tmp
+          GOTMPDIR: ${{ runner.temp }}/go-tmp
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
+          HOMEBREW_TAP_GITHUB_TOKEN: dry-run-unused-token
+
+      - name: Confirm the CGO sqlite_ext driver is linked into the linux binaries (not the pure-Go fallback)
+        run: |
+          set -euo pipefail
+          for f in dist/aidw-linux-amd64_linux_amd64_v1/aidw dist/aidw-linux-arm64_linux_arm64_v8.0/aidw; do
+            strings "$f" > /tmp/strings-out.txt
+            if grep -qF "sqlite3_with_vec" /tmp/strings-out.txt; then
+              echo "OK: sqlite3_with_vec driver name present in $f"
+            else
+              echo "FAIL: sqlite3_with_vec driver name NOT found in $f"
+              exit 1
+            fi
+          done
+
+      - name: Assert the linux binaries are dynamically linked with a known glibc ceiling (not a silent musl/static break)
+        run: |
+          set -euo pipefail
+          for f in dist/aidw-linux-amd64_linux_amd64_v1/aidw dist/aidw-linux-arm64_linux_arm64_v8.0/aidw; do
+            file "$f" | grep -q "dynamically linked" || { echo "FAIL: $f is not dynamically linked (expected, since LoadExtension/dlopen needs glibc)"; exit 1; }
+            max_glibc=$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)
+            echo "$f max required GLIBC symbol version: ${max_glibc:-<none found>}"
+          done
+
+      - name: Run the native linux/amd64 binary end-to-end
+        run: dist/aidw-linux-amd64_linux_amd64_v1/aidw --version
+
+      - name: Set up QEMU (for running the linux/arm64 binary on this x86_64 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Run the linux/arm64 binary end-to-end under QEMU
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/dist/aidw-linux-arm64_linux_arm64_v8.0:/out" \
+            debian:12 /out/aidw --version
