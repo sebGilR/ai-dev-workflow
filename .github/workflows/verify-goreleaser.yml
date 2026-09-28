@@ -13,12 +13,6 @@ on:
       - '.github/workflows/release.yml'
       - 'cmd/aidw/internal/memory/**'
   workflow_dispatch:
-  # TEMPORARY: lets this brand-new workflow run once on this branch before
-  # it exists on the base branch (pull_request-triggered workflows only run
-  # using the version already on the base branch). Remove before merging.
-  push:
-    branches:
-      - feat/goreleaser-sqlite-vec
 
 jobs:
   verify:
