@@ -88,18 +88,3 @@ External adversarial review is never run or offered by this workflow. It runs on
 ```
 
 8. Summarize the review findings, focusing on blockers and high-priority issues.
-
-## RTK Usage (Token Compression)
-
-The `aidw review-bundle` command already produces compact output. For any supplementary commands run during review, RTK reduces noise significantly:
-
-- `rtk git diff HEAD` — condensed diff for large changesets
-- `rtk tsc --noEmit` — TypeScript errors grouped by file
-- `rtk lint` / `rtk lint biome` — linter output grouped by rule
-- `rtk cargo clippy` — Rust lint output
-
-These are most useful when the reviewer subagent runs supplementary checks outside the review bundle. If a check fails and the compressed output is insufficient to diagnose the cause, ask the user before bypassing:
-
-> "I need full output from `<cmd>` to [reason]. Run without RTK compression? [y/N]"
-
-Only use `rtk proxy <cmd>` after the user confirms.

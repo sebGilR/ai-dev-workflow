@@ -72,14 +72,3 @@ etc.) so they don't need to be re-derived per dispatch.
    ~/.claude/ai-dev-workflow/bin/aidw set-stage . implementing
    ```
 2. Summarize the completed work and any remaining tasks (if scope was split).
-
-## RTK Usage (Token Compression)
-
-When RTK is installed (`rtk init -g`), Bash commands are automatically compressed. This is essential for build/test output:
-
-- `rtk cargo build` / `rtk cargo clippy`
-- `rtk cargo test` — failures only
-- `rtk npm test` / `rtk tsc`
-- `rtk git diff` — condensed diff
-
-If a command fails and the compressed output is insufficient, ask the user before running `rtk proxy <cmd>`.

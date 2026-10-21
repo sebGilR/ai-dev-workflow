@@ -137,11 +137,3 @@ degrade to plain `Agent()`-tool dispatch on any host.
 
 1. Report per-item outcomes (done / stalled-and-escalated / still running).
 2. Never auto-merge any dispatched branch to `main`.
-
-## RTK Usage (Token Compression)
-
-When RTK is installed (`rtk init -g`), Bash commands are automatically compressed:
-
-- `rtk aidw work list .`
-
-If a command's compressed output is insufficient, ask the user before running `rtk proxy <cmd>`.

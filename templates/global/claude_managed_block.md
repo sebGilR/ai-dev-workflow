@@ -66,37 +66,12 @@ Use `mcp__serena__*` tools directly — not through a subagent — for any of th
 When working with external libraries, frameworks, or APIs, use Context7 to retrieve
 the latest documentation before generating code. This reduces outdated API usage.
 
-## Token Compression (RTK)
-
-RTK is an optional CLI proxy that compresses Bash tool call output (60-90% token reduction). When installed (`rtk init -g`), it transparently rewrites commands. Claude Code's built-in Read, Grep, and Glob tools are **not** affected.
-
-### Selective RTK usage (high value)
-
-RTK is most valuable when commands produce large outputs that would otherwise consume your context window:
-
-| Situation | Recommended Commands |
-|-----------|----------------------|
-| **Deep Research** | `rtk ls -R`, `rtk grep`, `rtk find` |
-| **History Review** | `rtk git log`, `rtk git show` |
-| **Noisy Builds** | `rtk cargo build`, `rtk npm install`, `rtk go test ./...` |
-| **Large Diffs** | `rtk git diff HEAD`, `rtk git diff main...` |
-
-### When to bypass RTK (full output needed)
-
-**In the main/coordinating session** (the one talking to the user): ask before bypassing RTK. If you need full uncompressed output to see complete stack traces or sequential log context, explain why and get confirmation:
-
-> "I need full uncompressed output from `<cmd>` to [specific reason]. Run without RTK compression? [y/N]"
-
-Only proceed with `rtk proxy <command>` after the user confirms.
-
-**In a subagent** (no interactive user to ask): run `rtk proxy <cmd>` directly when uncompressed output is needed, and note in your final report that you bypassed RTK and why. Do not block waiting on a confirmation that can't arrive.
-
-### Failure log convention
+## Failure log convention
 
 When a command fails during implementation and the agent needs to preserve the raw output for reference, dump it to the branch logs directory. Look up the actual wip path from `status.json` (`wip_dir` field — e.g., `.wip/20260322150405-my-feature/`), then:
 ```bash
 mkdir -p <wip_dir>/logs
-rtk proxy <failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log
+<failing-command> 2>&1 | tee <wip_dir>/logs/$(date -u +"%Y%m%d%H%M%S")-<cmd>.log
 ```
 **Never use `.wip/<branch-name>/logs/`** — the CLI enforces date-prefixed slugs. Always derive the path from `status.json`. The `logs/` directory is cleaned up automatically by `/wip-cleanup`.
 
