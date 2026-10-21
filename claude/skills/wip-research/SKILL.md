@@ -22,14 +22,3 @@ When this skill is used:
 ```
 
 Keep the notes compact and continuation-friendly.
-
-## RTK Usage (Token Compression)
-
-When RTK is installed (`rtk init -g`), common commands are automatically compressed. **In large codebases**, using RTK is essential to avoid hitting context limits during research:
-
-- `rtk ls -R <dir>` — compact recursive directory tree
-- `rtk grep "<pattern>"` — grouped search results with snippet deduplication
-- `rtk find "<glob>"` — condensed file discovery
-- `rtk git log -n 50` — compact history summary
-
-If RTK is absent, use the raw command equivalents directly. If you need full uncompressed output to see complete context, ask the user before running `rtk proxy <cmd>`.
